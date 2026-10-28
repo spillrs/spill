@@ -1,7 +1,8 @@
 # Architecture
 
 This page is for curious users and contributors. It describes how Spill is put
-together, not every detail; the code is the reference.
+together, not every detail; the code is the reference. The
+[Rust API reference](https://docs.rs/spill) documents the library.
 
 ## Package and modules
 

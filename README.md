@@ -4,9 +4,9 @@ a modern torrent client implemented in Rust.
 
 Spill runs as a single-user BitTorrent v1 daemon on Linux and macOS.
 
-Documentation lives in [`docs/`](docs/index.md): installation, configuration,
+Read the [user guide](https://spill.rs/docs/) for installation, configuration,
 the command line, the web interface, networking, private trackers, limits and
-architecture.
+architecture. Documentation sources live in [`docs/`](docs/index.md).
 
 ## Usage
 

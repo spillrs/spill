@@ -1,0 +1,24 @@
+# Copy to ~/.config/spill/spill.toml; paths must be absolute.
+# Omitted paths default to ~/.local/state/spill, ~/Downloads, and
+# $XDG_RUNTIME_DIR/spill.sock (or ~/.local/state/spill/spill.sock).
+# state_dir = "/home/YOU/.local/state/spill"
+# download_dir = "/home/YOU/Downloads"
+# control_socket = "/run/user/1000/spill.sock"
+listen = "0.0.0.0:51413"
+# Omit web_listen to disable HTTP. Loopback addresses only.
+web_listen = "127.0.0.1:8080"
+allow_local_network = false
+active_downloads = 4
+active_seeds = 16
+# dht_bootstrap = [] # disable public bootstrap routers, not DHT
+
+[defaults]
+download_limit = 0 # bytes/s; zero = unlimited
+upload_limit = 0
+seed_ratio = 0.0 # zero = no stop rule
+seed_time = 0 # cumulative active seeding seconds; zero = no stop rule
+file_priorities = [] # all files; otherwise one skip/normal/high per file
+trackers = true
+dht = true
+pex = true
+web_seeds = true

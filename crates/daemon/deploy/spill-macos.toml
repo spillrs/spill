@@ -1,0 +1,20 @@
+# Copy to ~/Library/Application Support/spill/spill.toml.
+# Omitted paths use the macOS defaults. Overrides must be absolute, without ~.
+# state_dir = "/Users/YOU/Library/Application Support/spill"
+# control_socket = "/Users/YOU/Library/Application Support/spill/spill.sock"
+# download_dir = "/Users/YOU/Downloads"
+listen = "0.0.0.0:51413"
+web_listen = "127.0.0.1:8080"
+allow_local_network = false
+active_downloads = 4
+active_seeds = 16
+
+[defaults]
+download_limit = 0
+upload_limit = 0
+seed_ratio = 0.0
+seed_time = 0
+trackers = true
+dht = true
+pex = true
+web_seeds = true

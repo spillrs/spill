@@ -1,0 +1,22 @@
+# Optional single-user system service, running as the spill account.
+state_dir = "/var/lib/spill"
+download_dir = "/var/lib/spill/downloads"
+control_socket = "/run/spill/control.sock"
+listen = "0.0.0.0:51413"
+allow_local_network = false
+port_mapping = false
+peers = 50
+active_downloads = 4
+active_seeds = 16
+# web_listen = "127.0.0.1:8080"
+
+[defaults]
+download_limit = 0
+upload_limit = 0
+seed_ratio = 0.0
+seed_time = 0
+file_priorities = []
+trackers = true
+dht = true
+pex = true
+web_seeds = true

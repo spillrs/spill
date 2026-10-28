@@ -1,0 +1,30 @@
+[Unit]
+Description=Spill background downloads
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=spill
+Group=spill
+ExecStart=/usr/local/bin/spill serve --config /etc/spill/spill.toml
+StateDirectory=spill
+StateDirectoryMode=0700
+RuntimeDirectory=spill
+RuntimeDirectoryMode=0700
+UMask=0077
+ReadWritePaths=/var/lib/spill/downloads
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Size any MemoryMax override for the actual torrent workload, not just caches.
+MemoryAccounting=true
+
+[Install]
+WantedBy=multi-user.target

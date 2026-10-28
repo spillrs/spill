@@ -1,0 +1,12 @@
+[package]
+name = "protocol"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sha1.workspace = true
+
+[lints]
+workspace = true

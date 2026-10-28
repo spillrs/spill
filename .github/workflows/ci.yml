@@ -1,0 +1,47 @@
+name: Rust
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 ref
+        with:
+          persist-credentials: false
+      - name: Update stable Rust
+        run: rustup update stable --no-self-update
+      - name: Install lint components
+        run: rustup component add rustfmt clippy
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lints
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 ref
+        with:
+          persist-credentials: false
+      - name: Update stable Rust
+        run: rustup update stable --no-self-update
+      - name: Install lint components
+        run: rustup component add rustfmt clippy
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lints
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Tests
+        run: cargo test --workspace --locked

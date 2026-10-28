@@ -1,0 +1,60 @@
+{
+  "source_revision": "9ba5c820e51e421dbc7b10fac271f2f960eacb43",
+  "source_dirty": true,
+  "controlled_reproduction": {
+    "test": "endgame_requests_progress_while_other_duplicates_are_stalled",
+    "setup": "A Fast peer holds eight primary tail requests; a second holds four duplicates. Both choke without relinquishing their outstanding requests. A healthy third peer can duplicate the other four blocks without exceeding two copies per block.",
+    "before": "With the global cap of four, the healthy peer receives no request within three seconds.",
+    "after": "Without the global cap, the healthy peer receives all four requests. A fourth peer receives no third copies, all eight original requests are canceled after fulfillment, and the daemon completes with the correct payload.",
+    "fast_choke_grace_added": false
+  },
+  "notes": [
+    "The original exploratory run has no Spill log events, so its retirement reasons cannot be recovered.",
+    "Removing the global cap fixes the controlled starvation case but does not eliminate the observed swarm tail.",
+    "The instrumented stall has outstanding requests only on unchoked peers. Assigned and authorized counts match, so the sampled requests have no duplicate copies. Fast-choke retention is not supported as the cause of this reproduced stall.",
+    "Pending upload queues with grants and no output backpressure suggest further investigation of upload/read scheduling. The remaining cause is unresolved; no grace period or request-timeout change was made.",
+    "Timings are measured runs, not performance guarantees. The peer-trace run adds diagnostic serialization and trace I/O."
+  ],
+  "swarm": {
+    "scenario_version": 1,
+    "leechers": 8,
+    "bytes_per_leecher": 268435456,
+    "aggregate_bytes": 2147483648,
+    "runs": [
+      {
+        "artifacts": "target/interop/endgame-per-block-swarm-1/result.json",
+        "daemon_sha256": "c7155c775ba24e8d6e344969b130f821b30d24ed7584e2cc1d8a3e349b439c2c",
+        "seconds": 10.541,
+        "aggregate_mb_per_second": 203.727,
+        "peak_leecher_total_rss_mib": 269.711,
+        "passed": true
+      },
+      {
+        "artifacts": "target/interop/endgame-per-block-swarm-2/result.json",
+        "daemon_sha256": "c7155c775ba24e8d6e344969b130f821b30d24ed7584e2cc1d8a3e349b439c2c",
+        "seconds": 39.684,
+        "aggregate_mb_per_second": 54.115,
+        "peak_leecher_total_rss_mib": 326.883,
+        "passed": true
+      },
+      {
+        "artifacts": "target/interop/endgame-peer-trace-1/result.json",
+        "peer_trace": "target/interop/endgame-peer-trace-1/peer-samples.jsonl",
+        "daemon_sha256": "7a056bae71faaa57dd6b1f244e4e6afbd810d353fad5d41c8cbd879e44f8efb8",
+        "runner_sha256": "62f17cf81816c8e9edc760c96e01d9fac2f562854514316044c76141a0b41116",
+        "seconds": 39.700,
+        "aggregate_mb_per_second": 54.093,
+        "peak_leecher_total_rss_mib": 332.410,
+        "passed": true,
+        "stall_snapshot": {
+          "seconds": 15.994,
+          "incomplete_leechers": 6,
+          "assigned_requests": 1176,
+          "authorized_requests": 1176,
+          "assigned_to_choked_peers": 0,
+          "pending_upload_requests": 1176
+        }
+      }
+    ]
+  }
+}

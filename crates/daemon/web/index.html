@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spill</title>
+<style>
+body{font:16px system-ui;margin:2em auto;max-width:1300px;padding:0 1em;color:#ddd;background:#17212b}
+button,input,select{font:inherit;padding:.4em;margin:.2em;border-radius:4px}
+a{color:#9cf}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.5em;border-bottom:1px solid #456}
+label{display:block;margin:.5em}dialog{width:min(900px,90vw);max-height:85vh;overflow:auto;color:inherit;background:#17212b}
+.error{color:#faa;white-space:pre-wrap}.scroll{overflow-x:auto}.message{max-width:20em;overflow-wrap:anywhere}
+</style>
+<h1>Spill</h1>
+<details><summary>Health</summary><pre id="health"></pre></details>
+<form id="add"><input id="magnet" placeholder="magnet URI" aria-label="Magnet URI"><input type="file" id="torrent" accept=".torrent"><input id="output" placeholder="Output directory (default if blank)" aria-label="Output directory"><button>Add</button></form>
+<p id="error" class="error" role="alert"></p>
+<div class="scroll"><table><thead><tr><th>Name / ID</th><th>State</th><th>Progress</th><th>↓ / ↑</th><th>Ratio</th><th>Message</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table></div>
+<dialog id="settings"><form id="settings-form"><h2>Torrent settings</h2><p id="settings-error" class="error" role="alert"></p><div id="fields"></div><button>Save</button><button type="button" id="close">Cancel</button></form></dialog>
+<dialog id="details"><form id="files-form">
+<h2 id="details-title"></h2><p id="details-output"></p><p id="details-message"></p><p id="details-completion"></p><p id="details-error" class="error" role="alert"></p>
+<h3>Trackers</h3><table><thead><tr><th>Tier / slot</th><th>State</th><th>Seeders / leechers</th><th>Message</th></tr></thead><tbody id="trackers"></tbody></table>
+<h3>Files</h3><p>Padding entries must remain skip. Boundary pieces may contain bytes from skipped files.</p>
+<table><thead><tr><th>Path</th><th>Size</th><th>Priority</th></tr></thead><tbody id="files"></tbody></table>
+<button id="save-priorities">Save priorities</button><button type="button" id="details-close">Close</button>
+</form></dialog>
+<script>
+'use strict';
+const token='__TOKEN__';
+const $=id=>document.getElementById(id);
+let editing=null, detailsId=null;
+async function call(op, fields={}) {
+  const r=await fetch('/api',{method:'POST',headers:{'content-type':'application/json','x-spill-token':token},body:JSON.stringify({op,...fields})});
+  if(!r.ok) throw Error(`HTTP ${r.status}`);
+  const result=await r.json(); if(result.code) throw Error(result.error); return result.data;
+}
+function error(e){$($('details').open?'details-error':$('settings').open?'settings-error':'error').textContent=e.message;}
+function button(label, action){const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>action().then(refresh).catch(error);return b;}
+function bytes(value){
+  const units=['B','KiB','MiB','GiB','TiB'];let unit=0;
+  while(value>=1024 && unit<units.length-1){value/=1024;unit++;}
+  return `${value.toFixed(unit?1:0)} ${units[unit]}`;
+}
+function cells(tr, values){
+  for(const value of values){const td=document.createElement('td');td.textContent=value;tr.append(td);}
+}
+function message(row){return row.last_error||row.tracker_message||'';}
+async function settings(id){
+  const row=await call('get',{id}); editing=id; $('fields').replaceChildren();$('settings-error').textContent='';
+  // Render the engine's serialized settings, rather than a second feature model.
+  for(const [key,value] of Object.entries(row.settings)){
+    const label=document.createElement('label');label.textContent=key+' ';
+    const input=document.createElement('input');input.name=key;
+    if(typeof value==='boolean'){input.type='checkbox';input.checked=value;}
+    if(row.private && (key==='dht'||key==='pex')){input.disabled=true;label.title='Forced off for private torrents';}
+    if(typeof value!=='boolean'){input.type='text';input.value=JSON.stringify(value);}
+    label.append(input);$('fields').append(label);
+  }
+  $('settings').showModal();
+}
+function updateDetails(row){
+  $('details-title').textContent=row.name||row.id;
+  $('details-output').textContent=`Output: ${row.output_dir}`;
+  $('details-message').textContent=message(row);
+  $('details-completion').textContent=`Completion announce: ${row.completed_announce===null?'no event':row.completed_announce?'acknowledged':'pending'}`;
+  $('trackers').replaceChildren();
+  for(const tracker of row.transfer?.trackers||[]){
+    const tr=document.createElement('tr');
+    cells(tr,[`${tracker.tier+1} / ${tracker.slot+1}`,tracker.state,`${tracker.seeders??'?'} / ${tracker.leechers??'?'}`,tracker.error||tracker.warning||'']);
+    $('trackers').append(tr);
+  }
+  if(!$('trackers').children.length){const tr=document.createElement('tr');cells(tr,['No active tracker observations']);$('trackers').append(tr);}
+}
+async function details(id){
+  const row=await call('get',{id});
+  const files=row.total_bytes===null?[]:(await call('files',{id})).files;
+  detailsId=id;updateDetails(row);$('files').replaceChildren();$('details-error').textContent='';
+  for(const file of files){
+    const tr=document.createElement('tr');cells(tr,[file.path,bytes(file.length)]);
+    const td=document.createElement('td'),select=document.createElement('select');select.setAttribute('aria-label',`Priority for ${file.path}`);
+    for(const priority of ['skip','normal','high']){
+      const option=document.createElement('option');option.value=priority;option.textContent=priority;select.append(option);
+    }
+    select.value=file.priority;td.append(select);tr.append(td);$('files').append(tr);
+  }
+  if(!files.length){const tr=document.createElement('tr');cells(tr,['Waiting for metadata']);$('files').append(tr);}
+  $('save-priorities').disabled=!files.length;$('details').showModal();
+}
+async function refresh(){
+  const data=await call('list');$('health').textContent=JSON.stringify(data.health,null,2);$('rows').replaceChildren();
+  for(const row of data.torrents){
+    const tr=document.createElement('tr'),transfer=row.transfer;
+    const percent=row.total_bytes===null?'?':row.total_bytes?(100*row.verified_bytes/row.total_bytes).toFixed(1):'100';
+    const progress=`${percent}% (${bytes(row.verified_bytes)} / ${row.total_bytes===null?'?':bytes(row.total_bytes)})`;
+    const rate=`${bytes(transfer?.download_bytes_per_second||0)}/s / ${bytes(transfer?.upload_bytes_per_second||0)}/s`;
+    const ratio=row.total_bytes?(row.uploaded_bytes/row.total_bytes).toFixed(2):'—';
+    cells(tr,[row.name||row.id,row.state,progress,rate,ratio,message(row)]);tr.lastChild.className='message';
+    const actions=document.createElement('td');
+    actions.append(button('Details',()=>details(row.id)),button('Settings',()=>settings(row.id)),button(row.intent==='paused'?'Resume':'Pause',()=>call(row.intent==='paused'?'resume':'pause',{id:row.id})),
+      button('Recheck',()=>call('recheck',{id:row.id})),button('Reannounce',()=>call('reannounce',{id:row.id})),button('Remove',async()=>{
+        if(!confirm('Remove this torrent?'))return;
+        const delete_payload=confirm('Also delete payload files created by Spill?');
+        await call('remove',{id:row.id,delete_payload});
+      }));
+    tr.append(actions);$('rows').append(tr);
+  }
+  if($('details').open){
+    const row=data.torrents.find(row=>row.id===detailsId);
+    if(row)updateDetails(row);else $('details').close();
+  }
+}
+$('settings-form').onsubmit=async event=>{
+  event.preventDefault();try{
+    const values={};for(const input of $('fields').querySelectorAll('input'))values[input.name]=input.type==='checkbox'?input.checked:JSON.parse(input.value);
+    await call('set',{id:editing,values});$('settings').close();await refresh();
+  }catch(e){error(e);}
+};
+$('files-form').onsubmit=async event=>{
+  event.preventDefault();try{
+    const file_priorities=Array.from($('files').querySelectorAll('select'),select=>select.value);
+    await call('set',{id:detailsId,values:{file_priorities}});$('details-error').textContent='';await refresh();
+  }catch(e){error(e);}
+};
+$('close').onclick=()=>$('settings').close();
+$('details-close').onclick=()=>$('details').close();
+$('details').onclose=()=>{detailsId=null;};
+$('add').onsubmit=async event=>{
+  event.preventDefault();try{
+    const file=$('torrent').files[0];if(file&&file.size>16*1024*1024)throw Error('Metainfo exceeds 16 MiB');
+    const output_dir=$('output').value.trim()||null;
+    if(file){
+      const query=new URLSearchParams(output_dir?{output_dir}:{});
+      const r=await fetch('/api/upload?'+query,{method:'POST',body:file,headers:{'content-type':'application/x-bittorrent','x-spill-token':token}});
+      if(!r.ok)throw Error(`HTTP ${r.status}`);
+      const result=await r.json();if(result.code)throw Error(result.error);
+    }else await call('add',{magnet:$('magnet').value,output_dir});
+    $('add').reset();$('error').textContent='';await refresh();
+  }catch(e){error(e);}
+};
+refresh().catch(error);setInterval(()=>refresh().catch(error),2000);
+</script>
+</html>

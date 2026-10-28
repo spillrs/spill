@@ -1,0 +1,34 @@
+[package]
+name = "daemon"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "spill"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+engine.workspace = true
+protocol.workspace = true
+tokio = { version = "1", features = ["macros", "rt", "signal", "time"] }
+thiserror = "2"
+clap = { version = "4.6.7", features = ["derive"] }
+
+[target.'cfg(unix)'.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustix = { version = "1.1", features = ["fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+
+[dev-dependencies]
+sha1.workspace = true
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "net", "process", "test-util"] }
+
+[lints]
+workspace = true

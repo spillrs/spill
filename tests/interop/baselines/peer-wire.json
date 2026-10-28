@@ -1,0 +1,125 @@
+{
+  "machine": {
+    "cpu": "Intel Core Ultra 7 265",
+    "logical_cpus": 20,
+    "filesystem": "ext4",
+    "transmission": "4.1.3 (838877323f)"
+  },
+  "source_revision": "4d6e8683071d5ba013eb310c31f4734235bd6c15",
+  "source_dirty": true,
+  "daemon_sha256": "83b649bf09dcac82845a85a0b88be50b853ffb21bea8b06eea0d7584462aee8a",
+  "notes": [
+    "Measurements, not speed thresholds. Runs were sequential on the same host and ext4 filesystem; filesystem caches were not dropped.",
+    "Elapsed rates include connection and choking delays. Sampled payload rates use first observed counters, not exact first-block timestamps.",
+    "Spill completion includes its durability barrier; Transmission completion uses RPC percentDone. Upload byte figures are live counter samples and can lag final socket writes.",
+    "The earlier approximately 52 MB/s download included SIGKILL/restart and is not a pure peer-wire throughput measurement.",
+    "The exploratory Spill swarm had a roughly 30-second completion tail. Its runner also mishandled scrape requests; no causal link is established. Two subsequent clean runs did not reproduce the tail. Retain this anomaly rather than interpreting the faster runs as guaranteed performance."
+  ],
+  "single_peer": {
+    "command": "python tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release --size 1GiB --piece-length 1MiB --download-only --reference",
+    "artifacts": "target/interop/peer-reference-1gib/result.json",
+    "runner_sha256": "2e9999ab9d523f6fa291db1aa13ed4fd92fa89a435f00008d3fed845069fa75c",
+    "bytes": 1073741824,
+    "piece_length": 1048576,
+    "transmission_to_spill": {
+      "seconds": 11.177,
+      "mb_per_second": 96.067,
+      "payload_seconds": 0.783,
+      "payload_mb_per_second": 1370.669,
+      "peak_leecher_rss_mib": 24.051,
+      "checksum_matches": true
+    },
+    "transmission_to_transmission": {
+      "seconds": 19.467,
+      "mb_per_second": 55.158,
+      "payload_seconds": 9.065,
+      "payload_mb_per_second": 118.443,
+      "peak_leecher_rss_mib": 28.918,
+      "checksum_matches": true
+    },
+    "passed": true
+  },
+  "swarm": {
+    "scenario_version": 1,
+    "command": "python tests/interop/swarm.py --allow-network --host LAN_IP --release",
+    "reference_command": "python tests/interop/swarm.py --allow-network --host LAN_IP --leecher transmission",
+    "seed": "transmission",
+    "leechers": 8,
+    "bytes_per_leecher": 268435456,
+    "aggregate_bytes": 2147483648,
+    "piece_length": 1048576,
+    "runs": [
+      {
+        "leecher": "spill",
+        "exploratory": true,
+        "artifacts": "target/interop/swarm-spill-eight/result.json",
+        "runner_sha256": "c826d95a625267dd2b4b062f08dfb1ff33d299afff52ab2c0d33138d06c2f877",
+        "seconds": 40.150,
+        "aggregate_mb_per_second": 53.486,
+        "payload_seconds": 30.841,
+        "payload_aggregate_mb_per_second": 69.632,
+        "peak_leecher_total_rss_mib": 340.129,
+        "peak_leecher_peer_connections": 75,
+        "passed": true
+      },
+      {
+        "leecher": "transmission",
+        "exploratory": true,
+        "artifacts": "target/interop/swarm-transmission-eight/result.json",
+        "runner_sha256": "c826d95a625267dd2b4b062f08dfb1ff33d299afff52ab2c0d33138d06c2f877",
+        "seconds": 13.611,
+        "aggregate_mb_per_second": 157.779,
+        "payload_seconds": 3.462,
+        "payload_aggregate_mb_per_second": 620.293,
+        "peak_leecher_total_rss_mib": 257.398,
+        "peak_leecher_peer_connections": 128,
+        "passed": true
+      },
+      {
+        "leecher": "spill",
+        "artifacts": "target/interop/swarm-spill-eight-v2/result.json",
+        "runner_sha256": "332b72f9ea2295e3f94271596832f2b5b376d7b160003580f926013e0ca16139",
+        "seconds": 10.368,
+        "aggregate_mb_per_second": 207.134,
+        "payload_seconds": 1.024,
+        "payload_aggregate_mb_per_second": 2097.368,
+        "leecher_uploaded_bytes": 120242176,
+        "peak_leecher_total_rss_mib": 283.676,
+        "peak_leecher_peer_connections": 79,
+        "peak_seed_choked_peers": 11,
+        "peak_seed_uploading_peers": 8,
+        "passed": true
+      },
+      {
+        "leecher": "transmission",
+        "artifacts": "target/interop/swarm-transmission-eight-v2/result.json",
+        "runner_sha256": "332b72f9ea2295e3f94271596832f2b5b376d7b160003580f926013e0ca16139",
+        "seconds": 13.704,
+        "aggregate_mb_per_second": 156.710,
+        "payload_seconds": 3.633,
+        "payload_aggregate_mb_per_second": 591.031,
+        "leecher_uploaded_bytes": 0,
+        "peak_leecher_total_rss_mib": 257.691,
+        "peak_leecher_peer_connections": 128,
+        "peak_seed_choked_peers": 16,
+        "peak_seed_uploading_peers": 16,
+        "passed": true
+      },
+      {
+        "leecher": "spill",
+        "artifacts": "target/interop/swarm-spill-eight-v3/result.json",
+        "runner_sha256": "332b72f9ea2295e3f94271596832f2b5b376d7b160003580f926013e0ca16139",
+        "seconds": 10.399,
+        "aggregate_mb_per_second": 206.516,
+        "payload_seconds": 1.092,
+        "payload_aggregate_mb_per_second": 1967.046,
+        "leecher_uploaded_bytes": 123715584,
+        "peak_leecher_total_rss_mib": 326.750,
+        "peak_leecher_peer_connections": 87,
+        "peak_seed_choked_peers": 11,
+        "peak_seed_uploading_peers": 8,
+        "passed": true
+      }
+    ]
+  }
+}

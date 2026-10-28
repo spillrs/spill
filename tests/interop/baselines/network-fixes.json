@@ -1,0 +1,98 @@
+{
+  "source_revision": "cd7782e2faf6899acc3ad7b691aa9ac2b87950b7",
+  "source_dirty": false,
+  "daemon_sha256": "06a1415a669f6a9643a0a8a455c509a3d0d614ca0f55844d3237f8f134572f0e",
+  "environment": {
+    "host": "LAN_IP",
+    "filesystem": "ext4",
+    "transmission": "4.1.3",
+    "release": true,
+    "public_network_used": false
+  },
+  "regressions": {
+    "upload_deadlock": {
+      "test": "overlapping_uploads_in_opposite_orders_do_not_deadlock",
+      "before": "Fails with 0 pending reads, 4 finished reads and a free writer queue.",
+      "after": "Both upload queues drain within five seconds; ten consecutive targeted runs pass.",
+      "isolated_swarm_comparison": "tests/interop/baselines/upload-deadlock.json"
+    },
+    "udp_trackers": {
+      "test": "udp_trackers_are_independent_and_retry_lost_packets",
+      "before": "The working torrent cannot announce within one second while another tracker is silent.",
+      "after": "IPv6 tracker responds within one second while IPv4 tracker drops its initial connect; the IPv4 request is retransmitted unchanged after 15 seconds and succeeds."
+    },
+    "inbound_burst": {
+      "test": "inbound_handshake_bursts_fill_available_peer_slots",
+      "setup": "Five rounds of four concurrent handshakes from distinct loopback IPs, respecting the per-IP handshake limit.",
+      "after": "All four admitted peer slots attach in every round.",
+      "limitation": "The test also passed before increasing the route queue; it validates burst admission but does not deterministically reproduce the one-slot race."
+    },
+    "duplicate_identity": {
+      "test": "tracker_dials_do_not_duplicate_an_inbound_peer_identity",
+      "before": "Two connections remain established to the same remote peer ID.",
+      "after": "Only the deterministically preferred direction survives for both peer-ID orderings. The survivor downloads both pieces and reaches seeding."
+    }
+  },
+  "writer_review": {
+    "pending_slot_overwrite_reproduced": false,
+    "hash_readback_already_in_blocking_job": true,
+    "scheduling_changed": false,
+    "notes": [
+      "pending_command and incoming receive are gated while pending_hash or pending_read is occupied.",
+      "A pending hash can stall the FIFO, but no overwrite was demonstrated. Upload reads bypassing hash ordering was not implemented.",
+      "The large-piece run below validates the current path, not a before/after performance improvement."
+    ]
+  },
+  "checks": {
+    "cargo_fmt_all": true,
+    "cargo_clippy_workspace_all_targets_locked_deny_warnings": true,
+    "cargo_test_workspace_locked": true,
+    "daemon_end_to_end_tests": 25
+  },
+  "transmission": [
+    {"artifacts": "target/interop/upload-final-smoke/", "scenario": "bidirectional UDP tracker smoke", "passed": true},
+    {"artifacts": "target/interop/upload-final-private/", "scenario": "private HTTP tracker, bidirectional transfer, completed restart and mtime recheck", "passed": true},
+    {"artifacts": "target/interop/upload-final-magnet/", "scenario": "HTTP tracker magnet, catalog restart, bidirectional transfer", "passed": true},
+    {"artifacts": "target/interop/upload-final-kill/", "scenario": "1 GiB, 1 MiB pieces, SIGKILL at 50 percent and resume, bidirectional transfer", "passed": true}
+  ],
+  "swarm": {
+    "scenario_version": 1,
+    "leechers": 8,
+    "bytes_per_leecher": 268435456,
+    "piece_length": 1048576,
+    "runner_sha256": "2e2528a75f9e68f856b04c517ea28ce53c6def17a6fc727092ee344dfc092671",
+    "artifacts_pattern": "target/interop/upload-final-swarm-{01..10}/",
+    "seconds": [10.530, 11.213, 10.486, 10.617, 10.327, 10.640, 10.761, 10.446, 10.659, 10.496],
+    "p50_seconds": 10.5735,
+    "max_seconds": 11.213,
+    "runs_with_30_second_tail": 0,
+    "all_passed": true
+  },
+  "large_piece_silent_tracker_scale": {
+    "artifacts": "target/interop/upload-final-large-dead-udp-2/",
+    "torrents": 33,
+    "bytes": 805306368,
+    "piece_length": 16777216,
+    "active_downloads": 4,
+    "download_limit_per_torrent": 4194304,
+    "download_seconds": 63.469,
+    "completed_soak_seconds": 60,
+    "restart_seconds": 0.103,
+    "restart_no_refetch": true,
+    "all_sha256_match": true,
+    "payload_and_catalog_cleanup": true,
+    "joined_shutdown": true,
+    "dead_udp_tracker_sources_before_restart": 66,
+    "dead_udp_tracker_sources": 99,
+    "peak_rss_mib": 36.027,
+    "peak_fds": 147,
+    "control_p95_ms": 2.693,
+    "passed": true,
+    "harness_correction": "Initial run stopped when its no-error assertion encountered the expected tracker timeout in last_error. The rerun permits only a tracker-reported timeout on a still-downloading or seeding torrent."
+  },
+  "notes": [
+    "Runs were sequential on the same dev machine, without dropping filesystem caches.",
+    "Measured timings are observations, not performance guarantees.",
+    "Many-file limits and long-duration soak scenarios were not run."
+  ]
+}

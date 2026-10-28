@@ -1,0 +1,36 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+protocol.workspace = true
+sha1.workspace = true
+serde = { version = "1", features = ["derive", "rc"] }
+thiserror = "2"
+# Optional-to-observe structured diagnostics; no subscriber, payload or endpoint logging.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+# OS entropy for peer IDs/transactions; std retains error sources (MIT/Apache-2.0).
+getrandom = { version = "0.2", features = ["std"] }
+# Established URL syntax/host parser; no resolver or HTTP client (MIT/Apache-2.0).
+url = "2.5.8"
+# One dual-stack session UDP socket for tracker exchanges.
+socket2 = "0.6"
+# HTTP/1 + rustls/ring with bundled Mozilla roots; no system TLS, proxies or compression.
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tokio = { version = "1", features = ["process"] }
+
+[target.'cfg(unix)'.dependencies]
+# Platform errno constants only; no unsafe syscall wrappers in engine code.
+libc = "0.2"
+
+# Safe descriptor-relative filesystem operations and advisory locks (MIT/Apache-2.0).
+rustix = { version = "1.1", features = ["fs"] }
+
+[lints]
+workspace = true

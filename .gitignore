@@ -1,0 +1,8 @@
+# Standalone download resume/metadata state.
+/.spill/
+
+# Local build outputs.
+/target/
+
+# Local Python script bytecode.
+__pycache__/

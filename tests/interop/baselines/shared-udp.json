@@ -1,0 +1,71 @@
+{
+  "source_revision": "097aa418185e07e13feab86eb6d7d848b469b7eb",
+  "source_dirty": true,
+  "daemon_sha256": "7de7376e7b12e375ca9c0e9f22ef8824e99d8917f6ab5a957104f2ec0e719085",
+  "environment": {
+    "host": "LAN_IP",
+    "filesystem": "ext4",
+    "transmission": "4.1.3",
+    "release": true,
+    "public_network_used": false
+  },
+  "checks": {
+    "cargo_fmt_all": true,
+    "cargo_clippy_workspace_all_targets_locked_deny_warnings": true,
+    "cargo_test_workspace_locked": true,
+    "daemon_end_to_end_tests": 26
+  },
+  "transmission": [
+    {
+      "command": "python tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release --magnet --artifacts target/interop/shared-udp-final-magnet",
+      "passed": true,
+      "bytes": 2097152,
+      "piece_length": 32768,
+      "both_directions_sha256_match": true,
+      "magnet_catalog_restart": {"metainfo_retained": true, "refetched": false, "duplicate_rejected": true},
+      "magnet_cli_checksum_matches": true,
+      "download_seconds": 20.319,
+      "upload_seconds": 11.511
+    },
+    {
+      "command": "python tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release --http-tracker --artifacts target/interop/shared-udp-final-http",
+      "passed": true,
+      "bytes": 2097152,
+      "piece_length": 32768,
+      "both_directions_sha256_match": true,
+      "download_seconds": 10.323,
+      "upload_seconds": 11.526
+    }
+  ],
+  "large_piece_silent_tracker_scale": {
+    "command": "python tests/interop/scale.py multi-torrent --allow-network --release --piece-length 16777216 --dead-udp-tracker --artifacts target/interop/shared-udp-final-scale",
+    "passed": true,
+    "scenario_version": 2,
+    "runner_sha256": "80457300fac5d9c139ea9abfc49254097629e2f678c300ca297bdf8a07d4d730",
+    "torrents": 33,
+    "bytes": 805306368,
+    "piece_length": 16777216,
+    "active_downloads": 4,
+    "download_limit_per_torrent": 4194304,
+    "download_seconds": 63.436,
+    "completed_soak_seconds": 60,
+    "restart_seconds": 0.103,
+    "all_sha256_match": true,
+    "restart_no_refetch": true,
+    "payload_and_catalog_cleanup": true,
+    "joined_shutdown": true,
+    "dead_udp_tracker_sources_before_restart": 1,
+    "dead_udp_tracker_transactions_before_restart": 66,
+    "dead_udp_tracker_sources": 2,
+    "dead_udp_tracker_transactions": 99,
+    "peak_rss_mib": 32.047,
+    "peak_fds": 117,
+    "control_p95_ms": 2.859
+  },
+  "notes": [
+    "Initial scale run at target/interop/shared-udp-scale verified all payloads but failed its obsolete assertion requiring one source port per announce. Scenario version 2 checks independent transaction IDs on one shared source port before restart; an intermediate and the final rerun passed.",
+    "A restarted session with listen port zero uses a new shared port, hence two total sources across the final scale run.",
+    "Runs were sequential on the dev machine without dropping filesystem caches; timings are observations, not performance guarantees.",
+    "Tier 0 and 1 passed. Tier 2 magnet and HTTP tracker runs and tier 3 silent-tracker scale passed. Kill/restart Transmission, peer-wire swarm, many-files and long-duration soak were not rerun."
+  ]
+}

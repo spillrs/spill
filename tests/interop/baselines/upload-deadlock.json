@@ -1,0 +1,45 @@
+{
+  "scenario": "swarm",
+  "scenario_version": 1,
+  "host": "LAN_IP",
+  "filesystem": "ext4",
+  "transmission": "4.1.3",
+  "leechers": 8,
+  "bytes_per_leecher": 268435456,
+  "piece_length": 1048576,
+  "controlled_reproduction": {
+    "test": "overlapping_uploads_in_opposite_orders_do_not_deadlock",
+    "setup": "Two raw-wire peers request the same 128 verified blocks in opposite orders. Both queues must drain within five seconds.",
+    "before": "Fails with 0 pending reads, 4 finished reads, and all 2 writer command slots free.",
+    "after": "Passes, including ten consecutive repetitions. Read completions own their payload so cache eviction cannot lose an upload."
+  },
+  "before": {
+    "source_revision": "32c4c8f63cb2ae3208da70730974ace499adb049",
+    "source_dirty": false,
+    "daemon_sha256": "84faefe42354339ed233fd21109f98a24d446c171ab4dc14e820785b29f7f40c",
+    "runner_sha256": "56733f6f085b2a50bfa2a921e98b13249caf33e513e5e9b15568fd0a32b70cb6",
+    "artifacts_pattern": "target/interop/upload-diagnostics-32c4c8f-{01..10}/",
+    "seconds": [41.141, 10.339, 40.128, 39.617, 40.257, 40.287, 40.285, 10.425, 41.146, 10.226],
+    "p50_seconds": 40.1925,
+    "max_seconds": 41.146,
+    "runs_with_30_second_tail": 7,
+    "all_passed": true
+  },
+  "after": {
+    "source_revision": "4b2ddae792cd7b741c50676eb5baddb1d963dc5c",
+    "source_dirty": false,
+    "daemon_sha256": "4c723a0cf155840a7cca01472de7d5446ed0593ae7dcadbf308a12cfd2aecdd7",
+    "runner_sha256": "2e2528a75f9e68f856b04c517ea28ce53c6def17a6fc727092ee344dfc092671",
+    "artifacts_pattern": "target/interop/upload-fixed-{01..10}/",
+    "seconds": [10.311, 10.629, 10.575, 10.536, 10.502, 10.657, 10.507, 10.609, 10.464, 10.544],
+    "p50_seconds": 10.54,
+    "max_seconds": 10.657,
+    "runs_with_30_second_tail": 0,
+    "all_passed": true
+  },
+  "notes": [
+    "Sequential release runs on the same dev machine; no filesystem cache dropping.",
+    "Both series include peer trace polling. The after runner adds a finished-read counter.",
+    "Total duration includes seed startup and durability; these are observations, not performance guarantees."
+  ]
+}

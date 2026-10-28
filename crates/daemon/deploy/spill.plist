@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>rs.spill.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/spill</string>
+        <string>serve</string>
+        <string>--config</string>
+        <string>@HOME@/Library/Application Support/spill/spill.toml</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>@HOME@/Library/Application Support/spill/spill.log</string>
+    <key>StandardErrorPath</key>
+    <string>@HOME@/Library/Application Support/spill/spill.log</string>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+</dict>
+</plist>

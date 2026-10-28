@@ -60,7 +60,7 @@ router returns error 725 (only permanent leases supported), Spill retries with
 lease 0 and reasserts the mapping hourly. Failed attempts retry after 60 seconds,
 doubling up to 30 minutes. Clean shutdown tries to remove mappings with a
 two-second timeout.
-Failures are logged and exposed in `spill ctl health` and the web Health panel;
+Failures are logged and exposed in `spill health` and the web Health panel;
 they never fail a torrent or stop the daemon.
 
 Gateway requests and SSDP multicast deliberately bypass `allow_local_network`:
@@ -85,7 +85,7 @@ have DHT and PEX off.
   tracker at a time, trying the next in the tier, then the next tier, when one
   fails. A tracker that answers moves to the front of its tier.
 - Announces follow the tracker's `interval` and `min interval`.
-  `spill ctl reannounce` asks for an early announce within those limits.
+  `spill reannounce` asks for an early announce within those limits.
 - UDP trackers share the session's UDP socket. A lost request is resent after
   15 seconds, then 30, within a 45-second limit. A silent tracker only delays
   its own torrent.

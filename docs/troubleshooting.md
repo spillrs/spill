@@ -10,7 +10,7 @@ journalctl --user -u spill -f     # user service
 sudo journalctl -u spill -f       # system service
 ```
 
-Per-torrent errors are also kept in the catalog: `spill ctl get ID` shows
+Per-torrent errors are also kept in the catalog: `spill get ID` shows
 `last_error`, `tracker_message` and, when retrying, `retry_at`.
 
 On macOS, the launchd agent writes to
@@ -22,7 +22,7 @@ On macOS, the launchd agent writes to
 macOS shells often start with a soft limit of only 256 files. `spill serve`
 raises its soft limit to the smaller of its hard limit and `kern.maxfilesperproc`, read
 using `/usr/sbin/sysctl`; failure stops startup with an error rather than
-silently keeping the low limit. `spill ctl` does not query or change this limit.
+silently keeping the low limit. Client commands do not query or change this limit.
 Check the system cap with
 `sysctl kern.maxfilesperproc`. The launchd example also requests 10240 files.
 For unusually large workloads, increase the system cap and the agent's hard
@@ -30,15 +30,15 @@ limit through your system administration policy before restarting Spill.
 
 ## `daemon unavailable` (exit code 4)
 
-`spill ctl` can't reach the control socket.
+A client command can't reach the control socket.
 
 - Is the daemon running? For the Linux user service, run
   `systemctl --user status spill`; for the macOS launchd agent, run
   `launchctl print gui/$(id -u)/rs.spill.daemon`.
-- Is `ctl` using the same socket as the daemon? Pass `--socket PATH` if the
+- Is the client using the same socket as the daemon? Pass `--socket PATH` if the
   config sets `control_socket`.
-- For the Linux system service, run `ctl` as the `spill` user (the socket is mode
-  `0600`): `sudo -u spill spill ctl --socket /run/spill/control.sock list`.
+- For the Linux system service, run client commands as the `spill` user (the socket is mode
+  `0600`): `sudo -u spill spill --socket /run/spill/control.sock list`.
 
 ## The daemon won't start
 
@@ -57,7 +57,7 @@ limit through your system administration policy before restarting Spill.
   torrent's files (or a directory with a file's name) already exist and Spill
   won't overwrite them. If all files are present and complete, Spill adopts
   them instead; otherwise move them away or choose another `--output`.
-- `torrent already exists`: it's already in the catalog; `spill ctl list`.
+- `torrent already exists`: it's already in the catalog; `spill list`.
 - `output_dir must be absolute`: give a full path to `--output`.
 - `private torrents require a .torrent file`: the magnet points at a private
   torrent; download the `.torrent` from the tracker instead.
@@ -79,7 +79,7 @@ limit through your system administration policy before restarting Spill.
 ## Nobody can connect to me
 
 Allow the `listen` port for TCP and UDP in your host firewall. Run
-`spill ctl health` (or expand **Health** in the web interface): `port_mapping`
+`spill health` (or expand **Health** in the web interface): `port_mapping`
 shows `enabled`, `protocol` (`nat-pmp` or `upnp`), `external_ip`,
 `external_tcp_port`, `external_udp_port`, `last_error` and `next_renewal`
 (a Unix timestamp in seconds, null when no renewal is scheduled). The top-level
@@ -117,5 +117,5 @@ allow only Spill. The firewall permission does not configure your router.
 
 ## Files look wrong after a crash or power loss
 
-Run `spill ctl recheck ID`, then `resume`. Recheck hashes every piece and
+Run `spill recheck ID`, then `resume`. Recheck hashes every piece and
 downloads anything missing or corrupt.

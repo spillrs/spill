@@ -24,8 +24,8 @@ sudo install -d /usr/local/bin
 sudo install -m 0755 target/release/spill /usr/local/bin/spill
 ```
 
-The single `spill` binary is both the daemon (`spill serve`) and the client
-(`spill ctl`).
+The single `spill` binary runs the daemon with `spill serve`; other commands,
+such as `spill list`, control the running daemon.
 
 ## Run it once
 
@@ -43,7 +43,7 @@ Without `--config`, Spill uses built-in defaults:
 | Peer port | `0.0.0.0:6881`, TCP and UDP |
 | Web interface | off |
 
-Stop it with Ctrl-C, `SIGTERM` or `spill ctl shutdown`. Shutdown waits for
+Stop it with Ctrl-C, `SIGTERM` or `spill shutdown`. Shutdown waits for
 every torrent to stop cleanly and saves its progress.
 
 To use a config file, pass an absolute path: `spill serve --config /path/to/spill.toml`.
@@ -117,7 +117,7 @@ sudo install -m 0644 deploy/spill.toml /etc/spill/spill.toml
 sudo install -m 0644 deploy/spill.service /etc/systemd/system/spill.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now spill
-sudo -u spill spill ctl --socket /run/spill/control.sock list
+sudo -u spill spill --socket /run/spill/control.sock list
 ```
 
 The unit uses systemd sandboxing (`ProtectSystem=strict`, `ProtectHome`), so
@@ -128,7 +128,7 @@ the download directory must be listed in `ReadWritePaths`.
 Peers, the DHT and UDP trackers all use the listen port, default `6881`, over
 both TCP and UDP. Outbound traffic needs no rules. For inbound peers, allow
 that port through the host firewall. Spill tries automatic NAT-PMP and UPnP
-router mapping by default; check `spill ctl health`. If mapping is disabled
+router mapping by default; check `spill health`. If mapping is disabled
 (as in the system-service example) or your router refuses, forward the listen
 port for TCP and UDP yourself. See [Networking](networking.md#automatic-port-mapping).
 

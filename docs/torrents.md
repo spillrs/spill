@@ -2,7 +2,7 @@
 
 ## States
 
-`spill ctl list` and the web page show one state per torrent:
+`spill list` and the web page show one state per torrent:
 
 | State | Meaning |
 |---|---|
@@ -54,7 +54,7 @@ stays `.part` (and sparse) unless pieces shared with a selected file fill it.
 
 ## File selection
 
-`spill ctl files ID` lists every file with its priority. Set priorities with
+`spill files ID` lists every file with its priority. Set priorities with
 `set ID 'file_priorities=[...]'`, one of `skip`, `normal` or `high` per file:
 
 - `high` files are fetched before `normal` ones.
@@ -71,7 +71,7 @@ or downtime). Uploaded bytes and seeding time are saved and survive restarts.
 
 ## Recheck
 
-`spill ctl recheck ID` hashes every piece on disk, records the result, then
+`spill recheck ID` hashes every piece on disk, records the result, then
 leaves the torrent paused. Resume it to continue: missing or corrupt pieces are
 downloaded again, and a complete torrent seeds. Recheck after moving files,
 editing them, or an unclean power loss during a download.

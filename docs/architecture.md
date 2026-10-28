@@ -35,7 +35,7 @@ asynchronous on that thread; anything that blocks (file reads and writes,
 SHA-1 hashing) runs on Tokio's blocking thread pool.
 
 ```text
-            spill ctl / web page
+            spill / web page
                      │ JSON
           ┌──────────▼──────────┐
           │ daemon: supervisor  │── SQLite catalog (torrents, settings,

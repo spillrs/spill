@@ -39,7 +39,7 @@ Private trackers track your ratio from announces, so Spill is careful about them
   shown as the torrent's `last_error`.
 - A **warning message** from a successful announce is shown as `tracker_message`.
 
-Both appear in `spill ctl get` and on the web page.
+Both appear in `spill get` and on the web page.
 
 ## Client whitelists
 

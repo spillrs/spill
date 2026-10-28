@@ -94,7 +94,7 @@ ran and which you did not.
 4. If you changed user-visible behaviour, defaults, limits, config keys,
    control commands or the HTTP API, update the matching page in `docs/` in the
    same change. Check `docs/configuration.md` against `src/daemon/config.rs`
-   and `docs/cli.md` against `src/daemon/ctl.rs` and `control.rs`.
+   and `docs/cli.md` against `src/daemon/cli.rs` and `control.rs`.
    `README.md` holds only usage, build, test and license.
 5. If you changed engine networking, storage or scheduling, list the tier 2
    and 3 scenarios that need a run on the dev machine.

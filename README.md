@@ -12,14 +12,17 @@ architecture.
 
 ```sh
 spill serve [--config /absolute/path/spill.toml]
-spill ctl add example.torrent
-spill ctl add 'magnet:?xt=urn:btih:…'
-spill ctl list --watch
-spill ctl get ID
-spill ctl set ID upload_limit=1048576 seed_ratio=2
-spill ctl pause ID | resume ID | recheck ID | reannounce ID
-spill ctl remove ID [--delete-payload]
-spill ctl shutdown
+spill add example.torrent
+spill add 'magnet:?xt=urn:btih:…'
+spill list --watch
+spill get ID
+spill set ID upload_limit=1048576 seed_ratio=2
+spill pause ID
+spill resume ID
+spill recheck ID
+spill reannounce ID
+spill remove ID [--delete-payload]
+spill shutdown
 ```
 
 See [`docs/cli.md`](docs/cli.md) and [`docs/configuration.md`](docs/configuration.md).

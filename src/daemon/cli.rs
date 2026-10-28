@@ -15,6 +15,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[derive(Parser)]
 #[command(name = "spill", version, about = "Single-user BitTorrent daemon")]
 pub struct Cli {
+    #[arg(long, global = true)]
+    pub socket: Option<PathBuf>,
+    #[arg(long, global = true)]
+    pub json: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -24,16 +28,8 @@ pub enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    Ctl(Args),
-}
-#[derive(clap::Args)]
-pub struct Args {
-    #[arg(long, global = true)]
-    pub socket: Option<PathBuf>,
-    #[arg(long, global = true)]
-    pub json: bool,
-    #[command(subcommand)]
-    pub command: Operation,
+    #[command(flatten)]
+    Client(Operation),
 }
 #[derive(Subcommand)]
 pub enum Operation {
@@ -202,10 +198,10 @@ fn text(data: &Value) {
         println!("{}", serde_json::to_string_pretty(data).unwrap());
     }
 }
-pub async fn run(args: Args) -> Result<(), Error> {
-    let watch = matches!(args.command, Operation::List { watch: true });
-    let request = request(args.command)?;
-    let socket = args.socket.unwrap_or_else(config::socket);
+pub async fn run(command: Operation, socket: Option<PathBuf>, json: bool) -> Result<(), Error> {
+    let watch = matches!(command, Operation::List { watch: true });
+    let request = request(command)?;
+    let socket = socket.unwrap_or_else(config::socket);
     let interrupted = crate::interrupt();
     tokio::pin!(interrupted);
     loop {
@@ -216,10 +212,10 @@ pub async fn run(args: Args) -> Result<(), Error> {
                 response.error.unwrap_or_default(),
             ));
         }
-        if watch && !args.json && io::stdout().is_terminal() {
+        if watch && !json && io::stdout().is_terminal() {
             print!("\x1b[2J\x1b[H");
         }
-        if args.json {
+        if json {
             println!("{}", response.data);
         } else {
             text(&response.data);

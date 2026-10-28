@@ -2,12 +2,12 @@
 
 ```text
 spill serve [--config PATH]
-spill ctl [--socket PATH] [--json] COMMAND
+spill [--socket PATH] [--json] COMMAND
 spill --version
 ```
 
-`spill serve` runs the daemon in the foreground. `spill ctl` talks to a running
-daemon over its Unix socket. Without `--socket`, `ctl` uses:
+`spill serve` runs the daemon in the foreground. All other commands talk to a
+running daemon over its Unix socket. Without `--socket`, client commands use:
 
 - Linux: `$XDG_RUNTIME_DIR/spill.sock`, falling back to
   `~/.local/state/spill/spill.sock`.
@@ -16,7 +16,8 @@ daemon over its Unix socket. Without `--socket`, `ctl` uses:
 Pass `--socket` if your config sets a different `control_socket`.
 
 `--json` prints the daemon's raw JSON response data instead of text, one
-document per line. Use it for scripts.
+document per line. Use it for scripts. `--socket` and `--json` can appear
+before or after the client command.
 
 ## IDs
 
@@ -54,11 +55,11 @@ discovery contacts, not established peers. These diagnostics are not wire traces
 Keys are the [`[defaults]` keys](configuration.md#torrent-defaults-defaults):
 
 ```sh
-spill ctl set ID download_limit=1048576 upload_limit=524288
-spill ctl set ID seed_ratio=2 seed_time=86400
-spill ctl set ID trackers=true dht=false pex=false web_seeds=true
-spill ctl set ID 'file_priorities=["high","skip","normal"]'
-spill ctl set ID 'file_priorities=[]'      # back to all files
+spill set ID download_limit=1048576 upload_limit=524288
+spill set ID seed_ratio=2 seed_time=86400
+spill set ID trackers=true dht=false pex=false web_seeds=true
+spill set ID 'file_priorities=["high","skip","normal"]'
+spill set ID 'file_priorities=[]'      # back to all files
 ```
 
 - Quote values that contain brackets or spaces so your shell passes them intact.
@@ -83,7 +84,7 @@ spill ctl set ID 'file_priorities=[]'      # back to all files
 
 ## Control protocol
 
-`spill ctl` sends one JSON object per line to the socket and reads one JSON
+Client commands send one JSON object per line to the socket and read one JSON
 response line. Other programs can do the same, for example with `socat`:
 
 ```sh

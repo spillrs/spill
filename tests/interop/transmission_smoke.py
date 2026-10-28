@@ -439,7 +439,7 @@ def reference_run(args, root, transmission_bin, settings, torrent, tracker, dige
 def download(binary, source, destination, root, host, *, run_seconds, stall_seconds=60,
              dht=False, bootstrap=(), trackers=False, web_seeds=False, processes=None,
              total_seconds=None, utp=False, rate_limit=0):
-    """Observe a bounded real serve/ctl download and require joined shutdown."""
+    """Observe a bounded real daemon/CLI download and require joined shutdown."""
     root.mkdir(mode=0o700)
     socket = root / "control.sock"
     config = root / "spill.toml"
@@ -455,9 +455,9 @@ def download(binary, source, destination, root, host, *, run_seconds, stall_seco
             processes.append(process)
         try:
             wait_for("product control", lambda: control(socket, "list"), 10)
-            ctl = [str(pathlib.Path(binary).resolve()), "ctl", "--json", "--socket", str(socket)]
+            client = [str(pathlib.Path(binary).resolve()), "--json", "--socket", str(socket)]
             last_progress = started
-            added = subprocess.run([*ctl, "add", str(source), "--output", str(destination)],
+            added = subprocess.run([*client, "add", str(source), "--output", str(destination)],
                                    capture_output=True, text=True, check=True,
                                    timeout=max(0.001, run_seconds - (time.monotonic() - started)),
                                    env=process_environment(root))
@@ -619,7 +619,7 @@ def main():
         add_input = {"magnet": magnet, "metainfo": None, "output_dir": None} if args.magnet else {
             "metainfo": base64.b64encode(torrent.read_bytes()).decode("ascii"), "magnet": None, "output_dir": None}
         if args.magnet:
-            reply = subprocess.run([str(args.daemon.resolve()), "ctl", "--json", "--socket", str(socket_path), "add", magnet],
+            reply = subprocess.run([str(args.daemon.resolve()), "--json", "--socket", str(socket_path), "add", magnet],
                                    capture_output=True, text=True, check=True, timeout=args.timeout + 15,
                                    env=process_environment(root))
             added = json.loads(reply.stdout)

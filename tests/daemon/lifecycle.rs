@@ -227,7 +227,7 @@ async fn get_set_settings_take_effect_and_cli_uses_the_same_schema() {
         0.0
     );
     let result = tokio::process::Command::new(BIN)
-        .args(["ctl", "--socket"])
+        .arg("--socket")
         .arg(&daemon.socket)
         .args([
             "set",
@@ -264,7 +264,7 @@ async fn get_set_settings_take_effect_and_cli_uses_the_same_schema() {
         2
     );
     let output = tokio::process::Command::new(BIN)
-        .args(["ctl", "--socket"])
+        .arg("--socket")
         .arg(&daemon.socket)
         .args(["list", "--json"])
         .output()

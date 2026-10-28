@@ -1,5 +1,7 @@
 mod common;
 
+#[path = "daemon/cli.rs"]
+mod cli;
 #[path = "daemon/config.rs"]
 mod config;
 #[path = "daemon/discovery.rs"]

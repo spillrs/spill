@@ -3,7 +3,7 @@
 a modern torrent client implemented in Rust.
 
 Spill runs in the background on Linux and macOS for a single user, downloads
-and seeds torrents, and is controlled from the command line (`spill ctl`) or
+and seeds torrents, and is controlled from the command line (`spill`) or
 an optional local web page.
 
 Spill aims to be correct, interoperable with other clients, stable under long

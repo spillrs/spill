@@ -9,7 +9,7 @@ Rules that apply to the whole file:
 - Unknown keys are errors, so typos are caught at startup.
 - Invalid values stop the daemon at startup with an error.
 - `[defaults]` is copied into each torrent when it is added. Changing it later
-  does not affect torrents that already exist; use `spill ctl set` for those.
+  does not affect torrents that already exist; use `spill set` for those.
 
 ## Daemon keys
 
@@ -23,7 +23,7 @@ Downloads default to `~/Downloads` on both platforms. If you override
 |---|---|---|
 | `state_dir` | `~/.local/state/spill` | Catalog (`catalog.sqlite`) and lock file. Created with mode `0700`. Two daemons cannot share one state directory. |
 | `download_dir` | `~/Downloads` | Where new torrents are saved unless `add` gives an output directory. |
-| `control_socket` | `$XDG_RUNTIME_DIR/spill.sock`, else `~/.local/state/spill/spill.sock` | Unix socket for `spill ctl`. Created with mode `0600`. |
+| `control_socket` | `$XDG_RUNTIME_DIR/spill.sock`, else `~/.local/state/spill/spill.sock` | Unix socket for `spill`. Created with mode `0600`. |
 | `listen` | `"0.0.0.0:6881"` | Address and port for TCP peers and for uTP peers, the DHT and UDP trackers (UDP, same port). Both must be free. `"[::]:6881"` listens on IPv6 and IPv4 (dual-stack). |
 | `web_listen` | unset (off) | Address for the web interface. Must be a loopback address, for example `"127.0.0.1:8080"`. |
 | `allow_local_network` | `false` | Allow outbound connections to private, loopback and link-local addresses (LAN peers, a tracker on your network). Multicast, unspecified and broadcast addresses and port 0 are never allowed. Inbound connections are not filtered. |
@@ -64,7 +64,7 @@ for the admitted torrent and peer budgets, not that measured baseline.
 ## Torrent defaults: `[defaults]`
 
 These are the per-torrent settings. They are copied into each new torrent and
-can be changed per torrent later with `spill ctl set ID key=value` or the web
+can be changed per torrent later with `spill set ID key=value` or the web
 interface.
 
 | Key | Default | Meaning |
@@ -73,7 +73,7 @@ interface.
 | `upload_limit` | `0` | Upload rate limit, same units. |
 | `seed_ratio` | `0.0` | Pause after uploading this multiple of the torrent's size. `0` disables the rule. Must be finite and not negative. |
 | `seed_time` | `0` | Pause after this many seconds of active seeding. Paused time and downtime do not count. `0` disables the rule. |
-| `file_priorities` | `[]` | `[]` downloads every file. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in the order `spill ctl files` shows. Only meaningful per torrent. |
+| `file_priorities` | `[]` | `[]` downloads every file. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in the order `spill files` shows. Only meaningful per torrent. |
 | `trackers` | `true` | Announce to the torrent's trackers. |
 | `dht` | `true` | Use the DHT. Requires an IPv4 `listen` address. Always off for private torrents. |
 | `pex` | `true` | Exchange peers with connected peers. Always off for private torrents. |

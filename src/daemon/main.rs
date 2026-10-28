@@ -1,8 +1,8 @@
 //! One user, one Linux and macOS daemon, one current-thread runtime.
 mod catalog;
+mod cli;
 mod config;
 mod control;
-mod ctl;
 mod storage;
 mod supervisor;
 mod web;
@@ -18,7 +18,7 @@ use std::{
 use tokio::{sync::Mutex, task::JoinSet};
 
 fn main() -> ExitCode {
-    let cli = match ctl::Cli::try_parse() {
+    let cli = match cli::Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
             let code = e.exit_code() as u8;
@@ -32,14 +32,14 @@ fn main() -> ExitCode {
         .expect("runtime");
     let code = runtime.block_on(async {
         match cli.command {
-            ctl::Command::Serve { config } => match serve(config.as_deref()).await {
+            cli::Command::Serve { config } => match serve(config.as_deref()).await {
                 Ok(()) => 0,
                 Err(e) => {
                     eprintln!("{e}");
                     1
                 }
             },
-            ctl::Command::Ctl(args) => match ctl::run(args).await {
+            cli::Command::Client(command) => match cli::run(command, cli.socket, cli.json).await {
                 Ok(()) => 0,
                 Err(e) => {
                     eprintln!("{e}");

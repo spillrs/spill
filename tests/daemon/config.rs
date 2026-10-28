@@ -98,7 +98,7 @@ async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
     assert_eq!(health["listen"], "0.0.0.0:6881");
     assert_eq!(health["advertised_port"], 6881);
     let output = tokio::process::Command::new(BIN)
-        .args(["ctl", "--json", "get", &id])
+        .args(["--json", "get", &id])
         .env("HOME", &home.0)
         .env("XDG_RUNTIME_DIR", runtime)
         .output()

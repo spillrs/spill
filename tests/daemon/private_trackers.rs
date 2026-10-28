@@ -121,7 +121,7 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
         let mut hello = [0; 68];
         peer.read_exact(&mut hello).await.unwrap();
         assert_eq!(hello[27] & 1, 0);
-        assert_eq!(&hello[48..56], b"-sP0500-");
+        assert_eq!(&hello[48..56], b"-sP0510-");
         loop {
             let len = peer.read_u32().await.unwrap();
             if len == 0 {

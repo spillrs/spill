@@ -123,7 +123,7 @@ connections are accepted from any address.
 
 - Up to `peers` connections per torrent (default 50), and at most 8 peers are
   uploaded to at once per torrent.
-- Spill identifies as `-sP0500-` in its peer ID (`sP` plus base-36 version
+- Spill identifies as `-sP0510-` in its peer ID (`sP` plus base-36 version
   digits) and as `Spill/VERSION` in extension handshakes and HTTP requests.
 - If the same peer connects twice (for example, both sides dialed each other),
   one connection is dropped.

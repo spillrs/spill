@@ -44,7 +44,7 @@ Both appear in `spill get` and on the web page.
 ## Client whitelists
 
 Most private trackers only accept whitelisted clients. Spill identifies itself
-honestly, as peer ID prefix `-sP0500-` and `Spill/VERSION`, and never
+honestly, as peer ID prefix `-sP0510-` and `Spill/VERSION`, and never
 impersonates another client. Until a tracker whitelists Spill, its announces may
 be rejected with a failure reason saying so. Check your tracker's rules before
 using Spill there.

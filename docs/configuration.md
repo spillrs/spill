@@ -112,6 +112,6 @@ peers = 100
 dht = false              # the DHT needs an IPv4 listen address
 ```
 
-The annotated files `crates/daemon/deploy/spill.toml` and
-`crates/daemon/deploy/spill-user.toml` are complete starting points for Linux;
-`crates/daemon/deploy/spill-macos.toml` uses the macOS defaults.
+The annotated files `deploy/spill.toml` and `deploy/spill-user.toml` are
+complete starting points for Linux; `deploy/spill-macos.toml` uses the macOS
+defaults.

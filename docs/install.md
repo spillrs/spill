@@ -1,14 +1,25 @@
 # Install
 
-## Build from source
+## Install from crates.io
 
-Spill needs a current stable Rust toolchain (see `rust-toolchain.toml`). SQLite
-is bundled; no system libraries are required beyond a C compiler.
+Spill supports Linux and macOS and needs a current stable Rust toolchain
+(see `rust-toolchain.toml`). SQLite is bundled; no system libraries are
+required beyond a C compiler.
 
 ```sh
-git clone https://github.com/yuvadm/spill
+cargo install spill --locked
+```
+
+This installs `spill` into Cargo's binary directory, usually `~/.cargo/bin`.
+The service examples below expect `/usr/local/bin/spill`; either install the
+binary there or change the executable path in the service definition.
+
+## Build from source
+
+```sh
+git clone https://github.com/spillrs/spill
 cd spill
-cargo build --release --locked -p daemon
+cargo build --release --locked
 sudo install -d /usr/local/bin
 sudo install -m 0755 target/release/spill /usr/local/bin/spill
 ```
@@ -41,8 +52,8 @@ See [Configuration](configuration.md) for every key.
 ## macOS
 
 Install Apple's command-line tools (`xcode-select --install`) and stable Rust,
-then use the source build above. Apple Silicon is supported. The binary can
-run directly with `spill serve`; no systemd or extra libraries are needed.
+then use either installation method above. Apple Silicon is supported. The
+binary can run directly with `spill serve`; no systemd or extra libraries are needed.
 State and the control socket live in `~/Library/Application Support/spill`,
 and downloads in `~/Downloads`.
 
@@ -51,9 +62,9 @@ Spill first. From the repository root:
 
 ```sh
 mkdir -p "$HOME/Library/Application Support/spill" "$HOME/Library/LaunchAgents"
-cp crates/daemon/deploy/spill-macos.toml "$HOME/Library/Application Support/spill/spill.toml"
+cp deploy/spill-macos.toml "$HOME/Library/Application Support/spill/spill.toml"
 agent="$HOME/Library/LaunchAgents/rs.spill.daemon.plist"
-cp crates/daemon/deploy/spill.plist "$agent"
+cp deploy/spill.plist "$agent"
 plutil -replace ProgramArguments.3 -string "$HOME/Library/Application Support/spill/spill.toml" "$agent"
 plutil -replace StandardOutPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
 plutil -replace StandardErrorPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
@@ -78,12 +89,12 @@ settings. The Linux-only `tests/interop` harnesses are not supported on macOS.
 
 ## Run as a Linux user service (recommended)
 
-Example units live in `crates/daemon/deploy/`.
+Example units live in `deploy/` in the source repository.
 
 ```sh
 mkdir -p ~/.config/spill ~/.config/systemd/user
-cp crates/daemon/deploy/spill-user.toml ~/.config/spill/spill.toml
-cp crates/daemon/deploy/spill-user.service ~/.config/systemd/user/spill.service
+cp deploy/spill-user.toml ~/.config/spill/spill.toml
+cp deploy/spill-user.service ~/.config/systemd/user/spill.service
 systemctl --user daemon-reload
 systemctl --user enable --now spill
 journalctl --user -u spill -f
@@ -102,8 +113,8 @@ To keep the daemon running after you log out, enable lingering with
 ```sh
 sudo useradd --system --home /var/lib/spill --shell /usr/sbin/nologin spill
 sudo install -d -m 0755 /etc/spill
-sudo install -m 0644 crates/daemon/deploy/spill.toml /etc/spill/spill.toml
-sudo install -m 0644 crates/daemon/deploy/spill.service /etc/systemd/system/spill.service
+sudo install -m 0644 deploy/spill.toml /etc/spill/spill.toml
+sudo install -m 0644 deploy/spill.service /etc/systemd/system/spill.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now spill
 sudo -u spill spill ctl --socket /run/spill/control.sock list

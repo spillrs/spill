@@ -536,7 +536,7 @@ def main():
     if args.kill_at is not None and not 0 < args.kill_at < 1:
         parser.error("--kill-at must be between zero and one")
     if args.release:
-        subprocess.run(["cargo", "build", "-p", "daemon", "--release", "--locked"], check=True)
+        subprocess.run(["cargo", "build", "--release", "--locked"], check=True)
         args.daemon = pathlib.Path("target/release/spill")
     transmission_bin = shutil.which("transmission-daemon")
     if not transmission_bin:

@@ -43,7 +43,7 @@ def main():
     if not transmission_bin:
         parser.error("install Transmission 4.1+ first; this script never installs packages")
     if args.release:
-        subprocess.run(["cargo", "build", "-p", "daemon", "--release", "--locked"], check=True)
+        subprocess.run(["cargo", "build", "--release", "--locked"], check=True)
         args.daemon = pathlib.Path("target/release/spill")
     parent = args.artifacts.resolve().parent if args.artifacts else pathlib.Path("target/interop").resolve()
     parent.mkdir(parents=True, exist_ok=True)

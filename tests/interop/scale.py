@@ -38,7 +38,7 @@ def main():
     if not 1 <= args.files <= 100_000 or args.soak_seconds < 0 or args.timeout <= 0:
         parser.error("invalid file count, soak duration or timeout")
     if args.release:
-        subprocess.run(["cargo", "build", "-p", "daemon", "--release", "--locked"], check=True)
+        subprocess.run(["cargo", "build", "--release", "--locked"], check=True)
         args.daemon = pathlib.Path("target/release/spill")
     parent = args.artifacts.resolve().parent if args.artifacts else pathlib.Path("target/interop").resolve()
     parent.mkdir(parents=True, exist_ok=True)

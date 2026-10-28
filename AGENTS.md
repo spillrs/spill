@@ -13,15 +13,16 @@ under real use, then performance. The code must stay minimal: every line has to 
 
 | Path | Responsibility | Must not |
 |---|---|---|
-| `crates/protocol` | Pure wire codecs: bencode, metainfo, magnet, peer messages, trackers, KRPC, resume format | Do I/O, use async, spawn tasks |
-| `crates/engine/src/core` | Clock-driven torrent state machine: `Input` in, `Action` out (picker, choker, requests, extensions) | Do I/O, read the clock, use OS entropy |
-| `crates/engine/src/torrent` | Shell and runtime: perform core `Action`s, feed `Input`s, publish status | Make protocol or scheduling decisions |
-| `crates/engine/src/storage` | One writer task per torrent: writes, hashing, upload reads, resume checkpoints | Fsync outside the completion barrier |
-| `crates/engine/src/provisioning` | Safe on-disk paths, file creation, `.part` naming, payload removal | Know about peers or pieces in flight |
-| `crates/engine/src/session` | Shared listener, dial queue, DHT, tracker UDP, global budgets | Own per-torrent policy |
-| `crates/engine/src/{peer_io,discovery,dht,webseed}` | Transports and discovery sources feeding the shell | Write payload or make scheduling decisions |
-| `crates/daemon` | Config, SQLite catalog, supervisor, Unix control socket, CLI, web UI | Reach into engine internals; the engine API is the boundary |
-| `tests/interop` | Python harnesses against real clients (Transmission) | Require changes in `crates/` to work |
+| `src/protocol` | Pure wire codecs: bencode, metainfo, magnet, peer messages, trackers, KRPC, resume format | Do I/O, use async, spawn tasks |
+| `src/engine/core` | Clock-driven torrent state machine: `Input` in, `Action` out (picker, choker, requests, extensions) | Do I/O, read the clock, use OS entropy |
+| `src/engine/torrent` | Shell and runtime: perform core `Action`s, feed `Input`s, publish status | Make protocol or scheduling decisions |
+| `src/engine/storage` | One writer task per torrent: writes, hashing, upload reads, resume checkpoints | Fsync outside the completion barrier |
+| `src/engine/provisioning` | Safe on-disk paths, file creation, `.part` naming, payload removal | Know about peers or pieces in flight |
+| `src/engine/session` | Shared listener, dial queue, DHT, tracker UDP, global budgets | Own per-torrent policy |
+| `src/engine/{peer_io,discovery,dht,webseed}` | Transports and discovery sources feeding the shell | Write payload or make scheduling decisions |
+| `src/daemon` | Config, SQLite catalog, supervisor, Unix control socket, CLI, web UI | Reach into engine internals; the engine API is the boundary |
+| `deploy` | Example configs and service definitions | Depend on local machine paths |
+| `tests/interop` | Python harnesses against real clients (Transmission) | Require changes in `src/` to work |
 | `docs` | End-user documentation, rendered on the homepage (`SUMMARY.md` is the page order) | Describe internals that churn; link to code instead |
 
 ## Testing policy
@@ -29,15 +30,15 @@ under real use, then performance. The code must stay minimal: every line has to 
 Behaviour is tested end to end. Unit tests are not wanted.
 
 - **No unit tests in `engine` or `daemon`.** Do not add `#[test]`,
-  `#[cfg(test)]` modules, `tests.rs` files or test fixtures under their `src/`.
+  `#[cfg(test)]` modules, `tests.rs` files or test fixtures under their source directories.
 - **Protocol is the only exception:** codec tests (golden vectors, round
-  trips, malformed input) live in `crates/protocol/tests/`.
+  trips, malformed input) live in `tests/protocol/`.
 - **No test-only code in production.** No `#[cfg(test)]` constructors,
   hooks, feature flags or public APIs that exist only for tests. If a test
   needs to observe something, it must be useful in the daemon's JSON output
   to real users too.
 - **A bug fix comes with an end-to-end reproduction** in
-  `crates/daemon/tests/daemon.rs` when one can be built with in-process
+  `tests/daemon.rs` when one can be built with in-process
   peers, trackers or web seeds. Otherwise, add or extend an interop scenario.
 - Do not add tests to raise coverage. A test must protect a user-visible
   behaviour that could plausibly regress.
@@ -46,8 +47,8 @@ Behaviour is tested end to end. Unit tests are not wanted.
 
 | Tier | What | Command | When |
 |---|---|---|---|
-| 0 | Protocol codecs | `cargo test -p protocol` | Every change |
-| 1 | Daemon end to end: real `spill` binary, in-process peers, trackers, web seeds, no public network | `cargo test -p daemon` | Every change |
+| 0 | Protocol codecs | `cargo test --test protocol` | Every change |
+| 1 | Daemon end to end: real `spill` binary, in-process peers, trackers, web seeds, no public network | `cargo test --test daemon` | Every change |
 | 2 | Interop with Transmission 4.1+: both directions, kill and restart, magnet, HTTP tracker | `python tests/interop/transmission_smoke.py --help` | Before merging engine or daemon changes; on a dev machine with a LAN address |
 | 3 | Limits and soak scenarios (large and many torrents, swarms, long runs) | Scenarios in `tests/interop/` | Before releases and after architectural changes; dev machine only |
 
@@ -90,8 +91,8 @@ ran and which you did not.
 3. `cargo test --workspace --locked` (tiers 0 and 1)
 4. If you changed user-visible behaviour, defaults, limits, config keys,
    control commands or the HTTP API, update the matching page in `docs/` in the
-   same change. Check `docs/configuration.md` against `crates/daemon/src/config.rs`
-   and `docs/cli.md` against `crates/daemon/src/ctl.rs` and `control.rs`.
+   same change. Check `docs/configuration.md` against `src/daemon/config.rs`
+   and `docs/cli.md` against `src/daemon/ctl.rs` and `control.rs`.
    `README.md` holds only usage, build, test and license.
 5. If you changed engine networking, storage or scheduling, list the tier 2
    and 3 scenarios that need a run on the dev machine.

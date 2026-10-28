@@ -3,19 +3,28 @@
 This page is for curious users and contributors. It describes how Spill is put
 together, not every detail; the code is the reference.
 
-## Crates
+## Package and modules
+
+Spill is one Cargo package, published as `spill`, with a library and a binary:
 
 ```text
-crates/protocol   wire formats only: bencode, metainfo, magnets, peer messages,
-                  tracker and DHT messages, the resume format. No I/O.
-crates/engine     the BitTorrent engine: sessions, torrents, peers, discovery,
-                  storage.
-crates/daemon     the `spill` binary: config, SQLite catalog, supervisor,
-                  control socket, CLI and web interface.
+src/protocol     wire formats only: bencode, metainfo, magnets, peer messages,
+                 tracker and DHT messages, the resume format. No I/O.
+src/engine       the BitTorrent engine: sessions, torrents, peers, discovery,
+                 storage.
+src/daemon       the `spill` binary: config, SQLite catalog, supervisor,
+                 control socket, CLI and web interface.
+deploy           example configs, systemd units and a launchd agent.
 ```
 
-`protocol` knows nothing about sockets or files, `engine` knows nothing about
-the catalog or the CLI, and `daemon` only uses the engine's public API.
+The library exposes `spill::protocol` and `spill::engine`; the binary starts at
+`src/daemon/main.rs`. `protocol` knows nothing about sockets or files, `engine`
+knows nothing about the catalog or the CLI, and `daemon` only uses the engine's
+public API. Engine internals are restricted to the engine module.
+
+Codec tests live in `tests/protocol/`, and daemon end-to-end tests in
+`tests/daemon.rs`. Run them with `cargo test --test protocol` and
+`cargo test --test daemon`, or run both with `cargo test --locked`.
 
 ## One process, one async thread
 

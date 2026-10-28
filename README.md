@@ -23,12 +23,20 @@ spill ctl shutdown
 ```
 
 See [`docs/cli.md`](docs/cli.md) and [`docs/configuration.md`](docs/configuration.md).
-Example config files, systemd units and a launchd agent are in `crates/daemon/deploy/`.
+Example config files, systemd units and a launchd agent are in `deploy/`.
 
-## Build
+## Install and build
+
+Install from crates.io on Linux or macOS:
 
 ```sh
-cargo build --release --locked -p daemon   # target/release/spill
+cargo install spill --locked
+```
+
+Or build from source:
+
+```sh
+cargo build --release --locked   # target/release/spill
 ```
 
 ## Test

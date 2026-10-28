@@ -24,7 +24,7 @@ Downloads default to `~/Downloads` on both platforms. If you override
 | `state_dir` | `~/.local/state/spill` | Catalog (`catalog.sqlite`) and lock file. Created with mode `0700`. Two daemons cannot share one state directory. |
 | `download_dir` | `~/Downloads` | Where new torrents are saved unless `add` gives an output directory. |
 | `control_socket` | `$XDG_RUNTIME_DIR/spill.sock`, else `~/.local/state/spill/spill.sock` | Unix socket for `spill ctl`. Created with mode `0600`. |
-| `listen` | `"0.0.0.0:51413"` | Address and port for TCP peers and for uTP peers, the DHT and UDP trackers (UDP, same port). Both must be free. `"[::]:51413"` listens on IPv6 and IPv4 (dual-stack). |
+| `listen` | `"0.0.0.0:6881"` | Address and port for TCP peers and for uTP peers, the DHT and UDP trackers (UDP, same port). Both must be free. `"[::]:6881"` listens on IPv6 and IPv4 (dual-stack). |
 | `web_listen` | unset (off) | Address for the web interface. Must be a loopback address, for example `"127.0.0.1:8080"`. |
 | `allow_local_network` | `false` | Allow outbound connections to private, loopback and link-local addresses (LAN peers, a tracker on your network). Multicast, unspecified and broadcast addresses and port 0 are never allowed. Inbound connections are not filtered. |
 | `utp` | `true` | Accept uTP peers and try uTP before TCP when dialing. Set `false` for TCP-only peers; UDP trackers and the DHT remain available. |
@@ -103,7 +103,7 @@ A home server on a LAN with IPv6:
 state_dir = "/var/lib/spill"
 download_dir = "/srv/torrents"
 control_socket = "/run/spill/control.sock"
-listen = "[::]:51413"
+listen = "[::]:6881"
 port_mapping = false    # automatic mapping requires an IPv4 listener
 allow_local_network = true
 peers = 100

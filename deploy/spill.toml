@@ -2,7 +2,7 @@
 state_dir = "/var/lib/spill"
 download_dir = "/var/lib/spill/downloads"
 control_socket = "/run/spill/control.sock"
-listen = "0.0.0.0:51413"
+listen = "0.0.0.0:6881"
 allow_local_network = false
 port_mapping = false
 peers = 50

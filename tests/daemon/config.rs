@@ -56,7 +56,7 @@ async fn invalid_configuration_is_rejected_before_runtime_start() {
 }
 
 #[tokio::test]
-async fn platform_default_paths_work_for_daemon_and_cli() {
+async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
     let root = Temp::new();
     // Keep Darwin's default socket path within sockaddr_un's pathname limit.
     let home = Temp(std::path::Path::new("/tmp").join(root.0.file_name().unwrap()));
@@ -73,7 +73,7 @@ async fn platform_default_paths_work_for_daemon_and_cli() {
     #[cfg(not(target_os = "macos"))]
     let socket = runtime.join("spill.sock");
     let config = root.0.join("defaults.toml");
-    std::fs::write(&config, "listen=\"127.0.0.1:0\"\nport_mapping=false\ndht_bootstrap=[]\n[defaults]\ndht=false\ntrackers=false\npex=false\nweb_seeds=false\n").unwrap();
+    std::fs::write(&config, "port_mapping=false\ndht_bootstrap=[]\n[defaults]\ndht=false\ntrackers=false\npex=false\nweb_seeds=false\n").unwrap();
     let child = tokio::process::Command::new(BIN)
         .args(["serve", "--config"])
         .arg(config)
@@ -94,6 +94,9 @@ async fn platform_default_paths_work_for_daemon_and_cli() {
     let id = daemon.add(&seed_metainfo("x", b"abc", None), None).await;
     daemon.state(&id, "seeding").await;
     assert!(state.join("catalog.sqlite").exists());
+    let health = daemon.call(serde_json::json!({"op":"health"})).await;
+    assert_eq!(health["listen"], "0.0.0.0:6881");
+    assert_eq!(health["advertised_port"], 6881);
     let output = tokio::process::Command::new(BIN)
         .args(["ctl", "--json", "get", &id])
         .env("HOME", &home.0)

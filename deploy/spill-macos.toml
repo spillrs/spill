@@ -3,7 +3,7 @@
 # state_dir = "/Users/YOU/Library/Application Support/spill"
 # control_socket = "/Users/YOU/Library/Application Support/spill/spill.sock"
 # download_dir = "/Users/YOU/Downloads"
-listen = "0.0.0.0:51413"
+listen = "0.0.0.0:6881"
 web_listen = "127.0.0.1:8080"
 allow_local_network = false
 active_downloads = 4

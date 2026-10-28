@@ -2,7 +2,7 @@
 
 ## One port
 
-Spill uses a single port number, `listen` (default `51413`), for everything
+Spill uses a single port number, `listen` (default `6881`), for everything
 inbound:
 
 - **TCP**: incoming peer connections.
@@ -112,8 +112,8 @@ connections are accepted from any address.
 
 ## IPv4 and IPv6
 
-- `listen = "0.0.0.0:51413"` (default): IPv4 only.
-- `listen = "[::]:51413"`: IPv6 and IPv4 for peers and UDP trackers. The DHT is
+- `listen = "0.0.0.0:6881"` (default): IPv4 only.
+- `listen = "[::]:6881"`: IPv6 and IPv4 for peers and UDP trackers. The DHT is
   unavailable, because it needs an IPv4 listen address.
 - Peers from trackers and PEX can be IPv4 or IPv6; Spill connects to whichever
   your host can reach.

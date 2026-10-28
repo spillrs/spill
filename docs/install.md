@@ -40,7 +40,7 @@ Without `--config`, Spill uses built-in defaults:
 | State (catalog, lock) | Linux: `~/.local/state/spill`; macOS: `~/Library/Application Support/spill` |
 | Downloads | `~/Downloads` |
 | Control socket | Linux: `$XDG_RUNTIME_DIR/spill.sock`, otherwise `~/.local/state/spill/spill.sock`; macOS: `~/Library/Application Support/spill/spill.sock` |
-| Peer port | `0.0.0.0:51413`, TCP and UDP |
+| Peer port | `0.0.0.0:6881`, TCP and UDP |
 | Web interface | off |
 
 Stop it with Ctrl-C, `SIGTERM` or `spill ctl shutdown`. Shutdown waits for
@@ -125,7 +125,7 @@ the download directory must be listed in `ReadWritePaths`.
 
 ## Open the port
 
-Peers, the DHT and UDP trackers all use the listen port, default `51413`, over
+Peers, the DHT and UDP trackers all use the listen port, default `6881`, over
 both TCP and UDP. Outbound traffic needs no rules. For inbound peers, allow
 that port through the host firewall. Spill tries automatic NAT-PMP and UPnP
 router mapping by default; check `spill ctl health`. If mapping is disabled

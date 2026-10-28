@@ -66,7 +66,7 @@ impl Default for Config {
             state_dir: state_dir(),
             download_dir: home().join("Downloads"),
             control_socket: socket(),
-            listen: "0.0.0.0:51413".parse().unwrap(),
+            listen: "0.0.0.0:6881".parse().unwrap(),
             web_listen: None,
             allow_local_network: false,
             utp: true,

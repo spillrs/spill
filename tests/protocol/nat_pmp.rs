@@ -6,12 +6,12 @@ fn requests_and_replies_match_rfc_6886() {
     assert_eq!(nat_pmp::address_request(), [0, 0]);
     for opcode in [1, 2] {
         assert_eq!(
-            nat_pmp::mapping_request(opcode, 51413, 54321, 7200),
-            [0, opcode, 0, 0, 0xc8, 0xd5, 0xd4, 0x31, 0, 0, 0x1c, 0x20]
+            nat_pmp::mapping_request(opcode, 6881, 54321, 7200),
+            [0, opcode, 0, 0, 0x1a, 0xe1, 0xd4, 0x31, 0, 0, 0x1c, 0x20]
         );
         assert_eq!(
-            nat_pmp::mapping_request(opcode, 51413, 54321, 0),
-            [0, opcode, 0, 0, 0xc8, 0xd5, 0xd4, 0x31, 0, 0, 0, 0]
+            nat_pmp::mapping_request(opcode, 6881, 54321, 0),
+            [0, opcode, 0, 0, 0x1a, 0xe1, 0xd4, 0x31, 0, 0, 0, 0]
         );
         assert!(matches!(
             nat_pmp::reply(
@@ -24,8 +24,8 @@ fn requests_and_replies_match_rfc_6886() {
                     0,
                     0,
                     42,
-                    0xc8,
-                    0xd5,
+                    0x1a,
+                    0xe1,
                     0xd4,
                     0x31,
                     0,
@@ -36,7 +36,7 @@ fn requests_and_replies_match_rfc_6886() {
                 opcode
             ),
             Some(Reply::Mapping {
-                internal: 51413,
+                internal: 6881,
                 external: 54321,
                 lifetime: 7200
             })
@@ -55,7 +55,7 @@ fn requests_and_replies_match_rfc_6886() {
 #[test]
 fn truncated_wrong_version_and_unrelated_replies_are_ignored() {
     let reply = [
-        0, 130, 0, 0, 0, 0, 0, 42, 0xc8, 0xd5, 0xd4, 0x31, 0, 0, 0x1c, 0x20,
+        0, 130, 0, 0, 0, 0, 0, 42, 0x1a, 0xe1, 0xd4, 0x31, 0, 0, 0x1c, 0x20,
     ];
     for n in 0..reply.len() {
         assert!(nat_pmp::reply(&reply[..n], 2).is_none());

@@ -4,7 +4,7 @@
 # state_dir = "/home/YOU/.local/state/spill"
 # download_dir = "/home/YOU/Downloads"
 # control_socket = "/run/user/1000/spill.sock"
-listen = "0.0.0.0:51413"
+listen = "0.0.0.0:6881"
 # Omit web_listen to disable HTTP. Loopback addresses only.
 web_listen = "127.0.0.1:8080"
 allow_local_network = false

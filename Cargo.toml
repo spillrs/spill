@@ -15,7 +15,10 @@ include = [
     "LICENSE",
     "README.md",
     "src/**",
-    "tests/**",
+    "tests/**/*.rs",
+    "tests/interop/*.py",
+    "tests/interop/*.md",
+    "tests/interop/baselines/*.json",
     "deploy/**",
     "docs/**",
 ]

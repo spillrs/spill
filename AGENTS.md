@@ -38,8 +38,10 @@ Behaviour is tested end to end. Unit tests are not wanted.
   needs to observe something, it must be useful in the daemon's JSON output
   to real users too.
 - **A bug fix comes with an end-to-end reproduction** in
-  `tests/daemon.rs` when one can be built with in-process
-  peers, trackers or web seeds. Otherwise, add or extend an interop scenario.
+  the matching module under `tests/daemon/` when one can be built with
+  in-process peers, trackers or web seeds. Otherwise, add or extend an interop scenario.
+- Keep `tests/daemon.rs` as the module list; group scenarios by behaviour under
+  `tests/daemon/` and put shared harness code in `tests/common/`.
 - Do not add tests to raise coverage. A test must protect a user-visible
   behaviour that could plausibly regress.
 

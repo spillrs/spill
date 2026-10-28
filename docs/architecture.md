@@ -22,8 +22,10 @@ The library exposes `spill::protocol` and `spill::engine`; the binary starts at
 knows nothing about the catalog or the CLI, and `daemon` only uses the engine's
 public API. Engine internals are restricted to the engine module.
 
-Codec tests live in `tests/protocol/`, and daemon end-to-end tests in
-`tests/daemon.rs`. Run them with `cargo test --test protocol` and
+Codec tests live in `tests/protocol/`, and daemon end-to-end scenarios are
+grouped by behaviour in `tests/daemon/`, with shared harness code in
+`tests/common/`. `tests/protocol.rs` and `tests/daemon.rs` are the test entry
+points. Run them with `cargo test --test protocol` and
 `cargo test --test daemon`, or run both with `cargo test --locked`.
 
 ## One process, one async thread

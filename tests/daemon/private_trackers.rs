@@ -121,7 +121,20 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
         let mut hello = [0; 68];
         peer.read_exact(&mut hello).await.unwrap();
         assert_eq!(hello[27] & 1, 0);
-        assert_eq!(&hello[48..56], b"-sP0510-");
+        let version = [
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            env!("CARGO_PKG_VERSION_MINOR"),
+            env!("CARGO_PKG_VERSION_PATCH"),
+        ]
+        .map(|part| {
+            char::from_digit(part.parse().unwrap(), 36)
+                .unwrap()
+                .to_ascii_uppercase()
+        });
+        assert_eq!(
+            &hello[48..56],
+            format!("-sP{}{}{}0-", version[0], version[1], version[2]).as_bytes()
+        );
         loop {
             let len = peer.read_u32().await.unwrap();
             if len == 0 {

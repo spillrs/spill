@@ -44,6 +44,7 @@ pub struct PeerDiagnostics {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TrackerStatus {
+    pub url: String,
     /// Zero-based original metainfo tier/slot, not scheduler preference order.
     pub tier: usize,
     pub slot: usize,

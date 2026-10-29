@@ -1,141 +1,93 @@
 <!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Spill</title>
-<style>
-body{font:16px system-ui;margin:2em auto;max-width:1300px;padding:0 1em;color:#ddd;background:#17212b}
-button,input,select{font:inherit;padding:.4em;margin:.2em;border-radius:4px}
-a{color:#9cf}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.5em;border-bottom:1px solid #456}
-label{display:block;margin:.5em}dialog{width:min(900px,90vw);max-height:85vh;overflow:auto;color:inherit;background:#17212b}
-.error{color:#faa;white-space:pre-wrap}.scroll{overflow-x:auto}.message{max-width:20em;overflow-wrap:anywhere}
-</style>
-<h1>Spill</h1>
-<details><summary>Health</summary><pre id="health"></pre></details>
-<form id="add"><input id="magnet" placeholder="magnet URI" aria-label="Magnet URI"><input type="file" id="torrent" accept=".torrent"><input id="output" placeholder="Output directory (default if blank)" aria-label="Output directory"><button>Add</button></form>
-<p id="error" class="error" role="alert"></p>
-<div class="scroll"><table><thead><tr><th>Name / ID</th><th>State</th><th>Progress</th><th>↓ / ↑</th><th>Ratio</th><th>Message</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table></div>
-<dialog id="settings"><form id="settings-form"><h2>Torrent settings</h2><p id="settings-error" class="error" role="alert"></p><div id="fields"></div><button>Save</button><button type="button" id="close">Cancel</button></form></dialog>
-<dialog id="details"><form id="files-form">
-<h2 id="details-title"></h2><p id="details-output"></p><p id="details-message"></p><p id="details-completion"></p><p id="details-error" class="error" role="alert"></p>
-<h3>Trackers</h3><table><thead><tr><th>Tier / slot</th><th>State</th><th>Seeders / leechers</th><th>Message</th></tr></thead><tbody id="trackers"></tbody></table>
-<h3>Files</h3><p>Padding entries must remain skip. Boundary pieces may contain bytes from skipped files.</p>
-<table><thead><tr><th>Path</th><th>Size</th><th>Priority</th></tr></thead><tbody id="files"></tbody></table>
-<button id="save-priorities">Save priorities</button><button type="button" id="details-close">Close</button>
-</form></dialog>
+<meta name="theme-color" content="#172b46">
+<title>Spill — Transfers</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
 <script>
-'use strict';
-const token='__TOKEN__';
-const $=id=>document.getElementById(id);
-let editing=null, detailsId=null;
-async function call(op, fields={}) {
-  const r=await fetch('/api',{method:'POST',headers:{'content-type':'application/json','x-spill-token':token},body:JSON.stringify({op,...fields})});
-  if(!r.ok) throw Error(`HTTP ${r.status}`);
-  const result=await r.json(); if(result.code) throw Error(result.error); return result.data;
-}
-function error(e){$($('details').open?'details-error':$('settings').open?'settings-error':'error').textContent=e.message;}
-function button(label, action){const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>action().then(refresh).catch(error);return b;}
-function bytes(value){
-  const units=['B','KiB','MiB','GiB','TiB'];let unit=0;
-  while(value>=1024 && unit<units.length-1){value/=1024;unit++;}
-  return `${value.toFixed(unit?1:0)} ${units[unit]}`;
-}
-function cells(tr, values){
-  for(const value of values){const td=document.createElement('td');td.textContent=value;tr.append(td);}
-}
-function message(row){return row.last_error||row.tracker_message||'';}
-async function settings(id){
-  const row=await call('get',{id}); editing=id; $('fields').replaceChildren();$('settings-error').textContent='';
-  // Render the engine's serialized settings, rather than a second feature model.
-  for(const [key,value] of Object.entries(row.settings)){
-    const label=document.createElement('label');label.textContent=key+' ';
-    const input=document.createElement('input');input.name=key;
-    if(typeof value==='boolean'){input.type='checkbox';input.checked=value;}
-    if(row.private && (key==='dht'||key==='pex')){input.disabled=true;label.title='Forced off for private torrents';}
-    if(typeof value!=='boolean'){input.type='text';input.value=JSON.stringify(value);}
-    label.append(input);$('fields').append(label);
-  }
-  $('settings').showModal();
-}
-function updateDetails(row){
-  $('details-title').textContent=row.name||row.id;
-  $('details-output').textContent=`Output: ${row.output_dir}`;
-  $('details-message').textContent=message(row);
-  $('details-completion').textContent=`Completion announce: ${row.completed_announce===null?'no event':row.completed_announce?'acknowledged':'pending'}`;
-  $('trackers').replaceChildren();
-  for(const tracker of row.transfer?.trackers||[]){
-    const tr=document.createElement('tr');
-    cells(tr,[`${tracker.tier+1} / ${tracker.slot+1}`,tracker.state,`${tracker.seeders??'?'} / ${tracker.leechers??'?'}`,tracker.error||tracker.warning||'']);
-    $('trackers').append(tr);
-  }
-  if(!$('trackers').children.length){const tr=document.createElement('tr');cells(tr,['No active tracker observations']);$('trackers').append(tr);}
-}
-async function details(id){
-  const row=await call('get',{id});
-  const files=row.total_bytes===null?[]:(await call('files',{id})).files;
-  detailsId=id;updateDetails(row);$('files').replaceChildren();$('details-error').textContent='';
-  for(const file of files){
-    const tr=document.createElement('tr');cells(tr,[file.path,bytes(file.length)]);
-    const td=document.createElement('td'),select=document.createElement('select');select.setAttribute('aria-label',`Priority for ${file.path}`);
-    for(const priority of ['skip','normal','high']){
-      const option=document.createElement('option');option.value=priority;option.textContent=priority;select.append(option);
-    }
-    select.value=file.priority;td.append(select);tr.append(td);$('files').append(tr);
-  }
-  if(!files.length){const tr=document.createElement('tr');cells(tr,['Waiting for metadata']);$('files').append(tr);}
-  $('save-priorities').disabled=!files.length;$('details').showModal();
-}
-async function refresh(){
-  const data=await call('list');$('health').textContent=JSON.stringify(data.health,null,2);$('rows').replaceChildren();
-  for(const row of data.torrents){
-    const tr=document.createElement('tr'),transfer=row.transfer;
-    const percent=row.total_bytes===null?'?':row.total_bytes?(100*row.verified_bytes/row.total_bytes).toFixed(1):'100';
-    const progress=`${percent}% (${bytes(row.verified_bytes)} / ${row.total_bytes===null?'?':bytes(row.total_bytes)})`;
-    const rate=`${bytes(transfer?.download_bytes_per_second||0)}/s / ${bytes(transfer?.upload_bytes_per_second||0)}/s`;
-    const ratio=row.total_bytes?(row.uploaded_bytes/row.total_bytes).toFixed(2):'—';
-    cells(tr,[row.name||row.id,row.state,progress,rate,ratio,message(row)]);tr.lastChild.className='message';
-    const actions=document.createElement('td');
-    actions.append(button('Details',()=>details(row.id)),button('Settings',()=>settings(row.id)),button(row.intent==='paused'?'Resume':'Pause',()=>call(row.intent==='paused'?'resume':'pause',{id:row.id})),
-      button('Recheck',()=>call('recheck',{id:row.id})),button('Reannounce',()=>call('reannounce',{id:row.id})),button('Remove',async()=>{
-        if(!confirm('Remove this torrent?'))return;
-        const delete_payload=confirm('Also delete payload files created by Spill?');
-        await call('remove',{id:row.id,delete_payload});
-      }));
-    tr.append(actions);$('rows').append(tr);
-  }
-  if($('details').open){
-    const row=data.torrents.find(row=>row.id===detailsId);
-    if(row)updateDetails(row);else $('details').close();
-  }
-}
-$('settings-form').onsubmit=async event=>{
-  event.preventDefault();try{
-    const values={};for(const input of $('fields').querySelectorAll('input'))values[input.name]=input.type==='checkbox'?input.checked:JSON.parse(input.value);
-    await call('set',{id:editing,values});$('settings').close();await refresh();
-  }catch(e){error(e);}
-};
-$('files-form').onsubmit=async event=>{
-  event.preventDefault();try{
-    const file_priorities=Array.from($('files').querySelectorAll('select'),select=>select.value);
-    await call('set',{id:detailsId,values:{file_priorities}});$('details-error').textContent='';await refresh();
-  }catch(e){error(e);}
-};
-$('close').onclick=()=>$('settings').close();
-$('details-close').onclick=()=>$('details').close();
-$('details').onclose=()=>{detailsId=null;};
-$('add').onsubmit=async event=>{
-  event.preventDefault();try{
-    const file=$('torrent').files[0];if(file&&file.size>16*1024*1024)throw Error('Metainfo exceeds 16 MiB');
-    const output_dir=$('output').value.trim()||null;
-    if(file){
-      const query=new URLSearchParams(output_dir?{output_dir}:{});
-      const r=await fetch('/api/upload?'+query,{method:'POST',body:file,headers:{'content-type':'application/x-bittorrent','x-spill-token':token}});
-      if(!r.ok)throw Error(`HTTP ${r.status}`);
-      const result=await r.json();if(result.code)throw Error(result.error);
-    }else await call('add',{magnet:$('magnet').value,output_dir});
-    $('add').reset();$('error').textContent='';await refresh();
-  }catch(e){error(e);}
-};
-refresh().catch(error);setInterval(()=>refresh().catch(error),2000);
+document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
 </script>
-</html>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<svg style="display:none" aria-hidden="true"><defs>
+<symbol id="grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="down" viewBox="0 0 24 24"><path d="M12 4v15m-5-5 5 5 5-5M4 21h16"/></symbol><symbol id="up" viewBox="0 0 24 24"><path d="M12 20V5m-5 5 5-5 5 5M4 3h16"/></symbol>
+<symbol id="pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol><symbol id="play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+<symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol><symbol id="alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v6m0 3v.2"/></symbol>
+<symbol id="server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01m4-10h6m-6 10h6"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
+<symbol id="refresh" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-2 8M20 4v6h-6"/></symbol><symbol id="trash" viewBox="0 0 24 24"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M14 3H6v18h12V7Zm0 0v5h4M9 12h6m-6 4h6"/></symbol><symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+<symbol id="peers" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m3 9v-2a6 6 0 0 0-3-5"/></symbol><symbol id="link" viewBox="0 0 24 24"><path d="m10 14 4-4m-5-1 3-3a4 4 0 0 1 6 6l-3 3m-6-6-3 3a4 4 0 0 0 6 6l3-3"/></symbol>
+<symbol id="dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r=".6"/><circle cx="12" cy="12" r=".6"/><circle cx="19" cy="12" r=".6"/></symbol>
+</defs></svg>
+<div class="app">
+<aside class="sidebar">
+<div class="brand"><img src="/logo.svg" alt="" width="28" height="28"><span>spill</span></div>
+<div class="workspace"><div class="server-icon"><svg><use href="#server"/></svg></div><div><strong>Spill daemon</strong><div class="tiny"><span id="sidebar-status">Connecting…</span></div></div></div>
+<div class="section-label">Library</div><nav class="nav" aria-label="Transfer filters" id="navigation"></nav>
+<div class="sidebar-bottom"><div class="tiny">Local web interface · 1s refresh</div></div>
+</aside>
+<main class="main">
+<header class="topbar"><div class="breadcrumb">Spill daemon <span>/</span><span>Transfers</span></div><div class="top-actions"><button class="secondary" id="theme-button" type="button" aria-pressed="false">Dark mode</button><span class="status-badge">CONNECTING</span><button class="primary" id="add-button"><svg><use href="#plus"/></svg>Add torrent</button></div></header>
+<section class="overview" aria-label="Session transfer rates"><div class="stats">
+<div class="stat"><div class="stat-label"><svg class="download-color"><use href="#down"/></svg>Download</div><div class="stat-value" id="download-stat">—</div></div>
+<div class="stat"><div class="stat-label"><svg class="upload-color"><use href="#up"/></svg>Upload</div><div class="stat-value" id="upload-stat">—</div></div>
+<div class="stat"><div class="stat-label"><svg><use href="#peers"/></svg>Connected peers</div><div class="stat-value" id="peers-stat">—</div></div>
+</div></section>
+<section class="content" aria-label="Torrent library">
+<div class="toolbar"><div class="toolbar-left"><span class="toolbar-title" id="list-title">All transfers</span><div class="divider"></div><div class="tool-buttons">
+<button class="icon-button" id="resume-button" title="Resume selected" aria-label="Resume selected"><svg><use href="#play"/></svg></button>
+<button class="icon-button" id="pause-button" title="Pause selected" aria-label="Pause selected"><svg><use href="#pause"/></svg></button>
+<button class="icon-button" id="recheck-button" title="Recheck selected" aria-label="Recheck selected"><svg><use href="#refresh"/></svg></button>
+<button class="icon-button" id="reannounce-button" title="Reannounce selected" aria-label="Reannounce selected"><svg><use href="#link"/></svg></button>
+<button class="icon-button" id="remove-button" title="Remove selected" aria-label="Remove selected"><svg><use href="#trash"/></svg></button>
+</div></div><label class="search"><svg><use href="#search"/></svg><input id="search" placeholder="Search torrents…" aria-label="Search torrents"><kbd>/</kbd></label></div>
+<div class="table-scroll"><table><thead><tr>
+<th><input type="checkbox" id="select-all" aria-label="Select all visible torrents"></th>
+<th><button data-sort="name">Name <span id="sort-name"></span></button></th>
+<th><button data-sort="size">Size <span id="sort-size"></span></button></th>
+<th><button data-sort="progress">Progress <span id="sort-progress"></span></button></th>
+<th><button data-sort="state">Status <span id="sort-state"></span></button></th>
+<th><button data-sort="downloaded_bytes">Downloaded <span id="sort-downloaded_bytes"></span></button></th>
+<th><button data-sort="uploaded_bytes">Uploaded <span id="sort-uploaded_bytes"></span></button></th>
+<th><button data-sort="down">↓ /s <span id="sort-down"></span></button></th>
+<th><button data-sort="up">↑ /s <span id="sort-up"></span></button></th>
+<th>Peers</th><th>ETA</th><th>Discovery</th><th></th>
+</tr></thead><tbody id="torrents"></tbody></table><div id="empty" class="empty" hidden>No transfers match your search.</div></div>
+<div class="table-footer"><span id="visible-count">0 transfers</span><span>Waiting for daemon</span></div>
+</section>
+<section hidden class="inspector" id="inspector" aria-label="Selected torrent details">
+<div class="detail-resizer" id="detail-resizer" role="separator" aria-label="Resize torrent details" aria-orientation="horizontal" aria-controls="detail-body" aria-valuemin="60" aria-valuemax="245" aria-valuenow="245" tabindex="0" title="Drag to resize · Arrow keys to adjust · Double-click to reset"></div>
+<div class="detail-header"><div class="tabs" role="tablist" aria-label="Torrent details">
+<button class="tab active" role="tab" data-tab="overview" aria-selected="true">Overview</button><button class="tab" role="tab" data-tab="files" aria-selected="false">Files</button><button class="tab" role="tab" data-tab="peers" aria-selected="false">Peers</button><button class="tab" role="tab" data-tab="sources" aria-selected="false">Sources</button>
+</div><button class="secondary" id="limits-button">Rate limits</button><button class="secondary" id="seeding-button">Seeding rules</button><button class="icon-button" id="close-detail" aria-label="Close details"><svg><use href="#close"/></svg></button></div>
+<div class="detail-body" id="detail-body"></div>
+</section>
+<footer class="bottom-bar"><div class="left"><span>Local interface</span><span class="optional"><svg><use href="#link"/></svg><span id="server-address"></span></span></div><span id="connection-status">Connecting…</span></footer>
+</main></div>
+<dialog id="add-dialog"><form id="add-form"><h2>Add torrent</h2><p>Add a magnet link or a .torrent file. Downloads are managed by the local daemon.</p>
+<label class="field" for="magnet">Magnet link</label><input type="text" id="magnet" placeholder="magnet:?xt=urn:btih:…">
+<label class="upload-area"><svg><use href="#file"/></svg>Or choose a .torrent file<input type="file" id="torrent-file" accept=".torrent"></label>
+<label class="field" for="output">Download location</label><input type="text" id="output" placeholder="Daemon default (or absolute path)">
+<div class="options"><label><input type="checkbox" id="start-now" checked> Start immediately</label></div>
+<div class="options"><label><input type="checkbox" id="allow-trackers" checked> Trackers</label><label><input type="checkbox" id="allow-dht" checked> DHT</label><label><input type="checkbox" id="allow-web" checked> Web seeds</label></div>
+<p class="telemetry-note">Discovery follows daemon policy. Unresolved magnets may disclose their hash before privacy is known.</p>
+<div class="actions"><button type="button" class="secondary" id="cancel-add">Cancel</button><button class="primary" type="submit">Add torrent</button></div></form></dialog>
+<dialog id="remove-dialog" aria-labelledby="remove-title" aria-describedby="remove-description"><h2 id="remove-title">Remove from Spill?</h2><p id="remove-description"></p><ul class="remove-transfers" id="remove-transfers"></ul><label><input type="checkbox" id="delete-data"> Also delete downloaded files</label><div class="actions"><button class="secondary" id="cancel-remove">Keep transfers</button><button class="primary danger" id="confirm-remove">Remove</button></div></dialog>
+<dialog id="limits-dialog"><form id="limits-form"><h2>Payload rate limits</h2><p>Bytes per second. 0 means unlimited. Limits apply to this torrent.</p>
+<label class="field" for="limit-down">Download bytes/s</label><input id="limit-down" type="number" min="0" max="9007199254740991" step="1" required>
+<label class="field" for="limit-up">Upload bytes/s</label><input id="limit-up" type="number" min="0" max="9007199254740991" step="1" required>
+<div class="actions"><button type="button" class="secondary" id="cancel-limits">Cancel</button><button class="primary" type="submit">Save limits</button></div></form></dialog>
+<dialog id="seeding-dialog"><form id="seeding-form"><h2>Seeding stop rules</h2><p>Pause when either goal is reached. 0 disables a rule. Ratio is uploaded payload divided by torrent size. Active seeding time excludes pause and downtime; totals survive restart.</p>
+<label class="field" for="seed-ratio">Seed ratio</label><input id="seed-ratio" type="number" min="0" step="any" required>
+<label class="field" for="seed-time">Active seeding seconds</label><input id="seed-time" type="number" min="0" max="9007199254740991" step="1" required>
+<div class="actions"><button type="button" class="secondary" id="cancel-seeding">Cancel</button><button class="primary" type="submit">Save rules</button></div></form></dialog>
+<div class="toast" id="toast" role="status" hidden></div>
+<script>const token='__TOKEN__';</script>
+<script src="/details.js" defer></script>
+<script src="/app.js" defer></script>
+</body></html>

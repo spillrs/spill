@@ -4,12 +4,14 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::{Html, IntoResponse},
     routing::{get, post},
 };
 use std::{io, net::SocketAddr, path::PathBuf};
 use tokio::sync::watch;
+
+static WEB: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 #[derive(Clone)]
 struct App {
     control: Control,
@@ -44,6 +46,35 @@ async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Re
         .headers_mut()
         .insert("x-frame-options", "DENY".parse().unwrap());
     response
+}
+async fn asset(State(app): State<App>, headers: HeaderMap, uri: Uri) -> axum::response::Response {
+    if !authorized_host(&headers, app.port) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if uri.path() == "/index.html" {
+        return index(State(app), headers).await;
+    }
+    let path = uri.path().trim_start_matches('/');
+    let Some((_, source)) = WEB.iter().find(|(name, _)| *name == path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = match std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+    {
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    (
+        [
+            ("content-type", content_type),
+            ("cache-control", "no-store"),
+        ],
+        *source,
+    )
+        .into_response()
 }
 fn authorized(app: &App, headers: &HeaderMap) -> bool {
     authorized_host(headers, app.port)
@@ -99,6 +130,7 @@ pub async fn serve(
     };
     let routes = Router::new()
         .route("/", get(index))
+        .route("/{*path}", get(asset))
         .route("/api", post(api).layer(DefaultBodyLimit::max(64 * 1024)))
         .route(
             "/api/upload",

@@ -15,13 +15,24 @@ then open <http://127.0.0.1:8080> locally.
 
 ## The page
 
-- A table of torrents with progress, state, download and upload rates, ratio,
-  and the latest error or tracker message.
+- A compact transfer table with search, sorting, multi-selection, state filters,
+  lifetime downloaded/uploaded totals, rates, peers, ETA and discovery policy.
+  Hover over status for the latest error or tracker message.
 - Adding a `.torrent` file or a magnet link, with an optional output directory.
 - Pause, resume, recheck, reannounce and remove (optionally deleting payload).
-- A details view with tracker state (seeders, leechers, messages) and files
-  with editable priorities.
-- A settings panel for the per-torrent settings.
+- A resizable bottom inspector with Overview, Files, Peers and Sources tabs.
+  Overview groups lifetime accounting, selected progress, completion, UTC dates,
+  settings and current-run diagnostics. Ratio uses uploaded bytes / full size.
+- A dense peer table: one line per peer, no direction/connection IDs or prose
+  annotations. Hover over peer state for additional diagnostic counters/flags.
+- Source tables include tracker URLs, announce timing, peer counts and errors,
+  plus available DHT and web-seed observations.
+- Editable file priorities, rate limits and seeding goals. Values use monospace.
+
+Downloaded totals include corrupt payload and re-downloads, not adopted files.
+Current-run counters reset when a torrent restarts; lifetime counters survive
+restarts. Hover over a table total for its exact byte count. See
+[Accounting in JSON](cli.md#accounting-in-json) for field definitions.
 
 ## Security model
 

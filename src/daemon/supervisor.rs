@@ -283,7 +283,9 @@ impl Supervisor {
             "upload_reads_in_flight":s.diagnostics.as_ref().map(|d| d.upload_reads_in_flight),
             "upload_reads_finished":s.diagnostics.as_ref().map(|d| d.upload_reads_finished),
             "peers":s.diagnostics.as_ref().map(|d| d.peers.as_slice()).unwrap_or_default(),
-            "trackers":s.diagnostics.as_ref().map(|d| d.trackers.as_slice()).unwrap_or_default()})
+            "trackers":s.diagnostics.as_ref().map(|d| d.trackers.as_slice()).unwrap_or_default(),
+            "web_seeds":s.diagnostics.as_ref().map(|d| d.web_seeds.as_slice()).unwrap_or_default(),
+            "dht":s.diagnostics.as_ref().and_then(|d| d.dht.as_ref())})
         });
         let tracker_error = status
             .as_ref()

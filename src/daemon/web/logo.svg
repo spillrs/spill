@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="spill">
+    <g transform="translate(128 128) scale(1.5) translate(-213 -193.5)">
+      <path d="M 213 119 C 204 133 184 164 174 183 C 166 197 163 208 163 218 C 163 246 185 268 213 268 C 241 268 263 246 263 218 C 263 208 260 197 252 183 C 242 164 222 133 213 119 Z" fill="#295bd6" class="drop" />
+    </g>
+</svg>

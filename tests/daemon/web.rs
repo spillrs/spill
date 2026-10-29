@@ -11,7 +11,22 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
     let mut daemon = Daemon::start(&root.0, "web_seeds=true", Some(address)).await;
     let index = http(address, "GET", "/", None, b"").await;
     assert!(index.starts_with("HTTP/1.1 200"));
-    assert!(index.contains("Torrent settings"));
+    assert!(index.contains("Selected torrent details"));
+    assert!(index.contains("data-sort=\"downloaded_bytes\""));
+    assert!(index.contains("data-sort=\"uploaded_bytes\""));
+    for asset in ["/app.js", "/details.js"] {
+        let response = http(address, "GET", asset, None, b"").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{asset}: {response}");
+        assert!(response.contains("text/javascript"));
+    }
+    let style = http(address, "GET", "/style.css", None, b"").await;
+    assert!(style.starts_with("HTTP/1.1 200"));
+    assert!(style.contains("text/css"));
+    assert!(style.contains("--paper:#f3f6fa"));
+    assert!(style.contains("ui-monospace"));
+    let logo = http(address, "GET", "/logo.svg", None, b"").await;
+    assert!(logo.starts_with("HTTP/1.1 200"));
+    assert!(logo.contains("image/svg+xml"));
     let token = index
         .split("const token='")
         .nth(1)

@@ -136,6 +136,7 @@ impl Announcer {
                         last_reply: None,
                         next_allowed: Instant::now(),
                         status: TrackerStatus {
+                            url: String::from_utf8_lossy(&raw).into_owned(),
                             tier,
                             slot,
                             state: "Idle",

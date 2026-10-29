@@ -27,6 +27,8 @@ mod storage;
 mod transport;
 #[path = "daemon/udp_trackers.rs"]
 mod udp_trackers;
+#[path = "daemon/urls.rs"]
+mod urls;
 #[path = "daemon/web.rs"]
 mod web;
 #[path = "daemon/web_seeds.rs"]

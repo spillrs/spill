@@ -98,6 +98,7 @@ async fn upload(
             .handle(Request::Add {
                 metainfo: Some(body.to_vec()),
                 magnet: None,
+                url: None,
                 output_dir: options.output_dir,
             })
             .await,

@@ -18,7 +18,8 @@ then open <http://127.0.0.1:8080> locally.
 - A compact transfer table with search, sorting, multi-selection, state filters,
   lifetime downloaded/uploaded totals, rates, peers, ETA and discovery policy.
   Hover over status for the latest error or tracker message.
-- Adding a `.torrent` file or a magnet link, with an optional output directory.
+- Adding a `.torrent` file, magnet link, or HTTP(S) torrent URL, with an optional
+  output directory. Paste URLs into the same field as magnet links.
 - Pause, resume, recheck, reannounce and remove (optionally deleting payload).
 - A resizable bottom inspector with Overview, Files, Peers and Sources tabs.
   Overview groups lifetime accounting, selected progress, completion, UTC dates,
@@ -63,8 +64,11 @@ curl -s http://127.0.0.1:8080/api \
   -d '{"op":"set","id":"3f2a","values":{"upload_limit":1048576}}'
 ```
 
-Operations: `add` (magnets), `get`, `set`, `list`, `status`, `files`, `pause`,
-`resume`, `recheck`, `reannounce`, `remove`, `health`, `shutdown`.
+Operations: `add` (magnets or torrent URLs), `get`, `set`, `list`, `status`,
+`files`, `pause`, `resume`, `recheck`, `reannounce`, `remove`, `health`, `shutdown`.
+
+For a URL add, send `{"op":"add","url":"https://example.org/file.torrent"}`
+with an optional `output_dir`.
 
 The `get` response includes `transfer.peers[].transport`: `"tcp"`, `"utp"`
 or `"http"` (web seed), just like the Unix control API. The same diagnostics

@@ -28,7 +28,7 @@ prefix that matches exactly one torrent; an ambiguous prefix is an input error.
 
 | Command | What it does |
 |---|---|
-| `add SOURCE [--output DIR]` | Add a `.torrent` file (path) or a `magnet:` link. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. Prints the new ID. Adding a torrent that already exists is an error. |
+| `add SOURCE [--output DIR]` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. Prints the new ID. Adding a torrent that already exists is an error. |
 | `list [--watch]` | All torrents: ID prefix, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
 | `status` | Same data as `list`, plus daemon health. Most useful with `--json`. |
 | `get ID` | Everything about one torrent: settings, state, progress, lifetime downloaded/uploaded bytes, timestamps, seeding time, errors, tracker messages, and live transfer details (rates, peers, trackers). |
@@ -128,7 +128,8 @@ echo '{"op":"get","id":"3f2a"}' | socat - "UNIX-CONNECT:$socket"
 ```
 
 Requests use `op` plus the same fields as the commands (`id`, `values`,
-`delete_payload`, `magnet`, `output_dir`). For `add`, `metainfo` is the
+`delete_payload`, `magnet`, `url`, `output_dir`). For `add`, `metainfo` is the
 `.torrent` file as a standard base64 string (at most 16 MiB decoded); give
-either `metainfo` or `magnet`. Responses are `{"code":0,"data":…,"error":null}`;
+exactly one of `metainfo`, `magnet`, or `url`.
+Responses are `{"code":0,"data":…,"error":null}`;
 `code` uses the exit codes above. Requests are limited to about 22 MiB.

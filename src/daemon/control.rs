@@ -45,6 +45,7 @@ pub enum Request {
         #[serde(default, with = "metainfo_base64")]
         metainfo: Option<Vec<u8>>,
         magnet: Option<String>,
+        url: Option<String>,
         output_dir: Option<PathBuf>,
     },
     Pause {
@@ -144,7 +145,38 @@ impl Control {
     pub async fn handle(&self, request: Request) -> Response {
         Response::from_result(self.dispatch(request).await)
     }
-    async fn dispatch(&self, request: Request) -> Result<Value, Error> {
+    async fn dispatch(&self, mut request: Request) -> Result<Value, Error> {
+        if let Request::Add {
+            metainfo,
+            magnet,
+            url,
+            output_dir,
+        } = &mut request
+        {
+            if usize::from(metainfo.is_some())
+                + usize::from(magnet.is_some())
+                + usize::from(url.is_some())
+                != 1
+            {
+                return Err(Error::Invalid(
+                    "provide exactly one of metainfo, magnet, or url".into(),
+                ));
+            }
+            if output_dir.as_ref().is_some_and(|path| !path.is_absolute()) {
+                return Err(Error::Invalid("output_dir must be absolute".into()));
+            }
+            if let Some(source) = url.take() {
+                let mut shutdown = self.0.lock().await.shutdown.subscribe();
+                if *shutdown.borrow() {
+                    return Err(Error::Invalid("daemon is shutting down".into()));
+                }
+                // Network I/O must not hold up other control requests.
+                *metainfo = Some(tokio::select! {
+                    result = crate::metainfo_url::fetch(&source) => result?,
+                    _ = shutdown.changed() => return Err(Error::Invalid("daemon is shutting down".into())),
+                });
+            }
+        }
         let mut supervisor = self.0.lock().await;
         if *supervisor.shutdown.borrow() && !matches!(request, Request::Health | Request::Status) {
             return Err(Error::Invalid("daemon is shutting down".into()));
@@ -164,6 +196,7 @@ impl Control {
             Request::Add {
                 metainfo,
                 magnet,
+                url: _,
                 output_dir,
             } => {
                 let parsed = Default::default();
@@ -204,17 +237,13 @@ impl Control {
                             .info_hash()
                             .to_string()
                     }
-                    _ => {
-                        return Err(Error::Invalid(
-                            "provide metainfo or magnet, not both".into(),
-                        ));
+                    (Some(_), None) => {
+                        return Err(Error::Invalid("metainfo exceeds 16 MiB".into()));
                     }
+                    _ => unreachable!("add source validated before dispatch"),
                 };
                 if supervisor.db.row(&id)?.is_some() {
                     return Err(Error::Invalid("torrent already exists".into()));
-                }
-                if !row.output_dir.is_absolute() {
-                    return Err(Error::Invalid("output_dir must be absolute".into()));
                 }
                 std::fs::create_dir_all(&row.output_dir)?;
                 row.id = id.clone();

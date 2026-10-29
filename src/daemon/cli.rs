@@ -33,6 +33,7 @@ pub enum Command {
 }
 #[derive(Subcommand)]
 pub enum Operation {
+    /// Add a local .torrent file, magnet link, or HTTP(S) torrent URL.
     Add {
         source: String,
         #[arg(long)]
@@ -112,8 +113,16 @@ pub async fn query(path: &Path, request: &Request) -> Result<Response, Error> {
 fn request(operation: Operation) -> Result<Request, Error> {
     Ok(match operation {
         Operation::Add { source, output } => {
-            let (metainfo, magnet) = if source.starts_with("magnet:") {
-                (None, Some(source))
+            let (metainfo, magnet, url) = if source.starts_with("magnet:") {
+                (None, Some(source), None)
+            } else if source
+                .get(..7)
+                .is_some_and(|s| s.eq_ignore_ascii_case("http://"))
+                || source
+                    .get(..8)
+                    .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+            {
+                (None, None, Some(source))
             } else {
                 let file = std::fs::File::open(source).map_err(|e| Error::Usage(e.to_string()))?;
                 use std::io::Read;
@@ -123,11 +132,12 @@ fn request(operation: Operation) -> Result<Request, Error> {
                 if bytes.len() > spill::engine::profile::MAX_META {
                     return Err(Error::Usage("metainfo exceeds 16 MiB".into()));
                 }
-                (Some(bytes), None)
+                (Some(bytes), None, None)
             };
             Request::Add {
                 metainfo,
                 magnet,
+                url,
                 output_dir: output,
             }
         }

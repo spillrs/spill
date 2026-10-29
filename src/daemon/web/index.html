@@ -69,8 +69,8 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 </section>
 <footer class="bottom-bar"><div class="left"><span>Local interface</span><span class="optional"><svg><use href="#link"/></svg><span id="server-address"></span></span></div><span id="connection-status">Connecting…</span></footer>
 </main></div>
-<dialog id="add-dialog"><form id="add-form"><h2>Add torrent</h2><p>Add a magnet link or a .torrent file. Downloads are managed by the local daemon.</p>
-<label class="field" for="magnet">Magnet link</label><input type="text" id="magnet" placeholder="magnet:?xt=urn:btih:…">
+<dialog id="add-dialog"><form id="add-form"><h2>Add torrent</h2><p>Add a magnet link, HTTP(S) torrent URL, or .torrent file. URLs are fetched by the daemon.</p>
+<label class="field" for="magnet">Magnet link or torrent URL</label><input type="text" id="magnet" placeholder="magnet:?xt=urn:btih:… or https://…">
 <label class="upload-area"><svg><use href="#file"/></svg>Or choose a .torrent file<input type="file" id="torrent-file" accept=".torrent"></label>
 <label class="field" for="output">Download location</label><input type="text" id="output" placeholder="Daemon default (or absolute path)">
 <div class="options"><label><input type="checkbox" id="start-now" checked> Start immediately</label></div>

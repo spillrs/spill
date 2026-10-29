@@ -261,19 +261,29 @@ $('#add-button').onclick = () => $('#add-dialog').showModal();
 $('#cancel-add').onclick = () => $('#add-dialog').close();
 $('#add-form').onsubmit = e => {
   e.preventDefault();
-  const file = $('#torrent-file').files[0], magnet = $('#magnet').value.trim();
-  if (!!file === !!magnet) { notify('Choose either one .torrent file or one magnet link.'); return; }
+  const file = $('#torrent-file').files[0], source = $('#magnet').value.trim();
+  if (!!file === !!source) { notify('Choose one .torrent file, magnet link, or HTTP(S) torrent URL.'); return; }
+  const magnet = /^magnet:/i.test(source);
+  if (!file && !magnet && !/^https?:\/\//i.test(source)) { notify('Enter a magnet link or HTTP(S) torrent URL.'); return; }
   const output_dir = $('#output').value.trim() || null;
   if (output_dir && !output_dir.startsWith('/')) { notify('Download location must be an absolute daemon-side path.'); return; }
   mutate(async () => {
     let result;
-    if (file) {
-      if (!file.size || file.size > 16*1024*1024) throw new Error('Torrent file must be nonempty and at most 16 MiB.');
-      const options = new URLSearchParams();
-      if (output_dir) options.set('output_dir',output_dir);
-      result = await request('/api/upload?'+options,file,true);
-    } else {
-      result = await api('add',{magnet,output_dir});
+    const submit = $('#add-form button[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = !file && !magnet ? 'Downloading torrent…' : 'Adding…';
+    try {
+      if (file) {
+        if (!file.size || file.size > 16*1024*1024) throw new Error('Torrent file must be nonempty and at most 16 MiB.');
+        const options = new URLSearchParams();
+        if (output_dir) options.set('output_dir',output_dir);
+        result = await request('/api/upload?'+options,file,true);
+      } else {
+        result = await api('add',{[magnet ? 'magnet' : 'url']:source,output_dir});
+      }
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Add torrent';
     }
     const added = await api('get',{id:result.id});
     await api('set',{id:result.id,values:{trackers:$('#allow-trackers').checked,

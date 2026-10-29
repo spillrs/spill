@@ -26,10 +26,10 @@ adding another torrent never stops one that is transferring.
 
 ## Adding torrents
 
-A `.torrent` file is checked immediately and gets its ID (the info hash). A
-magnet link is added right away and resolves its metadata from peers found via
-its `tr=` trackers and the DHT; trackers from the magnet are kept for the
-download.
+Add a local `.torrent` file, an HTTP(S) torrent URL, or a magnet link.
+The daemon fetches torrent URLs and checks the file before adding it. A magnet
+link is added right away and resolves its metadata from peers found via its
+`tr=` trackers and the DHT; trackers from the magnet are kept for the download.
 
 Torrents are saved under the output directory: a single-file torrent as one
 file, a multi-file torrent in a directory named after the torrent. Names are

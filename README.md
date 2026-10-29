@@ -30,6 +30,10 @@ Example config files, systemd units and a launchd agent are in `deploy/`.
 
 ## Install and build
 
+Prebuilt binaries for Linux x86_64/ARM64 and macOS Apple Silicon are on
+[GitHub Releases](https://github.com/spillrs/spill/releases). See
+[installation instructions and compatibility](docs/install.md).
+
 Install from crates.io on Linux or macOS:
 
 ```sh

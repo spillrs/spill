@@ -11,7 +11,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 ref
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Update stable Rust
@@ -28,7 +28,7 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 ref
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Update stable Rust

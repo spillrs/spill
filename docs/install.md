@@ -1,5 +1,48 @@
 # Install
 
+## Install a release binary
+
+Download an archive and `SHA256SUMS` from the
+[GitHub Releases](https://github.com/spillrs/spill/releases) page. Archives
+contain only `spill`; no Rust toolchain is needed.
+
+| Platform | Archive target | Compatibility |
+|---|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | glibc 2.39 or newer (Ubuntu 24.04 baseline) |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | glibc 2.39 or newer (Ubuntu 24.04 baseline) |
+| macOS Apple Silicon | `aarch64-apple-darwin` | Built targeting macOS 11 or newer |
+
+Linux binaries are dynamically linked against glibc, not musl; Alpine and
+older distributions should build from source. No Intel macOS binary is
+provided; use Cargo or build from source instead. SQLite and the web assets
+are embedded in the binary.
+
+Choose a released version and the target from the table:
+
+```sh
+version=VERSION # replace with a release version, without the v prefix
+target=x86_64-unknown-linux-gnu
+archive="spill-${version}-${target}.tar.gz"
+base="https://github.com/spillrs/spill/releases/download/v${version}"
+curl -fLO "$base/$archive"
+curl -fLO "$base/SHA256SUMS"
+grep -F "  $archive" SHA256SUMS | sha256sum -c -
+tar -xzf "$archive"
+sudo install -d /usr/local/bin
+sudo install -m 0755 spill /usr/local/bin/spill
+```
+
+On macOS, use `shasum -a 256 -c -` instead of `sha256sum -c -`.
+The macOS binary is initially unsigned and unnotarized. If Gatekeeper blocks
+it, verify the checksum and provenance first, then remove its quarantine
+attribute with `xattr -d com.apple.quarantine spill` before installing. Do not
+disable Gatekeeper globally. Checksums detect corruption, not a compromised
+release account.
+
+Service/config examples are not in the binary archives; use `deploy/` from
+the matching [source tag](https://github.com/spillrs/spill/tags) for the
+service instructions below.
+
 ## Install from crates.io
 
 Spill supports Linux and macOS and needs a current stable Rust toolchain
@@ -51,9 +94,10 @@ See [Configuration](configuration.md) for every key.
 
 ## macOS
 
-Install Apple's command-line tools (`xcode-select --install`) and stable Rust,
-then use either installation method above. Apple Silicon is supported. The
-binary can run directly with `spill serve`; no systemd or extra libraries are needed.
+For Cargo/source installs, install Apple's command-line tools
+(`xcode-select --install`) and stable Rust. Neither is needed for a release
+binary. The binary can run directly with `spill serve`; no systemd or extra
+libraries are needed.
 State and the control socket live in `~/Library/Application Support/spill`,
 and downloads in `~/Downloads`.
 

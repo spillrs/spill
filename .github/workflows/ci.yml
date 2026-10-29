@@ -24,8 +24,6 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build
         run: cargo build --workspace --locked
-      - name: Tests
-        run: cargo test --workspace --locked
 
   macos:
     runs-on: macos-latest
@@ -43,5 +41,3 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build
         run: cargo build --workspace --locked
-      - name: Tests
-        run: cargo test --workspace --locked

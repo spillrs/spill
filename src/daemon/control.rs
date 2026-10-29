@@ -181,6 +181,7 @@ impl Control {
                     last_error: None,
                     retry_count: 0,
                     retry_at: 0,
+                    added_at: crate::catalog::now(),
                 };
                 let id = match (&row.metainfo, &row.magnet) {
                     (Some(bytes), None) if bytes.len() <= spill::engine::profile::MAX_META => {

@@ -28,7 +28,13 @@ struct State {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Checkpoint {
     pub resume: Vec<u8>,
+    pub downloaded: u64,
+    pub hash_failed_bytes: u64,
+    pub hash_failed_pieces: u64,
     pub uploaded: u64,
+    pub completed_at: Option<u64>,
+    pub last_download_at: Option<u64>,
+    pub last_upload_at: Option<u64>,
     pub seed_seconds: f64,
     pub complete: bool,
     pub completed_announce: Option<bool>,
@@ -56,6 +62,7 @@ pub struct Row {
     pub last_error: Option<String>,
     pub retry_count: u32,
     pub retry_at: u64,
+    pub added_at: u64,
 }
 impl Row {
     pub fn meta(&self) -> std::io::Result<&spill::protocol::metainfo::OwnedMetainfo> {
@@ -93,15 +100,19 @@ impl Catalog {
                 CREATE TABLE torrents (
                     id TEXT PRIMARY KEY, metainfo BLOB, magnet TEXT, output_dir TEXT NOT NULL,
                     intent TEXT NOT NULL, settings TEXT NOT NULL CHECK(json_valid(settings)),
-                    resume BLOB NOT NULL, uploaded INTEGER NOT NULL DEFAULT 0,
+                    resume BLOB NOT NULL, downloaded INTEGER NOT NULL DEFAULT 0,
+                    hash_failed_bytes INTEGER NOT NULL DEFAULT 0,
+                    hash_failed_pieces INTEGER NOT NULL DEFAULT 0,
+                    uploaded INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL,
+                    completed_at INTEGER, last_download_at INTEGER, last_upload_at INTEGER,
                     seed_seconds REAL NOT NULL DEFAULT 0, complete INTEGER NOT NULL DEFAULT 0,
                     completed_announce INTEGER,
                     created_files BLOB, last_error TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0,
                     CHECK(metainfo IS NOT NULL OR magnet IS NOT NULL));
                 CREATE TABLE dht (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node_id BLOB NOT NULL, nodes BLOB NOT NULL);
-                PRAGMA user_version=3; COMMIT;")?;
-        } else if version != 3 {
+                PRAGMA user_version=4; COMMIT;")?;
+        } else if version != 4 {
             return Err(Error::Version(version));
         }
         c.prepare("SELECT settings, resume, uploaded, seed_seconds, complete, created_files, retry_at FROM torrents LIMIT 0")?;
@@ -115,7 +126,7 @@ impl Catalog {
         Ok(self.0.lock().unwrap().rows.clone())
     }
     fn read_rows(c: &Connection) -> Result<Vec<Row>> {
-        let mut query = c.prepare("SELECT id,metainfo,magnet,output_dir,intent,settings,resume,created_files,last_error,retry_count,retry_at,uploaded,seed_seconds,complete,completed_announce FROM torrents ORDER BY rowid")?;
+        let mut query = c.prepare("SELECT id,metainfo,magnet,output_dir,intent,settings,resume,created_files,last_error,retry_count,retry_at,uploaded,seed_seconds,complete,completed_announce,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces FROM torrents ORDER BY rowid")?;
         let raw = query.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -133,6 +144,13 @@ impl Catalog {
                 r.get(12)?,
                 r.get(13)?,
                 r.get(14)?,
+                r.get(15)?,
+                r.get(16)?,
+                r.get(17)?,
+                r.get(18)?,
+                r.get(19)?,
+                r.get(20)?,
+                r.get(21)?,
             ))
         })?;
         raw.map(|r| {
@@ -152,6 +170,13 @@ impl Catalog {
                 seed_seconds,
                 complete,
                 completed_announce,
+                downloaded,
+                added_at,
+                completed_at,
+                last_download_at,
+                last_upload_at,
+                hash_failed_bytes,
+                hash_failed_pieces,
             ) = r?;
             let parsed = metainfo
                 .as_deref()
@@ -174,7 +199,13 @@ impl Catalog {
                 settings: serde_json::from_str(&settings)?,
                 checkpoint: Checkpoint {
                     resume,
+                    downloaded,
+                    hash_failed_bytes,
+                    hash_failed_pieces,
                     uploaded,
+                    completed_at,
+                    last_download_at,
+                    last_upload_at,
                     seed_seconds,
                     complete,
                     completed_announce,
@@ -183,6 +214,7 @@ impl Catalog {
                 last_error,
                 retry_count,
                 retry_at,
+                added_at,
             })
         })
         .collect()
@@ -199,10 +231,13 @@ impl Catalog {
     }
     pub fn insert(&self, row: &Row) -> Result<()> {
         let mut state = self.0.lock().unwrap();
-        state.connection.execute("INSERT INTO torrents(id,metainfo,magnet,output_dir,intent,settings,resume,uploaded,seed_seconds,complete,completed_announce) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        state.connection.execute("INSERT INTO torrents(id,metainfo,magnet,output_dir,intent,settings,resume,uploaded,seed_seconds,complete,completed_announce,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             params![row.id,row.metainfo,row.magnet,row.output_dir.to_string_lossy(),serde_json::to_string(&row.intent)?,
                 serde_json::to_string(&row.settings)?,row.checkpoint.resume,row.checkpoint.uploaded,
-                row.checkpoint.seed_seconds,row.checkpoint.complete,row.checkpoint.completed_announce])?;
+                row.checkpoint.seed_seconds,row.checkpoint.complete,row.checkpoint.completed_announce,
+                row.checkpoint.downloaded,row.added_at,row.checkpoint.completed_at,
+                row.checkpoint.last_download_at,row.checkpoint.last_upload_at,
+                row.checkpoint.hash_failed_bytes,row.checkpoint.hash_failed_pieces])?;
         state.rows.push(Arc::new(row.clone()));
         Ok(())
     }
@@ -237,8 +272,11 @@ impl Catalog {
     }
     pub fn settings(&self, id: &str, settings: &TorrentSettings) -> Result<()> {
         self.update(id, |c, row| {
-            c.execute("UPDATE torrents SET settings=?2,last_error=NULL,retry_count=0,retry_at=0 WHERE id=?1",
-                params![id, serde_json::to_string(settings)?])?;
+            if row.settings.file_priorities != settings.file_priorities {
+                row.checkpoint.complete = false;
+            }
+            c.execute("UPDATE torrents SET settings=?2,last_error=NULL,retry_count=0,retry_at=0,complete=?3 WHERE id=?1",
+                params![id, serde_json::to_string(settings)?, row.checkpoint.complete])?;
             row.settings = settings.clone();
             row.last_error = None;
             row.retry_count = 0;
@@ -290,6 +328,9 @@ impl Catalog {
         self.update(id, |c, row| {
             let previous = row.checkpoint.clone();
             update(&mut row.checkpoint);
+            if row.checkpoint.complete && !previous.complete {
+                row.checkpoint.completed_at = Some(now());
+            }
             if row.checkpoint != previous {
                 let tx = c.unchecked_transaction()?;
                 if row.checkpoint.completed_announce != previous.completed_announce {
@@ -305,17 +346,29 @@ impl Catalog {
                         params![id, row.checkpoint.resume],
                     )?;
                 }
-                if row.checkpoint.uploaded != previous.uploaded
+                if row.checkpoint.hash_failed_bytes != previous.hash_failed_bytes
+                    || row.checkpoint.hash_failed_pieces != previous.hash_failed_pieces
+                    || row.checkpoint.downloaded != previous.downloaded
+                    || row.checkpoint.completed_at != previous.completed_at
+                    || row.checkpoint.last_download_at != previous.last_download_at
+                    || row.checkpoint.last_upload_at != previous.last_upload_at
+                    || row.checkpoint.uploaded != previous.uploaded
                     || row.checkpoint.seed_seconds != previous.seed_seconds
                     || row.checkpoint.complete != previous.complete
                 {
                     tx.execute(
-                        "UPDATE torrents SET uploaded=?2,seed_seconds=?3,complete=?4 WHERE id=?1",
+                        "UPDATE torrents SET uploaded=?2,seed_seconds=?3,complete=?4,downloaded=?5,completed_at=?6,last_download_at=?7,last_upload_at=?8,hash_failed_bytes=?9,hash_failed_pieces=?10 WHERE id=?1",
                         params![
                             id,
                             row.checkpoint.uploaded,
                             row.checkpoint.seed_seconds,
-                            row.checkpoint.complete
+                            row.checkpoint.complete,
+                            row.checkpoint.downloaded,
+                            row.checkpoint.completed_at,
+                            row.checkpoint.last_download_at,
+                            row.checkpoint.last_upload_at,
+                            row.checkpoint.hash_failed_bytes,
+                            row.checkpoint.hash_failed_pieces
                         ],
                     )?;
                 }

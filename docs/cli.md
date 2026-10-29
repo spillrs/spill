@@ -31,7 +31,7 @@ prefix that matches exactly one torrent; an ambiguous prefix is an input error.
 | `add SOURCE [--output DIR]` | Add a `.torrent` file (path) or a `magnet:` link. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. Prints the new ID. Adding a torrent that already exists is an error. |
 | `list [--watch]` | All torrents: ID prefix, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
 | `status` | Same data as `list`, plus daemon health. Most useful with `--json`. |
-| `get ID` | Everything about one torrent: settings, state, progress, uploaded bytes, seeding time, errors, tracker messages, and live transfer details (rates, peers, trackers). |
+| `get ID` | Everything about one torrent: settings, state, progress, lifetime downloaded/uploaded bytes, timestamps, seeding time, errors, tracker messages, and live transfer details (rates, peers, trackers). |
 | `set ID KEY=JSON ...` | Change per-torrent settings. Values are JSON: numbers, `true`/`false`, or arrays. See below. |
 | `files ID` | Files in torrent order: index, length, priority, path. Requires metadata. |
 | `pause ID` | Stop the torrent and keep it paused across restarts. |
@@ -49,6 +49,38 @@ running owner, including peers that have closed; restarting the owner resets it.
 Counts are sampled while peer I/O is attached; later FIN-linger retransmissions
 are not included. `transfer.pending_contacts` counts queued and currently dialing
 discovery contacts, not established peers. These diagnostics are not wire traces.
+
+## Accounting in JSON
+
+`get`, `list` and `status` expose the same per-torrent accounting fields:
+
+| Field | Meaning |
+|---|---|
+| `downloaded_bytes` | Lifetime payload received from peers and web seeds, including corrupt data, duplicates and re-downloads processed by the engine. Excludes existing files and protocol overhead. |
+| `uploaded_bytes` | Lifetime payload written to peer transports, excluding protocol overhead. Does not prove the remote peer retained it. |
+| `hash_failed_bytes`, `hash_failed_pieces` | Lifetime bytes and piece-verification attempts rejected after a downloaded piece fails its hash check. Counts the actual piece length, including a short final piece; repeated failures count again. Excludes startup/recheck corruption. |
+| `verified_bytes` | Currently verified bytes across the full torrent, not cumulative downloads. |
+| `wanted_bytes`, `wanted_verified_bytes` | Selected data bytes and their verified portion, excluding padding and skipped-file portions of boundary pieces. `null` before metadata is available. |
+| `completed` | Saved or live completion of the selected target after the completion barrier. Independent of whether the torrent is running. Changing file selection clears it until the new target is checked by a run. |
+| `seed_seconds` | Seconds running ready and complete, including idle seeding; excludes recovery, pauses and downtime. |
+| `added_at` | When this catalog entry was created. |
+| `completed_at` | Most recent recorded transition to complete, including adopted files. Retained if the torrent later becomes incomplete. |
+| `last_download_at`, `last_upload_at` | Most recent observation of payload received/sent, or `null` if none. |
+
+Timestamps are UTC Unix epoch seconds; optional timestamps are `null` until
+known. Activity timestamps are sampled, not packet timestamps. Live rates update
+about every two seconds; lifetime accounting is sampled about every second.
+`transfer.downloaded_bytes` and `transfer.uploaded_bytes` count only the current
+run and reset when it restarts. `transfer.hash_failed_bytes` and
+`transfer.hash_failed_pieces` likewise count only the current run. Hash-failure
+bytes are already included in downloaded traffic, not additional traffic.
+`transfer` is `null` when no run is present.
+Stopped progress comes from the saved resume record; file fingerprints are
+validated when the torrent next runs.
+
+Lifetime totals, timestamps and seeding time survive orderly restarts and
+rechecks. Removing and re-adding a torrent starts its accounting afresh. See
+[Torrents](torrents.md#accounting) for checkpoint durability.
 
 ## Changing settings with `set`
 

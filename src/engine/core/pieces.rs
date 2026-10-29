@@ -71,6 +71,9 @@ impl Torrent {
             return Err(io::Error::other("unexpected hash result"));
         }
         if !verified {
+            let range = self.meta.layout().piece_range(index).expect("piece");
+            self.hash_failed_bytes += range.end - range.start;
+            self.hash_failed_pieces += 1;
             return self.restart_piece(index, true);
         }
         self.mark_verified(index);

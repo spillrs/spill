@@ -336,6 +336,8 @@ impl Progress {
             s.progress.wanted_bytes = p.wanted_bytes();
             s.progress.wanted_verified_bytes = p.wanted_verified_bytes();
             s.progress.processed_payload_bytes = p.received_payload_bytes();
+            s.progress.hash_failed_bytes = p.hash_failed_bytes();
+            s.progress.hash_failed_pieces = p.hash_failed_pieces();
         });
         Ok(None)
     }
@@ -434,6 +436,8 @@ impl Progress {
             s.progress.wanted_bytes = p.wanted_bytes();
             s.progress.wanted_verified_bytes = p.wanted_verified_bytes();
             s.progress.processed_payload_bytes = p.received_payload_bytes();
+            s.progress.hash_failed_bytes = p.hash_failed_bytes();
+            s.progress.hash_failed_pieces = p.hash_failed_pieces();
             s.progress.written_payload_bytes = uploaded;
             s.progress.download_bytes_per_second = download_rate;
             s.progress.upload_bytes_per_second = upload_rate;

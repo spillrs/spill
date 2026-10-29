@@ -183,6 +183,9 @@ pub struct TorrentProgress {
     pub wanted_bytes: u64,
     pub wanted_verified_bytes: u64,
     pub processed_payload_bytes: u64,
+    /// Download verification failures only; startup/recheck failures are excluded.
+    pub hash_failed_bytes: u64,
+    pub hash_failed_pieces: u64,
     pub written_payload_bytes: u64,
     pub download_bytes_per_second: f64,
     pub upload_bytes_per_second: f64,

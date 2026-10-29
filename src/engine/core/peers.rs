@@ -126,6 +126,8 @@ impl Torrent {
                 .map_or(meta.layout().total_length(), |s| s.wanted_bytes()),
             wanted_verified_bytes: self.wanted_verified_bytes,
             received_payload_bytes: self.received_payload_bytes,
+            hash_failed_bytes: self.hash_failed_bytes,
+            hash_failed_pieces: self.hash_failed_pieces,
         })
     }
     /// Observe scheduling state without polling/reconciling events or replenishing

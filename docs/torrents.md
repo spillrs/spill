@@ -69,6 +69,28 @@ A torrent pauses itself when it reaches `seed_ratio` (uploaded bytes divided by
 the torrent's size) or `seed_time` (seconds spent seeding, not counting pauses
 or downtime). Uploaded bytes and seeding time are saved and survive restarts.
 
+## Accounting
+
+Each torrent keeps lifetime downloaded/uploaded payload totals, seeding time,
+and added/completed/last-transfer timestamps. Adopted files contribute verified
+progress but no downloaded traffic. Corrupt payload and re-downloads count as
+traffic, so downloaded bytes can exceed the torrent's size. Persistent
+`hash_failed_bytes` and `hash_failed_pieces` count failed downloaded-piece hash
+checks (including repeated failures), not corruption found during startup or
+recheck. They indicate wasted traffic, but cannot by themselves distinguish bad
+sources from local storage problems. Seeding time includes
+idle time while ready and complete, not just time spent sending bytes.
+
+Accounting is saved about every minute, on recorded completion-state changes,
+and when a run stops. An abrupt crash can lose accounting since the last
+checkpoint; power loss can also lose recent SQLite commits. There is no stored
+time series. Removing a torrent deletes its accounting.
+
+Completion and selected-file progress remain available while paused or queued.
+See [Command line](cli.md#accounting-in-json) for field definitions. Seed ratios
+continue to use lifetime uploaded bytes divided by the full torrent size, not
+by downloaded bytes or selected-file size.
+
 ## Recheck
 
 `spill recheck ID` hashes every piece on disk, records the result, then

@@ -32,9 +32,17 @@ struct Running {
     task: JoinHandle<io::Result<()>>,
     live: Arc<StdMutex<Live>>,
     last: Instant,
+    downloaded: u64,
     uploaded: u64,
     seed_seconds: f64,
+    previous_downloaded: u64,
+    hash_failed_bytes: u64,
+    hash_failed_pieces: u64,
+    previous_hash_failed_bytes: u64,
+    previous_hash_failed_pieces: u64,
     previous_uploaded: u64,
+    last_download_at: Option<u64>,
+    last_upload_at: Option<u64>,
     saved: Instant,
     complete: bool,
     seed_active: bool,
@@ -119,11 +127,23 @@ impl Supervisor {
             if s.progress.ready {
                 self.db.recovered(id).map_err(io_error)?;
             }
-            running.uploaded = running.uploaded.saturating_add(
-                s.progress
-                    .written_payload_bytes
-                    .saturating_sub(running.previous_uploaded),
-            );
+            let downloaded = s.progress.processed_payload_bytes - running.previous_downloaded;
+            let uploaded = s.progress.written_payload_bytes - running.previous_uploaded;
+            running.downloaded += downloaded;
+            running.hash_failed_bytes +=
+                s.progress.hash_failed_bytes - running.previous_hash_failed_bytes;
+            running.hash_failed_pieces +=
+                s.progress.hash_failed_pieces - running.previous_hash_failed_pieces;
+            running.previous_hash_failed_bytes = s.progress.hash_failed_bytes;
+            running.previous_hash_failed_pieces = s.progress.hash_failed_pieces;
+            running.uploaded += uploaded;
+            if downloaded != 0 {
+                running.last_download_at = Some(catalog::now());
+            }
+            if uploaded != 0 {
+                running.last_upload_at = Some(catalog::now());
+            }
+            running.previous_downloaded = s.progress.processed_payload_bytes;
             running.previous_uploaded = s.progress.written_payload_bytes;
             if running.seed_active {
                 running.seed_seconds += running.last.elapsed().as_secs_f64();
@@ -136,7 +156,12 @@ impl Supervisor {
             {
                 self.db
                     .checkpoint(id, |c| {
+                        c.downloaded = running.downloaded;
+                        c.hash_failed_bytes = running.hash_failed_bytes;
+                        c.hash_failed_pieces = running.hash_failed_pieces;
                         c.uploaded = running.uploaded;
+                        c.last_download_at = running.last_download_at;
+                        c.last_upload_at = running.last_upload_at;
                         c.seed_seconds = running.seed_seconds;
                         if let Some(complete) = complete {
                             c.complete = complete;
@@ -184,6 +209,33 @@ impl Supervisor {
                 };
                 (phase.into(), None)
             });
+        let selected = row.meta().ok().filter(|_| status.is_none()).map(|meta| {
+            let selection = if row.settings.file_priorities.is_empty() {
+                spill::engine::selection::FileSelection::all(meta.layout())
+            } else {
+                spill::engine::selection::FileSelection::new(
+                    meta.layout(),
+                    &row.settings.file_priorities,
+                )
+                .expect("validated file priorities")
+            };
+            let verified = spill::protocol::resume::decode(meta, &row.checkpoint.resume)
+                .map(|resume| selection.verified_bytes(meta.layout(), &resume.verified))
+                .unwrap_or(0);
+            (selection.wanted_bytes(), verified)
+        });
+        let wanted_bytes = status
+            .as_ref()
+            .map(|s| s.progress.wanted_bytes)
+            .or_else(|| selected.map(|p| p.0));
+        let wanted_verified_bytes = status
+            .as_ref()
+            .map(|s| s.progress.wanted_verified_bytes)
+            .or_else(|| selected.map(|p| p.1));
+        let completed = status
+            .as_ref()
+            .and_then(completion)
+            .unwrap_or(row.checkpoint.complete);
         let verified = status
             .as_ref()
             .map(|s| s.progress.verified_bytes)
@@ -201,10 +253,28 @@ impl Supervisor {
             .get(&row.id)
             .map(|r| (r.uploaded, r.seed_seconds))
             .unwrap_or((row.checkpoint.uploaded, row.checkpoint.seed_seconds));
+        let (downloaded, last_download_at, last_upload_at) = self
+            .running
+            .get(&row.id)
+            .map(|r| (r.downloaded, r.last_download_at, r.last_upload_at))
+            .unwrap_or((
+                row.checkpoint.downloaded,
+                row.checkpoint.last_download_at,
+                row.checkpoint.last_upload_at,
+            ));
+        let (hash_failed_bytes, hash_failed_pieces) = self
+            .running
+            .get(&row.id)
+            .map(|r| (r.hash_failed_bytes, r.hash_failed_pieces))
+            .unwrap_or((
+                row.checkpoint.hash_failed_bytes,
+                row.checkpoint.hash_failed_pieces,
+            ));
         let transfer = status.as_ref().map(|s| {
             json!({"ready":s.progress.ready,"completed":s.progress.completed,
             "active_peers":s.progress.active_peers,"downloaded_bytes":s.progress.processed_payload_bytes,
             "uploaded_bytes":s.progress.written_payload_bytes,
+            "hash_failed_bytes":s.progress.hash_failed_bytes,"hash_failed_pieces":s.progress.hash_failed_pieces,
             "download_bytes_per_second":s.progress.download_bytes_per_second,
             "upload_bytes_per_second":s.progress.upload_bytes_per_second,
             "utp_retransmits":s.diagnostics.as_ref().map(|d| d.utp_retransmits),
@@ -227,7 +297,11 @@ impl Supervisor {
             "intent":row.intent,"state":phase,"output_dir":row.output_dir,"settings":row.settings,
             "private":meta.as_ref().map(|m| m.is_private()),
             "verified_bytes":verified,"total_bytes":meta.as_ref().map(|m|m.layout().total_length()),
-            "uploaded_bytes":uploaded,"seed_seconds":seed_seconds,
+            "downloaded_bytes":downloaded,"uploaded_bytes":uploaded,"seed_seconds":seed_seconds,
+            "hash_failed_bytes":hash_failed_bytes,"hash_failed_pieces":hash_failed_pieces,
+            "completed":completed,"wanted_bytes":wanted_bytes,"wanted_verified_bytes":wanted_verified_bytes,
+            "added_at":row.added_at,"completed_at":row.checkpoint.completed_at,
+            "last_download_at":last_download_at,"last_upload_at":last_upload_at,
             "completed_announce":row.checkpoint.completed_announce,
             "last_error":row.last_error.as_ref().or(tracker_error),
             "tracker_message":tracker_message,"retry_at":row.retry_at,"transfer":transfer})
@@ -381,9 +455,17 @@ impl Supervisor {
                         task,
                         live,
                         last: Instant::now(),
+                        downloaded: row.checkpoint.downloaded,
                         uploaded: row.checkpoint.uploaded,
                         seed_seconds: row.checkpoint.seed_seconds,
+                        previous_downloaded: 0,
+                        hash_failed_bytes: row.checkpoint.hash_failed_bytes,
+                        hash_failed_pieces: row.checkpoint.hash_failed_pieces,
+                        previous_hash_failed_bytes: 0,
+                        previous_hash_failed_pieces: 0,
                         previous_uploaded: 0,
+                        last_download_at: row.checkpoint.last_download_at,
+                        last_upload_at: row.checkpoint.last_upload_at,
                         saved: Instant::now(),
                         complete: row.checkpoint.complete,
                         seed_active: false,

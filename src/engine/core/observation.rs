@@ -39,6 +39,8 @@ pub(in crate::engine) struct Progress {
     pub(super) wanted_bytes: u64,
     pub(super) wanted_verified_bytes: u64,
     pub(super) received_payload_bytes: u64,
+    pub(super) hash_failed_bytes: u64,
+    pub(super) hash_failed_pieces: u64,
 }
 impl Progress {
     pub(in crate::engine) fn total_bytes(&self) -> u64 {
@@ -55,6 +57,12 @@ impl Progress {
     }
     pub(in crate::engine) fn remaining_bytes(&self) -> u64 {
         self.total_bytes - self.verified_bytes
+    }
+    pub(in crate::engine) fn hash_failed_bytes(&self) -> u64 {
+        self.hash_failed_bytes
+    }
+    pub(in crate::engine) fn hash_failed_pieces(&self) -> u64 {
+        self.hash_failed_pieces
     }
     pub(in crate::engine) fn received_payload_bytes(&self) -> u64 {
         self.received_payload_bytes

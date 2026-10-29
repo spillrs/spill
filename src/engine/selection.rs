@@ -96,7 +96,7 @@ impl FileSelection {
     }
 
     /// Selected data bytes only, excluding skipped boundary bytes and padding.
-    pub(in crate::engine) fn wanted_bytes(&self) -> u64 {
+    pub fn wanted_bytes(&self) -> u64 {
         self.wanted_bytes
     }
 
@@ -116,7 +116,7 @@ impl FileSelection {
             .sum()
     }
 
-    pub(in crate::engine) fn verified_bytes(&self, layout: &Layout<'_>, verified: &[u8]) -> u64 {
+    pub fn verified_bytes(&self, layout: &Layout<'_>, verified: &[u8]) -> u64 {
         self.pieces
             .iter()
             .enumerate()

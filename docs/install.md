@@ -138,3 +138,7 @@ Before 1.0, Spill does not migrate old catalogs. If an upgrade reports
 `unsupported catalog version`, start with a fresh `state_dir`. Keep your
 download directory: re-adding a torrent whose complete files are already there
 verifies and seeds them without downloading again.
+
+The accounting fields require catalog version 4; older catalogs require a
+fresh state directory. Re-adding files does not recover their previous traffic
+totals or timestamps.

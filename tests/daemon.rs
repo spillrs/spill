@@ -1,5 +1,8 @@
 mod common;
 
+#[path = "daemon/accounting.rs"]
+mod accounting;
+
 #[path = "daemon/cli.rs"]
 mod cli;
 #[path = "daemon/config.rs"]

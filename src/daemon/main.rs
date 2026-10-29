@@ -175,9 +175,19 @@ async fn serve(path: Option<&std::path::Path>) -> io::Result<()> {
         web.abort();
         let _ = web.await;
     }
-    // Control mutations have already joined before supervisor shutdown acquired
-    // its lock; remaining tasks can only be idle reads or response writers.
-    clients.shutdown().await;
+    // Let the shutdown requester write its reply before aborting idle clients.
+    if tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(result) = clients.join_next().await {
+            if let Err(e) = result {
+                eprintln!("control client: {e}");
+            }
+        }
+    })
+    .await
+    .is_err()
+    {
+        clients.shutdown().await;
+    }
     std::fs::remove_file(&config.control_socket)?;
     drop(lock);
     result.and(joined)

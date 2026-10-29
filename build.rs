@@ -13,7 +13,7 @@ fn main() {
         let name = path.file_name().unwrap().to_str().unwrap();
         assets.push_str(&format!("({name:?}, include_bytes!({path:?}) as &[u8]),\n"));
     }
-    assets.push_str("]");
+    assets.push(']');
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("web_assets.rs"),
         assets,

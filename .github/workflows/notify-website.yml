@@ -1,0 +1,21 @@
+name: Notify website
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger website sync
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_SYNC_TOKEN }}
+        run: |
+          gh api --method POST repos/spillrs/spill.rs/dispatches \
+            -f event_type=sync-spill

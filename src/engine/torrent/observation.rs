@@ -33,6 +33,8 @@ struct Peer {
     uploaded: u64,
 }
 pub(super) struct Progress {
+    status: Status,
+    seeding_since: Option<Instant>,
     pub(in crate::engine) active: usize,
     pub(in crate::engine) pending: usize,
     pub(in crate::engine) complete: bool,
@@ -47,9 +49,19 @@ pub(super) struct Progress {
     downloaded: u64,
     uploaded: u64,
 }
+impl Drop for Progress {
+    fn drop(&mut self) {
+        if let Some(since) = self.seeding_since {
+            self.status
+                .send_modify(|s| s.progress.seeding_duration = since.elapsed());
+        }
+    }
+}
 impl Progress {
-    pub(in crate::engine) fn new() -> Self {
+    pub(in crate::engine) fn new(status: Status) -> Self {
         Self {
+            status,
+            seeding_since: None,
             active: 0,
             pending: 0,
             complete: false,
@@ -73,7 +85,7 @@ impl Progress {
             s.progress.active_peers = self.active;
         });
     }
-    pub(in crate::engine) fn update_counters(
+    pub(in crate::engine) async fn update_counters(
         &self,
         transfer: &mut Shell,
         discovery: &mut Discovery,
@@ -86,7 +98,7 @@ impl Progress {
                 left: p.remaining_bytes(),
             };
             for event in transfer.take_announces() {
-                manager.request(event)?;
+                manager.request(event).await?;
             }
         } else {
             transfer.take_announces();
@@ -274,6 +286,7 @@ impl Progress {
         match event {
             Event::Complete => {
                 self.complete = true;
+                self.seeding_since.get_or_insert_with(Instant::now);
                 status.send_modify(|s| {
                     s.progress.completed = true;
                     s.progress.phase = TorrentPhase::Seeding;
@@ -332,6 +345,7 @@ impl Progress {
         let p = transfer.progress()?;
         status.send_modify(|s| {
             s.progress.verified_bytes = p.verified_bytes();
+            s.progress.full_complete = p.verified_bytes() == p.total_bytes();
             s.progress.verified_pieces = transfer.verified_count();
             s.progress.wanted_bytes = p.wanted_bytes();
             s.progress.wanted_verified_bytes = p.wanted_verified_bytes();
@@ -355,6 +369,9 @@ impl Progress {
         discovery: &Discovery,
         status: &Status,
     ) -> io::Result<()> {
+        if let Some(since) = self.seeding_since {
+            status.send_modify(|s| s.progress.seeding_duration = since.elapsed());
+        }
         let p = transfer.progress()?;
         let uploaded = transfer.uploaded_bytes();
         let elapsed = self.sampled.elapsed().as_secs_f64().max(0.001);

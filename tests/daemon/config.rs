@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 use crate::common::multifile_metainfo;
-use crate::common::{BIN, Daemon, Temp, seed_metainfo};
+use crate::common::{BIN, Daemon};
+use crate::payload::{Temp, seed_metainfo};
 use std::time::Duration;
 
 #[tokio::test]
@@ -97,6 +98,7 @@ async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
     let health = daemon.call(serde_json::json!({"op":"health"})).await;
     assert_eq!(health["listen"], "0.0.0.0:6881");
     assert_eq!(health["advertised_port"], 6881);
+    assert_eq!(health["admission_closed"], false);
     let output = tokio::process::Command::new(BIN)
         .args(["--json", "get", &id])
         .env("HOME", &home.0)

@@ -1,4 +1,5 @@
-use crate::common::{BIN, Daemon, Temp, WebSeed, metainfo};
+use crate::common::{BIN, Daemon, WebSeed, metainfo};
+use crate::payload::Temp;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::process::Command;

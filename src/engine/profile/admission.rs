@@ -18,16 +18,19 @@ impl Profile {
     pub fn parse<'a>(&self, bytes: &'a [u8]) -> Result<Metainfo<'a>, AdmissionError> {
         let meta =
             Metainfo::parse(bytes, self.metainfo_limits()).map_err(AdmissionError::Metainfo)?;
-        self.validate(meta.layout())?;
+        self.validate_layout(meta.layout())?;
         Ok(meta)
     }
     pub fn parse_owned(&self, bytes: &[u8]) -> Result<OwnedMetainfo, AdmissionError> {
         let meta = OwnedMetainfo::parse(bytes, self.metainfo_limits())
             .map_err(AdmissionError::Metainfo)?;
-        self.validate(meta.layout())?;
+        self.validate_layout(meta.layout())?;
         Ok(meta)
     }
-    fn validate(&self, layout: &Layout<'_>) -> Result<(), AdmissionError> {
+    pub(in crate::engine) fn validate_layout(
+        &self,
+        layout: &Layout<'_>,
+    ) -> Result<(), AdmissionError> {
         for (exceeded, resource) in [
             (
                 layout.piece_count() > super::MAX_PIECES,

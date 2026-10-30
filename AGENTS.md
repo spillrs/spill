@@ -22,6 +22,7 @@ under real use, then performance. The code must stay minimal: every line has to 
 | `src/engine/{peer_io,discovery,dht,webseed}` | Transports and discovery sources feeding the shell | Write payload or make scheduling decisions |
 | `src/daemon` | Config, SQLite catalog, supervisor, Unix control socket, CLI, web UI | Reach into engine internals; the engine API is the boundary |
 | `deploy` | Example configs and service definitions | Depend on local machine paths |
+| `tests/engine` | Public-library end-to-end scenarios with in-process peers, trackers or web seeds | Depend on the daemon binary or test-only engine APIs |
 | `tests/interop` | Python harnesses against real clients (Transmission) | Require changes in `src/` to work |
 | `docs` | End-user documentation, rendered on the homepage (`SUMMARY.md` is the page order) | Describe internals that churn; link to code instead |
 
@@ -37,11 +38,15 @@ Behaviour is tested end to end. Unit tests are not wanted.
   hooks, feature flags or public APIs that exist only for tests. If a test
   needs to observe something, it must be useful in the daemon's JSON output
   to real users too.
-- **A bug fix comes with an end-to-end reproduction** in
-  the matching module under `tests/daemon/` when one can be built with
-  in-process peers, trackers or web seeds. Otherwise, add or extend an interop scenario.
-- Keep `tests/daemon.rs` as the module list; group scenarios by behaviour under
-  `tests/daemon/` and put shared harness code in `tests/common/`.
+- **A bug fix comes with an end-to-end reproduction** in the matching module
+  under `tests/daemon/` or `tests/engine/` when one can be built with in-process
+  peers, trackers, web seeds or filesystem payloads. Otherwise, add or extend an
+  interop scenario. Library-only behaviour belongs under `tests/engine/`.
+- Keep `tests/daemon.rs` and `tests/engine.rs` as module lists; group scenarios
+  by behaviour under their matching directories and put shared harness code in
+  `tests/common/`. Engine scenarios must not import daemon-dependent helpers or
+  require the daemon binary. Retain real-daemon assertions when moving library
+  scenarios; do not duplicate existing protection.
 - Do not add tests to raise coverage. A test must protect a user-visible
   behaviour that could plausibly regress.
 
@@ -50,7 +55,7 @@ Behaviour is tested end to end. Unit tests are not wanted.
 | Tier | What | Command | When |
 |---|---|---|---|
 | 0 | Protocol codecs | `cargo test --test protocol` | Every change |
-| 1 | Daemon end to end: real `spill` binary, in-process peers, trackers, web seeds, no public network | `cargo test --test daemon` | Every change |
+| 1 | Daemon and public-library end to end: real `spill` binary where needed, in-process peers, trackers, web seeds, no public network | `cargo test --test daemon --test engine` | Every change |
 | 2 | Interop with Transmission 4.1+: both directions, kill and restart, magnet, HTTP tracker | `python tests/interop/transmission_smoke.py --help` | Before merging engine or daemon changes; on a dev machine with a LAN address |
 | 3 | Limits and soak scenarios (large and many torrents, swarms, long runs) | Scenarios in `tests/interop/` | Before releases and after architectural changes; dev machine only |
 

@@ -183,6 +183,6 @@ Before 1.0, Spill does not migrate old catalogs. If an upgrade reports
 download directory: re-adding a torrent whose complete files are already there
 verifies and seeds them without downloading again.
 
-The accounting fields require catalog version 4; older catalogs require a
+v0.6 requires catalog version 5; older catalogs require a
 fresh state directory. Re-adding files does not recover their previous traffic
 totals or timestamps.

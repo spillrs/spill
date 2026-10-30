@@ -1,4 +1,5 @@
-use crate::common::{Daemon, Temp, WebSeed, multifile_metainfo};
+use crate::common::{Daemon, WebSeed, multifile_metainfo};
+use crate::payload::Temp;
 use serde_json::json;
 
 #[tokio::test]

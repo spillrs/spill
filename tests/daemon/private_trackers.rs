@@ -1,4 +1,5 @@
-use crate::common::{Daemon, Temp, WebSeed};
+use crate::common::{Daemon, WebSeed};
+use crate::payload::Temp;
 use serde_json::json;
 use sha1::Digest;
 use std::time::Duration;

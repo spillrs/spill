@@ -37,7 +37,7 @@ impl Shell {
         meta: OwnedMetainfo,
         peer_id: [u8; 20],
         profile: Profile,
-        writer: Writer,
+        writer: &Writer,
         verified: Vec<u8>,
     ) -> io::Result<Self> {
         let mut entropy = [0; 8];
@@ -56,19 +56,18 @@ impl Shell {
         hash: InfoHashV1,
         peer_id: [u8; 20],
         profile: Profile,
-        writer: Option<Writer>,
+        writer: Option<&Writer>,
     ) -> io::Result<Self> {
         core.set_identity(peer_id);
-        let capacity_changed = writer
-            .as_ref()
-            .map_or_else(|| Arc::new(Notify::new()), Writer::capacity_changed);
+        let capacity_changed =
+            writer.map_or_else(|| Arc::new(Notify::new()), Writer::capacity_changed);
         let peers = Peers::new(hash, peer_id, profile, capacity_changed.clone())?;
         capacity_changed.notify_one();
         let changes = peers.bandwidth.changes();
         Ok(Self {
             core,
             peers,
-            writer,
+            writer: None,
             capacity_changed,
             ready: Vec::with_capacity(profile.peers),
             writes: 0,
@@ -98,6 +97,10 @@ impl Shell {
     }
     pub(in crate::engine) fn take_metadata(&mut self) -> Option<OwnedMetainfo> {
         self.metadata.take()
+    }
+    pub(in crate::engine) fn attach_writer(&mut self, writer: Writer) {
+        assert!(self.writer.is_none());
+        self.writer = Some(writer);
     }
     fn writer(&mut self) -> io::Result<&mut Writer> {
         self.writer
@@ -356,16 +359,20 @@ impl Shell {
     }
     pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
         if self.stopped {
-            return Ok(());
+            return self.drain().await;
         }
         self.stopped = true;
-        let _ = self.feed(Input::Stop);
+        let stopped = self.feed(Input::Stop);
+        stopped.and(self.drain().await)
+    }
+    pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
         let peers = self.peers.cancel_and_join().await;
         let writer = if let Some(writer) = &mut self.writer {
             writer.shutdown().await
         } else {
             Ok(())
         };
+        self.stopped = true;
         peers.and(writer)
     }
     pub(in crate::engine) fn set_bandwidth(

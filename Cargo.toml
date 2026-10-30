@@ -62,7 +62,7 @@ toml = "0.8"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["process", "test-util"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread", "test-util"] }
 
 [lints.rust]
 unsafe_code = "forbid"

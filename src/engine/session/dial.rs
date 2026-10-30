@@ -363,8 +363,16 @@ impl Client {
     }
     pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
         self.withdraw();
-        self.tasks.shutdown().await;
-        Ok(())
+        self.tasks.abort_all();
+        let mut failure = None;
+        while let Some(result) = self.tasks.join_next().await {
+            if let Err(error) = result
+                && !error.is_cancelled()
+            {
+                failure.get_or_insert_with(|| io::Error::other(error));
+            }
+        }
+        failure.map_or(Ok(()), Err)
     }
 }
 impl Drop for Client {

@@ -45,10 +45,10 @@ impl FileStorage {
         self.verified_resume = resume;
         self
     }
-    pub fn binding(&self) -> &crate::engine::provisioning::DestinationBinding {
+    pub(in crate::engine) fn binding(&self) -> &crate::engine::provisioning::DestinationBinding {
         self.binding.as_ref().expect("provisioned destination")
     }
-    pub fn verified_resume(&self) -> Option<&[u8]> {
+    pub(in crate::engine) fn verified_resume(&self) -> Option<&[u8]> {
         self.verified_resume.as_deref()
     }
     /// Caller-opened exact-sized, regular files, in metainfo order (None for

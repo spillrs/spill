@@ -76,6 +76,14 @@ A client command can't reach the control socket.
 - On a private tracker, `last_error` shows the tracker's reason, for example an
   unregistered torrent or a client that isn't whitelisted.
 
+## Torrents stay queued after an internal failure
+
+If `spill health` shows `"admission_closed": true` while the daemon is running,
+a torrent stopped without proving that its files were released. Spill then
+starts no further torrents, so it never opens the same files twice. The
+torrent's `last_error` names the failure. Restart the daemon, and report the
+error if it repeats.
+
 ## Nobody can connect to me
 
 Allow the `listen` port for TCP and UDP in your host firewall. Run

@@ -44,7 +44,7 @@ pub(super) async fn run(
                 let addresses = {
                     let mut addresses = Vec::new();
                     for router in &routers {
-                        let (host, port) = endpoint(router)?;
+                        let (host, port) = endpoint(router).expect("validated DHT router");
                         if let Some(address) =
                             crate::engine::network::resolve_v4(host, port, allow_local_network)
                                 .await

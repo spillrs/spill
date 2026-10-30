@@ -98,8 +98,20 @@ have DHT and PEX off.
 
 The DHT needs an IPv4 `listen` address. Its routing table is saved in the
 catalog and reused on the next start; `dht_bootstrap` lists the routers used to
-join when no saved nodes answer. If the DHT cannot start (for example, after
-switching `listen` to IPv6), Spill logs it and runs without the DHT.
+join when no saved nodes answer. It starts lazily for public transfers using DHT
+or magnet metadata resolution, never for private torrents or metainfo-only
+rechecks. Router outages remain ordinary discovery failures and are retried.
+Initialization failures fail affected executions and are retained until the
+session is recreated (restart the daemon to retry).
+
+The library's one-shot `download()` permits DHT with `default_routers()`:
+`dht.libtorrent.org:25401`, `dht.transmissionbt.com:6881`,
+`router.bittorrent.com:6881` and `router.utorrent.com:6881`. Eligible executions
+therefore perform router DNS lookups and UDP discovery. Reusable library sessions
+permit DHT only when their `NetworkOptions::dht` explicitly supplies capability.
+
+After switching `listen` to IPv6, Spill logs that DHT is unavailable and continues
+with other discovery sources. Saved per-torrent DHT settings are preserved.
 
 ## Local addresses
 
@@ -138,3 +150,5 @@ connections are accepted from any address.
   Spill knows whether the torrent is private. Use a `.torrent` file for private
   trackers; private metadata from magnets is rejected.
 - Spill does not encrypt peer connections.
+- Detailed tracker and web-seed observations expose full URLs, which may contain
+  passkeys or other secrets, even when transport errors redact them.

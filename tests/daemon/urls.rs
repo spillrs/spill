@@ -1,4 +1,5 @@
-use crate::common::{BIN, Daemon, Temp, http, metainfo};
+use crate::common::{BIN, Daemon, http, metainfo};
+use crate::payload::Temp;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use serde_json::{Value, json};
 use std::{

@@ -1,4 +1,5 @@
-use crate::common::{Daemon, Temp, WebSeed, metainfo};
+use crate::common::{Daemon, WebSeed, metainfo};
+use crate::payload::Temp;
 use std::sync::atomic::Ordering;
 
 #[tokio::test]

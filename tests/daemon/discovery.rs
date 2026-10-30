@@ -1,5 +1,6 @@
 use super::transport::{utp_tracker, wait_transport};
-use crate::common::{Daemon, Temp, WebSeed, metainfo, seed_metainfo};
+use crate::common::{Daemon, WebSeed, metainfo};
+use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
 use std::sync::atomic::Ordering;
@@ -188,40 +189,30 @@ async fn session_network_policy_controls_trackers_and_web_seeds() {
 async fn magnet_resolves_metadata_then_downloads_and_seeds() {
     use spill::engine::{
         profile::Profile,
-        provisioning::NamedDestination,
-        session::{Limits, Session},
-        torrent::TorrentOptions,
+        session::{Limits, NetworkOptions, Session},
+        torrent::{Destination, TorrentOptions, TorrentSource},
     };
     use spill::protocol::{compact::PeersV4, tracker::udp};
     use tokio::net::UdpSocket;
     let profile = Profile::DEFAULT;
     let meta = profile.parse_owned(&metainfo(None)).unwrap();
     let hash = meta.info_hash();
-    let mut seed = Session::bind(
-        "127.0.0.1:0".parse().unwrap(),
-        Limits {
+    let seed = Session::bind(
+        NetworkOptions {
+            listen: "127.0.0.1:0".parse().unwrap(),
             allow_local_network: true,
             ..Default::default()
         },
-        None,
+        Limits::default(),
     )
     .await
     .unwrap();
     let seed_root = Temp::new();
     std::fs::write(seed_root.0.join("x"), b"abc").unwrap();
-    let storage = NamedDestination::open_cancellable(
-        std::fs::File::open(&seed_root.0).unwrap(),
-        &meta,
-        |_| Ok(()),
-        || false,
-    )
-    .unwrap();
-    let resume = storage.verified_resume().map(<[u8]>::to_vec);
-    seed.admit(
-        TorrentOptions::new(meta, profile)
-            .storage(storage)
-            .resume(resume),
-    )
+    seed.admit(TorrentOptions::new(
+        TorrentSource::Metainfo(meta),
+        Destination::Open(seed_root.0.clone()),
+    ))
     .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while !seed.torrent(hash).unwrap().snapshot().progress.ready {

@@ -67,7 +67,9 @@ stays `.part` (and sparse) unless pieces shared with a selected file fill it.
 
 A torrent pauses itself when it reaches `seed_ratio` (uploaded bytes divided by
 the torrent's size) or `seed_time` (seconds spent seeding, not counting pauses
-or downtime). Uploaded bytes and seeding time are saved and survive restarts.
+or downtime). Seeding duration is measured by the engine at lifecycle transitions,
+not inferred from supervisor sampling. Uploaded bytes and seeding time are saved
+and survive restarts.
 
 ## Accounting
 
@@ -97,6 +99,10 @@ by downloaded bytes or selected-file size.
 leaves the torrent paused. Resume it to continue: missing or corrupt pieces are
 downloaded again, and a complete torrent seeds. Recheck after moving files,
 editing them, or an unclean power loss during a download.
+
+A magnet with unresolved metadata may use its enabled trackers or DHT to obtain
+metadata first. The subsequent scan never downloads missing payload or serves
+pieces. Library offline rechecks require supplied metainfo.
 
 ## Restarts, crashes and durability
 

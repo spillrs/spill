@@ -1,20 +1,20 @@
-//! Shared inbound routing. Reservations are conservative and retained until removal
-//! joins the torrent. Admission grants no discovery authority.
+//! Shared services and execution ownership. Reservations last through joined cleanup.
 pub mod dht;
 pub(in crate::engine) mod dial;
 mod listener;
-pub mod metadata;
+pub(in crate::engine) mod metadata;
 pub mod port_map;
 pub(in crate::engine) mod udp;
 pub(in crate::engine) mod utp;
 use crate::engine::{
     profile::Profile,
     storage::writer::RECHECK_CONCURRENCY,
-    torrent::{Network, Networking, RunPolicy, TorrentHandle, TorrentOptions},
+    torrent::{
+        Destination, Network, Networking, RunPolicy, TorrentHandle, TorrentOptions, TorrentSource,
+    },
 };
 /// Explicit consent and persisted state for the session-owned DHT node.
 pub struct DhtOptions {
-    pub allow_network: bool,
     pub saved: Option<crate::engine::session::dht::SavedState>,
     /// An empty list disables router bootstrap.
     pub routers: Vec<String>,
@@ -27,10 +27,7 @@ use std::{
     collections::HashMap,
     io,
     net::{IpAddr, SocketAddr},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
@@ -40,11 +37,26 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+pub struct NetworkOptions {
+    pub listen: SocketAddr,
+    pub utp: bool,
+    pub allow_local_network: bool,
+    pub port_mapping: Option<port_map::Gateway>,
+    pub dht: Option<DhtOptions>,
+}
+impl Default for NetworkOptions {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([0, 0, 0, 0], 0)),
+            utp: true,
+            allow_local_network: false,
+            port_mapping: None,
+            dht: None,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Permit LAN and loopback endpoints for peers and discovery sources.
-    pub allow_local_network: bool,
-    pub utp: bool,
     pub torrents: usize,
     pub pending_handshakes: usize,
     /// Pending (not established) inbound connections per canonical source IP.
@@ -59,8 +71,6 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            allow_local_network: false,
-            utp: true,
             // Seeds retain sockets, cache and writer reservations too; keep
             // them bounded rather than allowing unlimited seeding admission.
             torrents: 32,
@@ -118,111 +128,145 @@ impl Drop for HandshakePermit {
     }
 }
 struct Owner {
-    observer: crate::engine::torrent::TorrentObserver,
-    join: Arc<JoinBarrier>,
-    profile: Profile,
-    removing: bool,
-}
-struct JoinBarrier {
-    state: AsyncMutex<OwnerJoin>,
-    joined: AtomicBool,
-}
-struct OwnerJoin {
     handle: TorrentHandle,
-    result: Option<Result<(), Arc<io::Error>>>,
+    profile: Profile,
+    identity: Arc<()>,
 }
-/// An unrouted, stopping owner. Join outside the caller's Session lock, then
-/// call [`Session::finish_remove`] to release its reservation. Dropping or
-/// canceling this token leaves the owner joinable by removal or shutdown.
-pub struct Removal {
+pub(in crate::engine) struct Retirement {
+    registry: std::sync::Weak<Mutex<Registry>>,
+    routes: Routes,
     hash: InfoHashV1,
-    owner: Arc<JoinBarrier>,
+    identity: Arc<()>,
 }
-impl Removal {
-    pub async fn join(&self) -> io::Result<()> {
-        let mut owner = self.owner.state.lock().await;
-        if owner.result.is_none() {
-            let result = owner.handle.join().await;
-            owner.result = Some(result.map_err(Arc::new));
-            self.owner.joined.store(true, Ordering::Release);
+impl Retirement {
+    pub(in crate::engine) fn retire(&self) {
+        if let Some(registry) = self.registry.upgrade() {
+            let mut registry = registry.lock().unwrap();
+            if registry
+                .torrents
+                .get(&self.hash)
+                .is_some_and(|owner| Arc::ptr_eq(&owner.identity, &self.identity))
+            {
+                self.routes.lock().unwrap().remove(&self.hash);
+                registry.torrents.remove(&self.hash);
+            }
         }
-        // Multiple removal/shutdown waiters share one join barrier and retain
-        // its original failure domain and source, rather than joining twice.
-        owner
-            .result
-            .as_ref()
-            .expect("joined result")
-            .as_ref()
-            .map(|_| ())
-            .map_err(|error| io::Error::new(error.kind(), error.clone()))
     }
 }
+/// Clones share executions. Last-clone drop requests stop; shutdown joins cleanup.
+#[derive(Clone)]
 pub struct Session {
+    shared: Arc<Shared>,
+}
+struct Registry {
+    torrents: HashMap<InfoHashV1, Owner>,
+    closed: bool,
+}
+impl Registry {
+    fn is_closed(&mut self) -> bool {
+        self.closed |= self
+            .torrents
+            .values()
+            .any(|owner| owner.handle.cleanup_unproven());
+        self.closed
+    }
+}
+struct Tasks {
+    mapping: Option<JoinHandle<()>>,
+    udp: Option<JoinHandle<io::Result<()>>>,
+    utp: Option<JoinHandle<()>>,
+    utp_router: Option<JoinHandle<io::Result<()>>>,
+    listener: Option<JoinHandle<io::Result<()>>>,
+    tcp_handshakes: Arc<AsyncMutex<JoinSet<()>>>,
+    utp_handshakes: Arc<AsyncMutex<JoinSet<()>>>,
+    failure: Option<Arc<io::Error>>,
+    joined: bool,
+}
+impl Tasks {
+    fn record(&mut self, result: io::Result<()>) {
+        if let Err(error) = result {
+            self.failure.get_or_insert_with(|| Arc::new(error));
+        }
+    }
+    fn result(&self) -> io::Result<()> {
+        self.failure.as_ref().map_or(Ok(()), |error| {
+            Err(io::Error::new(error.kind(), error.clone()))
+        })
+    }
+}
+struct Shared {
     bandwidth: crate::engine::bandwidth::Budget,
     rechecks: Arc<Semaphore>,
     address: SocketAddr,
     advertised_port: watch::Sender<u16>,
     mapping_status: watch::Receiver<port_map::Status>,
-    mapping_task: Option<JoinHandle<()>>,
     limits: Limits,
     routes: Routes,
     dial_queue: dial::Queue,
     tracker_http: Option<reqwest::Client>,
     tracker_udp: Option<udp::Transport>,
-    udp_task: Option<JoinHandle<io::Result<()>>>,
     udp_stop: watch::Sender<bool>,
     utp: Option<Arc<Mutex<utp::Mux>>>,
-    utp_task: Option<JoinHandle<()>>,
-    utp_router: Option<JoinHandle<()>>,
     utp_stop: watch::Sender<bool>,
     pending: Pending,
-    torrents: HashMap<InfoHashV1, Owner>,
+    registry: Arc<Mutex<Registry>>,
+    dht: Option<Arc<dht::Dht>>,
+    allow_local_network: bool,
+    tasks: AsyncMutex<Tasks>,
     stop: watch::Sender<bool>,
-    listener: Option<JoinHandle<io::Result<()>>>,
-    dht: Option<dht::OwnedDht>,
 }
 impl Session {
     /// Binding the caller-supplied address is explicit network consent.
-    pub async fn bind(
-        address: SocketAddr,
-        limits: Limits,
-        port_mapping: Option<port_map::Gateway>,
-    ) -> io::Result<Self> {
-        let listener = TcpListener::bind(address).await?;
+    pub async fn bind(network: NetworkOptions, limits: Limits) -> io::Result<Self> {
+        if let Some(dht) = &network.dht {
+            dht.validate(network.listen)?;
+        }
+        let listener = TcpListener::bind(network.listen).await?;
         let address = listener.local_addr()?;
-        let client = crate::engine::discovery::http_client(limits.allow_local_network)?;
+        let client = crate::engine::discovery::http_client(network.allow_local_network)?;
         let mut udp = udp::Transport::bind(address)?;
-        let mut session = Self::new(address, limits, Some(listener));
+        let mut session = Shared::new(address, limits, network.allow_local_network, Some(listener));
+        session.dht = network.dht.map(|options| {
+            Arc::new(dht::Dht::new(
+                options,
+                udp.clone(),
+                network.allow_local_network,
+                Arc::downgrade(&session.registry),
+                session.stop.subscribe(),
+            ))
+        });
         let (mux, incoming) = utp::Mux::new(
             udp.socket.clone(),
             session.pending.clone(),
             limits.peers + limits.pending_handshakes,
-            limits.utp,
+            network.utp,
         );
-        session.utp_task = Some(tokio::spawn(utp::run(
+        session.tasks.get_mut().utp = Some(tokio::spawn(utp::run(
             mux.clone(),
             session.utp_stop.subscribe(),
         )));
-        session.utp_router = Some(tokio::spawn(route_utp(
+        session.tasks.get_mut().utp_router = Some(tokio::spawn(route_utp(
             incoming,
             session.routes.clone(),
             limits,
             session.stop.subscribe(),
+            session.tasks.get_mut().utp_handshakes.clone(),
         )));
-        session.dial_queue.set_utp(limits.utp.then(|| mux.clone()));
+        session.dial_queue.set_utp(network.utp.then(|| mux.clone()));
         session.utp = Some(mux.clone());
         udp.utp = Some(mux);
-        session.udp_task = Some(tokio::spawn(udp.clone().run(session.udp_stop.subscribe())));
+        session.tasks.get_mut().udp =
+            Some(tokio::spawn(udp.clone().run(session.udp_stop.subscribe())));
         session.tracker_udp = Some(udp);
         session.tracker_http = Some(client);
-        if let Some(gateway) = port_mapping {
+        if let Some(gateway) = network.port_mapping {
             let (status, receiver) = watch::channel(port_map::Status {
                 enabled: true,
                 ..port_map::Status::default()
             });
             session.mapping_status = receiver;
             if address.is_ipv4() {
-                session.mapping_task = Some(tokio::spawn(port_map::run(
+                session.tasks.get_mut().mapping = Some(tokio::spawn(port_map::run(
                     address,
                     gateway,
                     session.advertised_port.clone(),
@@ -235,25 +279,44 @@ impl Session {
                 status.send_modify(|s| s.last_error = Some(error.to_owned()));
             }
         }
-        Ok(session)
+        Ok(Self {
+            shared: Arc::new(session),
+        })
     }
     /// Own rechecks without granting any network authority.
-    pub fn offline(limits: Limits) -> io::Result<Self> {
-        Ok(Self::new(
-            "0.0.0.0:0".parse().expect("fixed address"),
-            limits,
-            None,
-        ))
+    pub fn offline(limits: Limits) -> Self {
+        Self {
+            shared: Arc::new(Shared::new(
+                "0.0.0.0:0".parse().expect("fixed address"),
+                limits,
+                false,
+                None,
+            )),
+        }
     }
-    fn new(address: SocketAddr, limits: Limits, listener: Option<TcpListener>) -> Self {
+}
+impl Shared {
+    fn new(
+        address: SocketAddr,
+        limits: Limits,
+        allow_local_network: bool,
+        listener: Option<TcpListener>,
+    ) -> Self {
         let routes = Routes::default();
         let (stop, stopping) = watch::channel(false);
         let pending = Pending {
             counts: Arc::default(),
             limits,
         };
+        let tcp_handshakes = Arc::new(AsyncMutex::new(JoinSet::new()));
         let task = listener.map(|listener| {
-            tokio::spawn(route(listener, routes.clone(), pending.clone(), stopping))
+            tokio::spawn(route(
+                listener,
+                routes.clone(),
+                pending.clone(),
+                stopping,
+                tcp_handshakes.clone(),
+            ))
         });
         Self {
             bandwidth: crate::engine::bandwidth::Budget::default(),
@@ -261,92 +324,123 @@ impl Session {
             address,
             advertised_port: watch::channel(address.port()).0,
             mapping_status: watch::channel(port_map::Status::default()).1,
-            mapping_task: None,
             limits,
             routes,
-            dial_queue: dial::Queue::new(limits.pending_dials, limits.allow_local_network),
+            dial_queue: dial::Queue::new(limits.pending_dials, allow_local_network),
             tracker_http: None,
             tracker_udp: None,
-            udp_task: None,
             udp_stop: watch::channel(false).0,
             utp: None,
-            utp_task: None,
-            utp_router: None,
             utp_stop: watch::channel(false).0,
             pending,
-            torrents: HashMap::new(),
-            stop,
-            listener: task,
+            registry: Arc::new(Mutex::new(Registry {
+                torrents: HashMap::new(),
+                closed: false,
+            })),
             dht: None,
+            allow_local_network,
+            tasks: AsyncMutex::new(Tasks {
+                mapping: None,
+                udp: None,
+                utp: None,
+                utp_router: None,
+                listener: task,
+                tcp_handshakes,
+                utp_handshakes: Arc::new(AsyncMutex::new(JoinSet::new())),
+                failure: None,
+                joined: false,
+            }),
+            stop,
         }
     }
-    pub fn metadata_network(&self) -> io::Result<metadata::Network> {
-        if *self.stop.borrow() || self.listener.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "session networking disabled",
-            ));
-        }
-        Ok(metadata::Network {
-            port: self.advertised_port.subscribe(),
-            dial_queue: self.dial_queue.clone(),
-            tracker_http: self.tracker_http.clone().expect("online session"),
-            tracker_udp: self.tracker_udp.clone().expect("online session"),
-            allow_local_network: self.limits.allow_local_network,
-            dht: self.dht.as_ref().map(|d| d.handle.clone()),
-            stop: self.stop.subscribe(),
-        })
-    }
+}
+impl Session {
     pub fn port_mapping(&self) -> port_map::Status {
-        self.mapping_status.borrow().clone()
+        self.shared.mapping_status.borrow().clone()
     }
     pub fn advertised_port(&self) -> u16 {
-        *self.advertised_port.borrow()
+        *self.shared.advertised_port.borrow()
     }
     pub fn local_addr(&self) -> SocketAddr {
-        self.address
+        self.shared.address
     }
-    pub fn torrent(&self, hash: InfoHashV1) -> Option<crate::engine::torrent::TorrentObserver> {
-        self.torrents
+    /// True after shutdown, or permanently once an execution finished without
+    /// cleanup proof: its payload authority stays quarantined until restart.
+    pub fn admission_closed(&self) -> bool {
+        self.shared.registry.lock().unwrap().is_closed()
+    }
+    pub fn torrent(&self, hash: InfoHashV1) -> Option<TorrentHandle> {
+        self.shared
+            .registry
+            .lock()
+            .unwrap()
+            .torrents
             .get(&hash)
-            .filter(|owner| !owner.removing)
-            .map(|owner| owner.observer.clone())
+            .map(|owner| owner.handle.clone())
     }
-    pub fn admit(&mut self, options: TorrentOptions) -> io::Result<InfoHashV1> {
-        let hash = options.metainfo.info_hash();
+    pub fn torrents(&self) -> Vec<TorrentHandle> {
+        self.shared
+            .registry
+            .lock()
+            .unwrap()
+            .torrents
+            .values()
+            .map(|owner| owner.handle.clone())
+            .collect()
+    }
+    pub fn inspect(
+        &self,
+        magnet: crate::protocol::magnet::Magnet,
+        profile: Profile,
+        settings: crate::engine::settings::TorrentSettings,
+    ) -> io::Result<TorrentHandle> {
+        let mut options = TorrentOptions::new(
+            TorrentSource::Magnet(magnet),
+            Destination::Open(Default::default()),
+        );
+        options.profile = profile;
+        options.settings = settings;
+        self.admit_execution(options, true)
+    }
+    pub fn admit(&self, options: TorrentOptions) -> io::Result<TorrentHandle> {
+        self.admit_execution(options, false)
+    }
+    fn admit_execution(
+        &self,
+        options: TorrentOptions,
+        inspection: bool,
+    ) -> io::Result<TorrentHandle> {
+        options.validate()?;
+        let shared = &self.shared;
+        let magnet = matches!(options.source, TorrentSource::Magnet(_));
+        if magnet && shared.tracker_http.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "offline verification requires metainfo",
+            ));
+        }
+        let mut registry = shared.registry.lock().unwrap();
+        let hash = options.source.info_hash();
         let profile = options.profile;
         let recheck = matches!(options.run, RunPolicy::Recheck);
-        let shared_dht = options.dht.as_ref().is_none_or(|handle| {
-            self.dht.as_ref().is_some_and(|dht| {
-                dht.handle.id() == handle.id() && dht.handle.local_addr() == handle.local_addr()
-            })
-        });
-        if *self.stop.borrow()
-            || (self.listener.is_none() && !recheck)
-            || !shared_dht
-            || self.torrents.contains_key(&hash)
+        if registry.is_closed()
+            || (shared.tracker_http.is_none() && !recheck)
+            || registry.torrents.contains_key(&hash)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "session stopped, duplicate torrent or networking unavailable",
             ));
         }
-        let profiles = self
-            .torrents
-            .values()
-            .map(|owner| &owner.profile)
-            .chain(std::iter::once(&profile));
-        let mut peers = 0usize;
-        let mut payload = 0usize;
-        for p in profiles {
-            peers = peers.saturating_add(p.peers);
-            payload = payload
-                .saturating_add(p.cache_bytes)
-                .saturating_add(p.write_queue_bytes);
+        let mut available_peers = shared.limits.peers;
+        let mut available_payload = shared.limits.payload_bytes;
+        for owner in registry.torrents.values() {
+            available_peers -= owner.profile.peers;
+            available_payload -= owner.profile.cache_bytes + owner.profile.write_queue_bytes;
         }
-        if self.torrents.len() >= self.limits.torrents
-            || peers > self.limits.peers
-            || payload > self.limits.payload_bytes
+        if registry.torrents.len() >= shared.limits.torrents
+            || profile.peers > available_peers
+            || profile.cache_bytes + profile.write_queue_bytes > available_payload
         {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -356,141 +450,143 @@ impl Session {
         // Absorb handshake bursts up to the torrent's admitted peer budget.
         let (sender, sockets) = mpsc::channel(profile.peers);
         let bandwidth = crate::engine::bandwidth::Throttle::new(
-            self.bandwidth.clone(),
+            shared.bandwidth.clone(),
             crate::engine::bandwidth::Budget::new(options.settings.bandwidth()),
         );
         let networking = if recheck {
             Networking::Recheck
         } else {
             Networking::Online(Network {
-                advertised_port: self.advertised_port.subscribe(),
+                advertised_port: shared.advertised_port.subscribe(),
                 sockets,
-                dial_queue: self.dial_queue.clone(),
-                tracker_http: self.tracker_http.clone().expect("online session"),
-                tracker_udp: self.tracker_udp.clone().expect("online session"),
-                allow_local_network: self.limits.allow_local_network,
+                dial_queue: shared.dial_queue.clone(),
+                tracker_http: shared.tracker_http.clone().expect("online session"),
+                tracker_udp: shared.tracker_udp.clone().expect("online session"),
+                allow_local_network: shared.allow_local_network,
+                dht: shared.dht.clone(),
             })
         };
-        let handle = options.spawn_session(bandwidth, networking, self.rechecks.clone())?;
-        self.routes.lock().unwrap().insert(hash, sender);
-        self.torrents.insert(
+        let metadata = magnet.then(|| metadata::Network {
+            port: shared.advertised_port.subscribe(),
+            dial_queue: shared.dial_queue.clone(),
+            tracker_http: shared.tracker_http.clone().expect("online session"),
+            tracker_udp: shared.tracker_udp.clone().expect("online session"),
+            allow_local_network: shared.allow_local_network,
+            dht: shared.dht.clone(),
+        });
+        let identity = Arc::new(());
+        let retirement = Retirement {
+            registry: Arc::downgrade(&shared.registry),
+            routes: shared.routes.clone(),
+            hash,
+            identity: identity.clone(),
+        };
+        let (handle, start) = TorrentHandle::spawn(
+            options,
+            bandwidth,
+            networking,
+            metadata,
+            shared.rechecks.clone(),
+            retirement,
+            inspection,
+        );
+        if !recheck && !inspection {
+            shared.routes.lock().unwrap().insert(hash, sender);
+        }
+        registry.torrents.insert(
             hash,
             Owner {
-                observer: handle.observer(),
-                join: Arc::new(JoinBarrier {
-                    state: AsyncMutex::new(OwnerJoin {
-                        handle,
-                        result: None,
-                    }),
-                    joined: AtomicBool::new(false),
-                }),
+                handle: handle.clone(),
                 profile,
-                removing: false,
+                identity,
             },
         );
-        Ok(hash)
+        start.send(()).expect("installed execution");
+        Ok(handle)
     }
-    /// Unroute and mark removal under the caller's Session lock. Admission
-    /// still counts this owner's reservation until finish_remove after join.
-    pub fn take(&mut self, hash: InfoHashV1) -> Option<Removal> {
-        self.routes.lock().unwrap().remove(&hash);
-        let owner = self.torrents.get_mut(&hash)?;
-        owner.removing = true;
-        owner.observer.request_stop();
-        Some(Removal {
-            hash,
-            owner: owner.join.clone(),
-        })
+    pub fn request_shutdown(&self) {
+        self.shared.request_stop();
     }
-    /// Release only the matching owner's reservation, after its join (including
-    /// error results). Returns false if not joined or already removed.
-    pub fn finish_remove(&mut self, removal: &Removal) -> bool {
-        let joined = removal.owner.joined.load(Ordering::Acquire);
-        if joined
-            && self
-                .torrents
-                .get(&removal.hash)
-                .is_some_and(|owner| Arc::ptr_eq(&owner.join, &removal.owner))
-        {
-            self.torrents.remove(&removal.hash);
-            return true;
+    pub async fn shutdown(&self) -> io::Result<()> {
+        self.request_shutdown();
+        let shared = &self.shared;
+        let mut tasks = shared.tasks.lock().await;
+        if tasks.joined {
+            return tasks.result();
         }
-        false
-    }
-    pub async fn remove(&mut self, hash: InfoHashV1) -> io::Result<()> {
-        if let Some(removal) = self.take(hash) {
-            let result = removal.join().await;
-            self.finish_remove(&removal);
-            result?;
+        if let Some(task) = tasks.utp_router.as_mut() {
+            let result = task.await.map_err(io::Error::other).and_then(|r| r);
+            tasks.utp_router = None;
+            tasks.record(result);
         }
-        Ok(())
+        if let Some(task) = tasks.mapping.as_mut() {
+            let result = task.await.map_err(io::Error::other);
+            tasks.mapping = None;
+            tasks.record(result);
+        }
+        if let Some(task) = tasks.listener.as_mut() {
+            let result = task.await.map_err(io::Error::other).and_then(|r| r);
+            tasks.listener = None;
+            tasks.record(result);
+        }
+        let result = drain_handshakes(&mut *tasks.tcp_handshakes.lock().await).await;
+        tasks.record(result);
+        let result = drain_handshakes(&mut *tasks.utp_handshakes.lock().await).await;
+        tasks.record(result);
+        let handles: Vec<_> = shared
+            .registry
+            .lock()
+            .unwrap()
+            .torrents
+            .values()
+            .map(|owner| owner.handle.clone())
+            .collect();
+        for handle in handles {
+            tasks.record(handle.join().await);
+        }
+        shared.utp_stop.send_replace(true);
+        if let Some(task) = tasks.utp.as_mut() {
+            let result = task.await.map_err(io::Error::other);
+            tasks.utp = None;
+            tasks.record(result);
+        }
+        if let Some(dht) = &shared.dht {
+            let result = dht.shutdown().await;
+            tasks.record(result);
+        }
+        // Stopped announces still need replies while torrents join.
+        shared.udp_stop.send_replace(true);
+        if let Some(task) = tasks.udp.as_mut() {
+            let result = task.await.map_err(io::Error::other).and_then(|r| r);
+            tasks.udp = None;
+            tasks.record(result);
+        }
+        tasks.joined = true;
+        tasks.result()
     }
-    pub async fn shutdown(&mut self) -> io::Result<()> {
-        let mut failure = None;
+}
+impl Shared {
+    fn request_stop(&self) {
+        let mut registry = self.registry.lock().unwrap();
+        registry.closed = true;
         self.stop.send_replace(true);
+        self.routes.lock().unwrap().clear();
         if let Some(mux) = &self.utp {
             mux.lock().unwrap().stop_accepting();
         }
-        if let Some(task) = self.utp_router.take()
-            && let Err(error) = task.await
-        {
-            failure = Some(io::Error::other(error));
+        for owner in registry.torrents.values() {
+            owner.handle.request_stop();
         }
-        self.routes.lock().unwrap().clear();
-        for owner in self.torrents.values() {
-            owner.observer.request_stop();
-        }
-        if let Some(task) = self.mapping_task.take()
-            && let Err(error) = task.await
-        {
-            tracing::warn!(%error, "port_mapping_task_failed");
-        }
-        if let Some(task) = self.listener.as_mut() {
-            let result = task.await.map_err(io::Error::other).and_then(|r| r);
-            self.listener = None;
-            if let Err(error) = result {
-                failure = Some(error);
-            }
-        }
-        let hashes: Vec<_> = self.torrents.keys().copied().collect();
-        for hash in hashes {
-            let removal = self.take(hash).expect("reserved owner");
-            let result = removal.join().await;
-            self.finish_remove(&removal);
-            if let Err(error) = result {
-                failure.get_or_insert(error);
-            }
-        }
-        self.utp_stop.send_replace(true);
-        if let Some(task) = self.utp_task.take()
-            && let Err(error) = task.await
-        {
-            failure.get_or_insert_with(|| io::Error::other(error));
-        }
-        if let Some(dht) = &mut self.dht
-            && let Err(error) = dht.shutdown().await
-        {
-            failure.get_or_insert(error);
-        }
-        // Stopped announces still need replies while torrents join.
-        self.udp_stop.send_replace(true);
-        if let Some(task) = self.udp_task.as_mut() {
-            if let Err(error) = task.await.map_err(io::Error::other).and_then(|r| r) {
-                failure.get_or_insert(error);
-            }
-            self.udp_task = None;
-        }
-        failure.map_or(Ok(()), Err)
     }
 }
-impl Drop for Session {
+impl Drop for Shared {
     fn drop(&mut self) {
-        self.stop.send_replace(true);
+        self.request_stop();
+        if let Some(dht) = &self.dht {
+            dht.request_stop();
+        }
         self.utp_stop.send_replace(true);
         self.udp_stop.send_replace(true);
-        for owner in self.torrents.values() {
-            owner.observer.request_stop();
-        }
     }
 }
 async fn route(
@@ -498,16 +594,19 @@ async fn route(
     routes: Routes,
     admission: Pending,
     mut stop: watch::Receiver<bool>,
+    pending: Arc<AsyncMutex<JoinSet<()>>>,
 ) -> io::Result<()> {
     let limits = admission.limits;
-    let mut pending = JoinSet::new();
+    let mut pending = pending.lock().await;
     let mut accepts = listener::AcceptBackoff::new("session");
     let result = loop {
         tokio::select! {
             biased;
             _ = stop.changed() => break Ok(()),
             completed = pending.join_next(), if !pending.is_empty() => {
-                completed.expect("pending handshake").expect("handshake task");
+                if let Err(error) = completed.expect("pending handshake") {
+                    break Err(io::Error::other(error));
+                }
             },
             accepted = accepts.accept(|| listener.accept()), if pending.len() < limits.pending_handshakes => {
                 let (socket, source) = match accepted { Ok(value) => value, Err(error) => break Err(error) };
@@ -527,26 +626,27 @@ async fn route(
             }
         }
     };
-    pending.abort_all();
-    while pending.join_next().await.is_some() {}
-    result
+    result.and(drain_handshakes(&mut pending).await)
 }
 async fn route_utp(
     mut incoming: mpsc::Receiver<(utp::Stream, HandshakePermit)>,
     routes: Routes,
     limits: Limits,
     mut stop: watch::Receiver<bool>,
-) {
-    let mut pending = JoinSet::new();
-    loop {
+    pending: Arc<AsyncMutex<JoinSet<()>>>,
+) -> io::Result<()> {
+    let mut pending = pending.lock().await;
+    let result = loop {
         tokio::select! {
             biased;
-            _ = stop.changed() => break,
+            _ = stop.changed() => break Ok(()),
             completed = pending.join_next(), if !pending.is_empty() => {
-                completed.expect("pending uTP handshake").expect("uTP routing task");
+                if let Err(error) = completed.expect("pending uTP handshake") {
+                    break Err(io::Error::other(error));
+                }
             },
             accepted = incoming.recv() => {
-                let Some((socket, permit)) = accepted else { break; };
+                let Some((socket, permit)) = accepted else { break Ok(()); };
                 let routes = routes.clone();
                 pending.spawn(async move {
                     let _permit = permit;
@@ -566,9 +666,20 @@ async fn route_utp(
                 });
             }
         }
-    }
+    };
+    result.and(drain_handshakes(&mut pending).await)
+}
+async fn drain_handshakes(pending: &mut JoinSet<()>) -> io::Result<()> {
     pending.abort_all();
-    while pending.join_next().await.is_some() {}
+    let mut result = Ok(());
+    while let Some(joined) = pending.join_next().await {
+        if let Err(error) = joined
+            && !error.is_cancelled()
+        {
+            result = result.and(Err(io::Error::other(error)));
+        }
+    }
+    result
 }
 async fn peek_hash(socket: TcpStream) -> io::Result<(InfoHashV1, TcpStream)> {
     // Own the readiness guard while routing: TcpStream::peek retains readable

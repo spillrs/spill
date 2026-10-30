@@ -107,39 +107,17 @@ mod handle;
 
 impl Node {
     /// Restore identity; reverify saved contacts before consented, pinned router bootstrap.
-    pub(in crate::engine) async fn with_state(
+    pub(in crate::engine) fn with_state(
         socket: Arc<UdpSocket>,
         incoming: mpsc::Receiver<(Vec<u8>, SocketAddr)>,
         allow_local_network: bool,
-        allow_network: bool,
         saved: Option<SavedState>,
         routers: Vec<String>,
     ) -> io::Result<(Self, Handle)> {
         let SocketAddr::V4(address) = socket.local_addr()? else {
             unreachable!("IPv4 session")
         };
-        if saved.as_ref().is_some_and(|s| {
-            s.nodes.len() > MAX_SAVED_NODES
-                || s.nodes.iter().any(|n| !valid_address(n.address, false))
-        }) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid saved DHT state",
-            ));
-        }
-        if !allow_network {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "DHT requires network consent",
-            ));
-        }
         let limits = crate::engine::dht::Limits::DEFAULT;
-        if !valid_address(address, true) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid DHT bind address",
-            ));
-        }
         let id = if let Some(saved) = &saved {
             saved.id
         } else {

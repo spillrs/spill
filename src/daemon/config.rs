@@ -1,6 +1,7 @@
 //! Single-user Linux and macOS configuration. Torrent defaults use the engine's settings schema.
+use crate::settings::Settings;
 use serde::Deserialize;
-use spill::engine::{profile::Profile, settings::TorrentSettings};
+use spill::engine::profile::Profile;
 use std::{
     io,
     net::SocketAddr,
@@ -26,7 +27,7 @@ pub struct Config {
     pub active_downloads: usize,
     pub active_seeds: usize,
     pub dht_bootstrap: Vec<String>,
-    pub defaults: TorrentSettings,
+    pub defaults: Settings,
 }
 fn mapping_gateway<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -100,16 +101,7 @@ impl Config {
         };
         config.defaults.validate()?;
         spill::engine::session::dht::validate_routers(&config.dht_bootstrap)?;
-        let buffer_range = spill::engine::profile::BLOCK_LEN as usize..=1024 * 1024 * 1024;
-        if !(1..=4096).contains(&config.peers)
-            || !buffer_range.contains(&config.cache_bytes)
-            || !buffer_range.contains(&config.write_queue_bytes)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid torrent resource limits",
-            ));
-        }
+        config.profile().validate()?;
         if config.active_downloads > 64
             || config.active_seeds > 64
             || config.active_downloads + config.active_seeds == 0

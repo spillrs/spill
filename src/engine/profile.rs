@@ -62,6 +62,20 @@ impl Default for Profile {
     }
 }
 impl Profile {
+    pub fn validate(&self) -> io::Result<()> {
+        let buffer_range = BLOCK_LEN as usize..=1024 * 1024 * 1024;
+        if !(1..=4096).contains(&self.peers)
+            || !buffer_range.contains(&self.cache_bytes)
+            || !buffer_range.contains(&self.write_queue_bytes)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid torrent resource limits",
+            ));
+        }
+        Ok(())
+    }
+
     pub const DEFAULT: Self = Self {
         peers: 50,
         cache_bytes: 16 * 1024 * 1024,

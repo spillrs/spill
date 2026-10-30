@@ -17,7 +17,7 @@ use paths::PayloadPaths;
 pub struct NamedDestination;
 
 /// Opaque provisioned payload authority, consumed by torrent admission.
-pub struct FileStorage {
+pub(in crate::engine) struct FileStorage {
     meta: OwnedMetainfo,
     files: file::Files,
     read_only: bool,
@@ -33,7 +33,7 @@ pub struct DestinationBinding {
     paths: Vec<Vec<u8>>,
 }
 impl DestinationBinding {
-    pub fn new(meta: &OwnedMetainfo, read_only: bool) -> io::Result<Self> {
+    pub(in crate::engine) fn new(meta: &OwnedMetainfo, read_only: bool) -> io::Result<Self> {
         let all = PayloadPaths::new(meta)?;
         Ok(Self {
             read_only,

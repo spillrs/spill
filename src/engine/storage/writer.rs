@@ -2,10 +2,7 @@
 //! completion even if their observers disappear. Closing then joining drains I/O.
 use crate::engine::core::file_progress::FileProgress;
 
-use super::{
-    Checkpoint,
-    cache::{self, CacheView},
-};
+use super::cache::{self, CacheView};
 use crate::engine::profile::{MAX_UPLOAD_READS, Profile};
 use crate::engine::{
     core::{SharedBlock, live},
@@ -22,8 +19,8 @@ use std::{
     },
 };
 use tokio::{
-    sync::{Notify, Semaphore, mpsc, oneshot},
-    task::JoinHandle,
+    sync::{Mutex, Notify, Semaphore, mpsc, oneshot},
+    task::{JoinHandle, JoinSet},
 };
 
 // Preserve two-way write/hash overlap for common pieces without letting the
@@ -31,12 +28,19 @@ use tokio::{
 const MAX_BUFFERED_HASH_BYTES: usize = 4 * 1024 * 1024;
 pub(in crate::engine) const RECHECK_CONCURRENCY: usize = 4;
 
+struct ReadResult {
+    index: u32,
+    offset: u32,
+    length: u32,
+    start: u32,
+    bytes: io::Result<Vec<u8>>,
+}
 enum Command {
     Write(u32, u32, Arc<()>, SharedBlock),
     Hash(u32, Arc<()>),
     Hashed(u32, bool),
     Read(u32, u32, u32),
-    ReadDone(u32, u32, u32, u32, io::Result<Vec<u8>>),
+    ReadDone(ReadResult),
     Flush,
 }
 pub(in crate::engine) enum Output {
@@ -54,26 +58,69 @@ pub(in crate::engine) enum Output {
     Flushed,
     Error(io::Error),
 }
+#[derive(Default)]
+struct Jobs {
+    inline: Option<JoinHandle<io::Result<()>>>,
+    fingerprint: Option<JoinHandle<io::Result<Vec<u8>>>>,
+    changed: Option<JoinHandle<io::Result<super::PieceSet>>>,
+    recovery: JoinSet<(u32, io::Result<Option<bool>>)>,
+    hashes: JoinSet<io::Result<(u32, bool)>>,
+    reads: JoinSet<ReadResult>,
+}
+impl Jobs {
+    async fn drain(&mut self) -> io::Result<()> {
+        let mut result = crate::engine::join_blocking(&mut self.inline).await;
+        result = result.and(crate::engine::join_blocking(&mut self.fingerprint).await);
+        result = result.and(crate::engine::join_blocking(&mut self.changed).await);
+        while let Some(job) = self.recovery.join_next().await {
+            result = result.and(job.map_err(io::Error::other).and_then(
+                |(_, passed)| match passed {
+                    Err(e)
+                        if !matches!(
+                            e.kind(),
+                            io::ErrorKind::UnexpectedEof | io::ErrorKind::NotFound
+                        ) =>
+                    {
+                        Err(e)
+                    }
+                    _ => Ok(()),
+                },
+            ));
+        }
+        while let Some(job) = self.hashes.join_next().await {
+            result = result.and(job.map_err(io::Error::other).and_then(|r| r).map(|_| ()));
+        }
+        while let Some(job) = self.reads.join_next().await {
+            result = result.and(
+                job.map_err(io::Error::other)
+                    .and_then(|read| read.bytes.map(|_| ())),
+            );
+        }
+        result
+    }
+}
 pub(in crate::engine) struct Writer {
     commands: Option<mpsc::Sender<Command>>,
     outputs: mpsc::Receiver<Output>,
     ready: Option<oneshot::Receiver<io::Result<Vec<u8>>>>,
     task: Option<JoinHandle<io::Result<()>>>,
+    error: Option<Arc<io::Error>>,
+    jobs: Arc<Mutex<Jobs>>,
     pending: usize,
     epochs: HashMap<u32, Arc<()>>,
     cancel_recovery: Arc<AtomicBool>,
     capacity_changed: Arc<Notify>,
 }
 impl Writer {
-    pub(in crate::engine) fn new_with_recheck(
+    pub(in crate::engine) fn spawn(
         storage: FileStorage,
         meta: OwnedMetainfo,
         profile: Profile,
         recheck: bool,
         initial_resume: Option<Vec<u8>>,
-        checkpoint: Checkpoint,
+        checkpoint: crate::engine::torrent::Checkpoint,
         rechecks: Arc<Semaphore>,
-    ) -> io::Result<Self> {
+    ) -> Self {
         let capacity = profile.write_queue_bytes / crate::engine::profile::BLOCK_LEN as usize;
         let (commands, mut incoming) = mpsc::channel(capacity);
         let (results, outputs) = mpsc::channel(8);
@@ -86,26 +133,27 @@ impl Writer {
         // Immutable descriptors are shared only with owned blocking jobs. The
         // writer awaits each mutation before starting the next command batch.
         let storage = Arc::new(storage);
+        let checkpoint: Arc<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync> = checkpoint.into();
+        let jobs = Arc::new(Mutex::new(Jobs::default()));
+        let worker_jobs = jobs.clone();
         let task = tokio::spawn(async move {
-            // At most two buffered SHA-1 jobs, each at most 4 MiB.
-            // Unusually large pieces fold one bounded chunk at a time.
-            let mut hashes = tokio::task::JoinSet::new();
-            let mut reads = tokio::task::JoinSet::new();
-            let result: io::Result<()> = async {
+            // The handle retains these jobs if this worker unwinds.
+            let mut jobs = worker_jobs.lock().await;
+            let mut result: io::Result<()> = async {
                 let Some((mut verified, mut dirty)) = recover(
-                    &storage, &meta, recheck, initial_resume, crate::engine::profile::HASH_CHUNK_LEN, &canceled, &rechecks,
+                    &storage, &meta, recheck, initial_resume, &canceled, &rechecks, &mut jobs,
                 ).await? else {
                     // Do not checkpoint a partial scan: unchecked candidates must
                     // remain subject to the previous fingerprint on the next run.
                     return Ok(());
                 };
+                let Jobs { inline, fingerprint, hashes, reads, .. } = &mut *jobs;
                 let mut live = live::Live::new(&meta);
                 let mut files = FileProgress::new(&meta, &verified);
                 for index in files.complete() {
                     if canceled.load(Ordering::Relaxed) { return Ok(()); }
                     let storage = storage.clone();
-                    tokio::task::spawn_blocking(move || storage.finish_file(index))
-                        .await.map_err(io::Error::other)??;
+                    crate::engine::run_blocking(inline, move || storage.finish_file(index)).await?;
                 }
                 let _ = ready_tx.send(Ok(verified.clone()));
                 let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + crate::engine::profile::RESUME_INTERVAL, crate::engine::profile::RESUME_INTERVAL);
@@ -123,11 +171,10 @@ impl Writer {
                             Command::Hashed(index, passed)
                         },
                         result = reads.join_next(), if !reads.is_empty() => {
-                            let (index, offset, length, start, bytes) = result.expect("read job").map_err(io::Error::other)?;
-                            Command::ReadDone(index, offset, length, start, bytes)
+                            Command::ReadDone(result.expect("read job").map_err(io::Error::other)?)
                         },
                         _ = timer.tick() => {
-                            if dirty { save(&storage, &meta, &verified, &checkpoint).await?; dirty = false; }
+                            if dirty { save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?; dirty = false; }
                             continue;
                         }
                         () = async {}, if pending_hash.is_some() && hashes.len() < 2 => {
@@ -160,8 +207,7 @@ impl Writer {
                             changed.notify_one();
                             let writes = blocks.iter().map(|(index, offset, _, bytes)| (*index, *offset, bytes.clone())).collect();
                             let destination = storage.clone();
-                            tokio::task::spawn_blocking(move || destination.write_batch(writes))
-                                .await.map_err(io::Error::other)??;
+                            crate::engine::run_blocking(inline, move || destination.write_batch(writes)).await?;
                             // Retain only successfully written blocks; Hash is a
                             // FIFO barrier behind all writes of this attempt.
                             let mut written = Vec::with_capacity(blocks.len());
@@ -210,8 +256,7 @@ impl Writer {
                                 set(&mut verified, index, true);
                                 for file in files.changed(&meta, index) {
                                     let storage = storage.clone();
-                                    tokio::task::spawn_blocking(move || storage.finish_file(file))
-                                        .await.map_err(io::Error::other)??;
+                                    crate::engine::run_blocking(inline, move || storage.finish_file(file)).await?;
                                 }
                             }
                             dirty = true;
@@ -232,7 +277,7 @@ impl Writer {
                                     let storage = storage.clone();
                                     reads.spawn_blocking(move || {
                                         let bytes = storage.read(index, window.start as u32, window.len());
-                                        (index, offset, length, window.start as u32, bytes)
+                                        ReadResult { index, offset, length, start: window.start as u32, bytes }
                                     });
                                     continue;
                                 }
@@ -243,7 +288,7 @@ impl Writer {
                             }
                             Some(Output::Read { index, offset, length, block: block.filter(|_| available).map(|b| SharedBlock::from_shared(b.bytes, b.range)) })
                         }
-                        Command::ReadDone(index, offset, length, start, bytes) => {
+                        Command::ReadDone(ReadResult { index, offset, length, start, bytes }) => {
                             view.insert(index, start, bytes?, profile.cache_bytes)?;
                             // Own the result before another load can evict its window.
                             let block = view.block(index, offset, length)?.expect("loaded upload window");
@@ -254,9 +299,8 @@ impl Writer {
                             // all required write/hash results. Publish completion
                             // only after payload data is durable and resume is saved.
                             let destination = storage.clone();
-                            tokio::task::spawn_blocking(move || destination.sync_data())
-                                .await.map_err(io::Error::other)??;
-                            save(&storage, &meta, &verified, &checkpoint).await?;
+                            crate::engine::run_blocking(inline, move || destination.sync_data()).await?;
+                            save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?;
                             dirty = false;
                             Some(Output::Flushed)
                         }
@@ -265,15 +309,11 @@ impl Writer {
                         let _ = results.send(output).await;
                     }
                 }
-                save(&storage, &meta, &verified, &checkpoint).await?;
+                save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?;
                 Ok(())
             }
             .await;
-            // Inline writes/recovery I/O have already been awaited. Join every
-            // independent blocking hash/read on errors and shutdown as well:
-            // dropping a JoinSet cannot stop a running blocking job.
-            while hashes.join_next().await.is_some() {}
-            while reads.join_next().await.is_some() {}
+            result = result.and(jobs.drain().await);
             changed.notify_one();
             match result {
                 Ok(()) => Ok(()),
@@ -286,16 +326,18 @@ impl Writer {
                 }
             }
         });
-        Ok(Self {
+        Self {
             commands: Some(commands),
             outputs,
             ready: Some(ready),
             task: Some(task),
+            error: None,
+            jobs,
             pending: 0,
             epochs: HashMap::new(),
             cancel_recovery,
             capacity_changed,
-        })
+        }
     }
     pub(in crate::engine) async fn ready(&mut self) -> io::Result<Vec<u8>> {
         match self.ready.as_mut().expect("one startup").await {
@@ -396,11 +438,17 @@ impl Writer {
         self.commands.take();
         self.outputs.close();
         if let Some(task) = &mut self.task {
-            let result = task.await.map_err(io::Error::other)?;
+            let result = task.await.map_err(io::Error::other).and_then(|r| r);
             self.task = None;
-            result?;
+            self.error = result.err().map(Arc::new);
         }
-        Ok(())
+        let drained = self.jobs.lock().await.drain().await;
+        if self.error.is_none() {
+            self.error = drained.err().map(Arc::new);
+        }
+        self.error
+            .as_ref()
+            .map_or(Ok(()), |e| Err(io::Error::new(e.kind(), e.clone())))
     }
 }
 fn has(bits: &[u8], index: u32) -> bool {
@@ -418,13 +466,15 @@ async fn save(
     storage: &Arc<FileStorage>,
     meta: &OwnedMetainfo,
     verified: &[u8],
-    checkpoint: &Checkpoint,
+    checkpoint: &Arc<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync>,
+    job: &mut Option<JoinHandle<io::Result<Vec<u8>>>>,
+    callback: &mut Option<JoinHandle<io::Result<()>>>,
 ) -> io::Result<()> {
     let storage = storage.clone();
-    let fingerprint = tokio::task::spawn_blocking(move || storage.fingerprint())
-        .await
-        .map_err(io::Error::other)??;
-    checkpoint(resume::encode(meta, verified, &fingerprint)?)?;
+    let fingerprint = crate::engine::run_blocking(job, move || storage.fingerprint()).await?;
+    let resume = resume::encode(meta, verified, &fingerprint)?;
+    let checkpoint = checkpoint.clone();
+    crate::engine::run_blocking(callback, move || checkpoint(resume)).await?;
     tracing::debug!("resume_saved");
     Ok(())
 }
@@ -433,10 +483,15 @@ async fn recover(
     meta: &OwnedMetainfo,
     recheck: bool,
     initial_resume: Option<Vec<u8>>,
-    chunk_len: usize,
     canceled: &Arc<AtomicBool>,
     rechecks: &Arc<Semaphore>,
+    jobs: &mut Jobs,
 ) -> io::Result<Option<(Vec<u8>, bool)>> {
+    let Jobs {
+        changed: changed_job,
+        recovery: jobs,
+        ..
+    } = jobs;
     if canceled.load(Ordering::Relaxed) {
         return Ok(None);
     }
@@ -452,10 +507,10 @@ async fn recover(
     });
     let (mut verified, candidates) = if let Some(saved) = saved {
         let storage = storage.clone();
-        let changed =
-            tokio::task::spawn_blocking(move || storage.changed_since(&saved.fingerprint))
-                .await
-                .map_err(io::Error::other)??;
+        let changed = crate::engine::run_blocking(changed_job, move || {
+            storage.changed_since(&saved.fingerprint)
+        })
+        .await?;
         (saved.verified, changed)
     } else {
         (vec![0; count.div_ceil(8) as usize], (0..count).collect())
@@ -467,7 +522,6 @@ async fn recover(
     // Acquire session-wide capacity before spawning, never by blocking a pool
     // thread. Each job holds its permit through the entire piece and checks
     // cancellation between bounded reads. Also bound this torrent's job set.
-    let mut jobs = tokio::task::JoinSet::new();
     let result: io::Result<Option<()>> = async {
         let mut pending = candidates.iter().copied();
         loop {
@@ -489,13 +543,18 @@ async fn recover(
                 let canceled = canceled.clone();
                 jobs.spawn_blocking(move || {
                     let _permit = permit;
-                    let passed = fold_piece(&storage, &meta, index, chunk_len, Some(&canceled))
-                        .map(|hash| {
-                            hash.map(|hash| {
-                                hash.finalize()[..]
-                                    == meta.piece_hash(index).expect("piece hash")[..]
-                            })
-                        });
+                    let passed = fold_piece(
+                        &storage,
+                        &meta,
+                        index,
+                        crate::engine::profile::HASH_CHUNK_LEN,
+                        Some(&canceled),
+                    )
+                    .map(|hash| {
+                        hash.map(|hash| {
+                            hash.finalize()[..] == meta.piece_hash(index).expect("piece hash")[..]
+                        })
+                    });
                     (index, passed)
                 });
             }
@@ -518,10 +577,6 @@ async fn recover(
     if result.is_err() {
         canceled.store(true, Ordering::Relaxed);
     }
-    // No partial scan may escape on cancellation, I/O errors or worker panics.
-    // Running spawn_blocking jobs cannot be aborted; join them before releasing
-    // descriptors or allowing a replacement owner to touch this destination.
-    while jobs.join_next().await.is_some() {}
     if result?.is_none() || canceled.load(Ordering::Relaxed) {
         return Ok(None);
     }

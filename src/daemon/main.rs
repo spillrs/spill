@@ -4,6 +4,8 @@ mod cli;
 mod config;
 mod control;
 mod metainfo_url;
+mod observation;
+mod settings;
 mod storage;
 mod supervisor;
 mod web;

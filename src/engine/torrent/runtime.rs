@@ -4,7 +4,7 @@ use super::{
 };
 use crate::engine::peer_io::Role;
 use crate::engine::{discovery::Discovery, torrent::shell::Shell as Task};
-use std::{io, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 use tokio::{
     sync::watch,
     time::{Instant, MissedTickBehavior},
@@ -36,7 +36,7 @@ async fn start_discovery(
 }
 
 async fn drive(
-    options: &RuntimeOptions,
+    options: &mut RuntimeOptions,
     session: Network,
     transfer: &mut Task,
     network: &mut Discovery,
@@ -46,6 +46,15 @@ async fn drive(
     transfer.set_bandwidth(options.bandwidth.clone());
     if *stop.borrow() {
         return Ok(TorrentExit::StopRequested);
+    }
+    if options.settings.dht
+        && let Some(dht) = &session.dht
+    {
+        options.dht = Some(tokio::select! {
+            biased;
+            _ = stop.changed() => return Ok(TorrentExit::StopRequested),
+            handle = dht.get() => handle?,
+        });
     }
     let port = *session.advertised_port.borrow();
     transfer.set_no_progress_timeout(options.no_progress_timeout);
@@ -84,7 +93,7 @@ async fn serve(
 ) -> io::Result<TorrentExit> {
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut progress = Progress::new();
+    let mut progress = Progress::new(status.clone());
     progress.restore_verified(transfer);
     let mut log_tick = tokio::time::interval_at(
         Instant::now() + Duration::from_secs(5),
@@ -97,6 +106,7 @@ async fn serve(
     let mut inbound_open = true;
     let mut discovery_dirty = true;
     let mut observation_dirty = true;
+    let mut completion_deadline = None;
     loop {
         if *stop.borrow() {
             return Ok(TorrentExit::StopRequested);
@@ -117,7 +127,21 @@ async fn serve(
             }
             observation_dirty = false;
         }
-        progress.update_counters(transfer, network)?;
+        progress.update_counters(transfer, network).await?;
+        if options.run == RunPolicy::UntilComplete && status.borrow().progress.completed {
+            if !network
+                .announces
+                .as_ref()
+                .is_some_and(|a| a.completion_pending())
+            {
+                return Ok(TorrentExit::Complete);
+            }
+            let deadline =
+                completion_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(5));
+            if Instant::now() >= *deadline {
+                return Ok(TorrentExit::Complete);
+            }
+        }
         if discovery_dirty {
             progress.prepare_discovery(transfer, network, options)?;
             discovery_dirty = false;
@@ -219,6 +243,13 @@ async fn serve(
             _ = dial_tick.tick() => { discovery_dirty = true; observation_dirty = true; },
             _ = tick.tick() => progress.report(transfer, network, status)?,
             _ = log_tick.tick() => progress.log_summary(transfer, network)?,
+            _ = async {
+                if let Some(deadline) = completion_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => return Ok(TorrentExit::Complete),
         }
     }
 }
@@ -240,7 +271,6 @@ async fn finish(
     let peers = transfer.shutdown().await;
     let p = transfer.progress();
     let uploaded = transfer.uploaded_bytes();
-    let joined = setup.is_ok() && peers.is_ok();
     let pieces: std::sync::Arc<[bool]> = (0..piece_count).map(|i| transfer.contains(i)).collect();
     status.send_modify(|s| {
         s.progress.phase = TorrentPhase::Stopped;
@@ -248,6 +278,7 @@ async fn finish(
         s.progress.verified_piece_map = pieces;
         if let Ok(p) = &p {
             s.progress.verified_bytes = p.verified_bytes();
+            s.progress.full_complete = p.verified_bytes() == p.total_bytes();
             s.progress.total_bytes = p.total_bytes();
             s.progress.wanted_bytes = p.wanted_bytes();
             s.progress.wanted_verified_bytes = p.wanted_verified_bytes();
@@ -266,116 +297,134 @@ async fn finish(
             diagnostics.web_seeds.clear();
             diagnostics.dht = None;
         }
-        s.progress.joined = joined;
     });
-    info!(clean = result.is_ok() && joined,
+    info!(clean = result.is_ok(),
         exit = ?result.as_ref().ok(), error_kind = ?result.as_ref().err().map(|e| e.kind()),
         "torrent_runtime_joined");
     result.map(|_| ()).and(setup).and(peers).and(p.map(|_| ()))
 }
 
-async fn serve_torrent(
-    mut transfer: Task,
-    options: RuntimeOptions,
-    session: Network,
-    mut stop: watch::Receiver<bool>,
-    status: Status,
-) -> io::Result<()> {
-    let mut network = Discovery::empty();
-    let result = drive(
-        &options,
-        session,
-        &mut transfer,
-        &mut network,
-        &mut stop,
-        &status,
-    )
-    .await;
-    finish(
-        &mut transfer,
-        &mut network,
-        &status,
-        options.run,
-        options.metainfo.layout().piece_count(),
-        result,
-    )
-    .await
+pub(super) struct Resources {
+    pub(super) writer: Option<crate::engine::storage::writer::Writer>,
+    transfer: Option<Task>,
+    network: Discovery,
+}
+impl Default for Resources {
+    fn default() -> Self {
+        Self {
+            writer: None,
+            transfer: None,
+            network: Discovery::empty(),
+        }
+    }
+}
+impl Resources {
+    pub(super) async fn drain(&mut self) -> io::Result<()> {
+        let network = self.network.drain().await;
+        let transfer = if let Some(transfer) = &mut self.transfer {
+            transfer.drain().await
+        } else {
+            Ok(())
+        };
+        let writer = if let Some(writer) = &mut self.writer {
+            writer.shutdown().await
+        } else {
+            Ok(())
+        };
+        self.transfer = None;
+        self.writer = None;
+        network.and(transfer).and(writer)
+    }
 }
 
 pub(super) async fn run(
-    mut writer: crate::engine::storage::writer::Writer,
-    options: RuntimeOptions,
+    resources: &mut Resources,
+    mut options: RuntimeOptions,
     networking: Networking,
     mut stop: watch::Receiver<bool>,
     status: watch::Sender<TorrentStatus>,
 ) -> io::Result<()> {
+    let Resources {
+        writer: writer_slot,
+        transfer,
+        network,
+    } = resources;
+    let writer = writer_slot.as_mut().expect("startup writer");
     status.send_modify(|s| s.progress.phase = TorrentPhase::Recovering);
     let result = tokio::select! {
         biased;
         _ = stop.changed() => Ok(None),
         result = writer.ready() => result.map(Some),
     };
-    match result {
-        Ok(Some(verified)) => {
-            let count: u32 = verified.iter().map(|b| b.count_ones()).sum();
-            let session = match networking {
-                Networking::Recheck => {
-                    let pieces: Vec<_> = (0..options.metainfo.layout().piece_count())
-                        .map(|i| verified[i as usize / 8] & (0x80 >> (i % 8)) != 0)
-                        .collect();
-                    let bytes = pieces
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, passed)| **passed)
-                        .map(|(i, _)| {
-                            let r = options
-                                .metainfo
-                                .layout()
-                                .piece_range(i as u32)
-                                .expect("piece");
-                            r.end - r.start
-                        })
-                        .sum();
-                    let wanted_bytes = options.selection.wanted_bytes();
-                    let wanted_verified_bytes = options
-                        .selection
-                        .verified_bytes(options.metainfo.layout(), &verified);
-                    let complete = options.selection.is_complete(&verified);
-                    let joined = writer.shutdown().await;
-                    status.send_modify(|s| {
-                        s.progress.phase = TorrentPhase::Stopped;
-                        s.progress.verified_bytes = bytes;
-                        s.progress.verified_pieces = count;
-                        s.progress.verified_piece_map = pieces.into();
-                        s.progress.total_bytes = options.metainfo.layout().total_length();
-                        s.progress.wanted_bytes = wanted_bytes;
-                        s.progress.wanted_verified_bytes = wanted_verified_bytes;
-                        s.progress.completed = complete && joined.is_ok();
-                        s.progress.joined = joined.is_ok();
-                        s.progress.exit = Some(TorrentExit::Complete);
-                    });
-                    return joined;
-                }
-                Networking::Online(session) => session,
-            };
-            let mut download = Task::new(
-                options.metainfo.clone(),
-                options.peer_id,
-                options.profile,
-                writer,
-                verified,
-            )?;
-            download.select_files(options.selection.clone());
-            serve_torrent(download, options, session, stop, status).await
-        }
+    let verified = match result {
+        Ok(Some(verified)) => verified,
         other => {
+            status.send_modify(|s| {
+                s.progress.phase = TorrentPhase::Stopped;
+                s.progress.exit = other.as_ref().ok().map(|_| TorrentExit::StopRequested);
+            });
+            return other.map(|_| ());
+        }
+    };
+    let pieces: Arc<[bool]> = (0..options.metainfo.layout().piece_count())
+        .map(|i| verified[i as usize / 8] & (0x80 >> (i % 8)) != 0)
+        .collect();
+    let bytes: u64 = pieces
+        .iter()
+        .enumerate()
+        .filter(|(_, passed)| **passed)
+        .map(|(i, _)| {
+            let range = options
+                .metainfo
+                .layout()
+                .piece_range(i as u32)
+                .expect("piece");
+            range.end - range.start
+        })
+        .sum();
+    status.send_modify(|s| {
+        s.progress.recovered = true;
+        s.progress.verified_bytes = bytes;
+        s.progress.full_complete = bytes == options.metainfo.layout().total_length();
+        s.progress.verified_pieces = pieces.iter().filter(|&&p| p).count() as u32;
+        s.progress.verified_piece_map = pieces;
+        s.progress.wanted_bytes = options.selection.wanted_bytes();
+        s.progress.wanted_verified_bytes = options
+            .selection
+            .verified_bytes(options.metainfo.layout(), &verified);
+    });
+    let session = match networking {
+        Networking::Recheck => {
+            let complete = options.selection.is_complete(&verified);
             let joined = writer.shutdown().await;
             status.send_modify(|s| {
                 s.progress.phase = TorrentPhase::Stopped;
-                s.progress.joined = joined.is_ok();
-                s.progress.exit = Some(TorrentExit::StopRequested);
+                s.progress.completed = complete && joined.is_ok();
+                s.progress.exit = Some(TorrentExit::Rechecked);
             });
-            other.map(|_| ()).and(joined)
+            return joined;
         }
-    }
+        Networking::Online(session) => session,
+    };
+    let mut download = Task::new(
+        options.metainfo.clone(),
+        options.peer_id,
+        options.profile,
+        writer,
+        verified,
+    )?;
+    download.select_files(options.selection.clone());
+    *transfer = Some(download);
+    let transfer = transfer.as_mut().expect("installed shell");
+    transfer.attach_writer(writer_slot.take().expect("startup writer"));
+    let result = drive(&mut options, session, transfer, network, &mut stop, &status).await;
+    finish(
+        transfer,
+        network,
+        &status,
+        options.run,
+        options.metainfo.layout().piece_count(),
+        result,
+    )
+    .await
 }

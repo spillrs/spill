@@ -1,4 +1,5 @@
-use crate::common::{Daemon, Temp, WebSeed, metainfo, multifile_metainfo};
+use crate::common::{Daemon, WebSeed, metainfo, multifile_metainfo};
+use crate::payload::Temp;
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -58,43 +59,38 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
         let meta = meta.clone();
         downloads.spawn(async move {
             let output = Temp::new();
-            let storage = spill::engine::provisioning::NamedDestination::open_cancellable(
-                std::fs::File::open(&output.0).unwrap(),
-                &meta,
-                |_| Ok(()),
-                || false,
-            )
-            .unwrap();
-            let mut session = spill::engine::session::Session::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                spill::engine::session::Limits {
+            let session = spill::engine::session::Session::bind(
+                spill::engine::session::NetworkOptions {
+                    listen: "127.0.0.1:0".parse().unwrap(),
                     allow_local_network: true,
+                    ..Default::default()
+                },
+                spill::engine::session::Limits {
                     torrents: 1,
                     peers: 1,
                     payload_bytes: profile.cache_bytes + profile.write_queue_bytes,
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
-            let hash = session
-                .admit(
-                    spill::engine::torrent::TorrentOptions::new(meta, profile)
-                        .storage(storage)
-                        .settings(spill::engine::settings::TorrentSettings {
-                            trackers: false,
-                            dht: false,
-                            pex: false,
-                            web_seeds: false,
-                            download_limit: 512 * 1024,
-                            ..Default::default()
-                        })
-                        .peers(vec![address])
-                        .diagnostics(diagnostics),
-                )
-                .unwrap();
-            let mut observer = session.torrent(hash).unwrap();
+            use spill::engine::torrent::{Destination, TorrentOptions, TorrentSource};
+            let mut options = TorrentOptions::new(
+                TorrentSource::Metainfo(meta),
+                Destination::Open(output.0.clone()),
+            );
+            options.profile = profile;
+            options.settings = spill::engine::settings::TorrentSettings {
+                trackers: false,
+                dht: false,
+                pex: false,
+                web_seeds: false,
+                download_limit: 512 * 1024,
+                ..Default::default()
+            };
+            options.peers = vec![address];
+            options.diagnostics = diagnostics;
+            let mut observer = session.admit(options).unwrap();
             assert_eq!(observer.snapshot().diagnostics.is_some(), diagnostics);
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !observer.snapshot().progress.completed {
@@ -115,20 +111,8 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
             );
             assert!(snapshot.progress.download_bytes_per_second.is_finite());
             assert!(snapshot.progress.upload_bytes_per_second.is_finite());
-            let status = serde_json::to_value(snapshot).unwrap();
-            assert_eq!(status.get("diagnostics").is_some(), diagnostics);
-            assert_eq!(
-                status["progress"]["verified_piece_bitfield"],
-                json!([255, 128])
-            );
-            for removed in [
-                "admitted_connections",
-                "tracker_exhausted",
-                "queued_payload_bytes",
-            ] {
-                assert!(status.get(removed).is_none());
-                assert!(status["progress"].get(removed).is_none());
-            }
+            assert_eq!(snapshot.diagnostics.is_some(), diagnostics);
+            assert_eq!(&*snapshot.progress.verified_piece_map, &[true; 9]);
             std::fs::read(output.0.join("x")).unwrap()
         });
     }

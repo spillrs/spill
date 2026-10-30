@@ -1,5 +1,5 @@
 use super::{transport_daemon_at, utp_tracker, wait_transport};
-use crate::common::{Temp, seed_metainfo};
+use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
 use std::time::Duration;

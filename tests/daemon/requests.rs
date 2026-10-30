@@ -1,4 +1,5 @@
-use crate::common::{Daemon, Temp, peer_frame, raw_peer, seed_metainfo};
+use crate::common::{Daemon, peer_frame, raw_peer};
+use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
 use std::time::Duration;

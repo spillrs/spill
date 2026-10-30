@@ -5,7 +5,7 @@ use super::*;
 impl NamedDestination {
     /// Record writable paths before creating payloads so interrupted creation
     /// can be reopened for recovery. Complete existing seeds stay read-only.
-    pub fn open_cancellable(
+    pub(in crate::engine) fn open_cancellable(
         root: File,
         meta: &OwnedMetainfo,
         record: impl FnOnce(&DestinationBinding) -> io::Result<()>,
@@ -17,6 +17,17 @@ impl NamedDestination {
         }
         let binding = DestinationBinding::new(meta, false)?;
         record(&binding)?;
+        Self::open_bound(root, meta, None, true, &canceled)
+    }
+    pub(in crate::engine) fn create(
+        root: File,
+        meta: &OwnedMetainfo,
+        record: impl FnOnce(&DestinationBinding) -> io::Result<()>,
+        canceled: impl Fn() -> bool,
+    ) -> io::Result<FileStorage> {
+        check_canceled(&canceled)?;
+        PayloadPaths::new(meta)?.reject_existing(&root)?;
+        record(&DestinationBinding::new(meta, false)?)?;
         Self::open_bound(root, meta, None, true, &canceled)
     }
     /// Probe final files without creating payloads, then verify once under the
@@ -40,7 +51,7 @@ impl NamedDestination {
     /// Reopen an existing binding without hashing. This does NOT grant piece
     /// availability: the caller must run fingerprint-based storage recovery (or
     /// explicit recheck) before advertising/uploading.
-    pub fn reopen_for_recovery(
+    pub(in crate::engine) fn reopen_for_recovery(
         root: File,
         meta: &OwnedMetainfo,
         binding: &DestinationBinding,

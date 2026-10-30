@@ -39,7 +39,7 @@ prefix that matches exactly one torrent; an ambiguous prefix is an input error.
 | `recheck ID` | Verify every piece against the data on disk, then leave the torrent paused. Use after moving or editing files, or after an unclean power loss. |
 | `reannounce ID` | Announce to the tracker again as soon as the tracker's `min interval` allows. Fails if trackers are disabled for the torrent. |
 | `remove ID [--delete-payload]` | Remove the torrent. Files are kept unless `--delete-payload` is given; see [Torrents](torrents.md#removing-torrents). |
-| `health` | Daemon process ID, number of running torrents and listen address. |
+| `health` | Daemon process ID, number of running torrents, listen address, port mapping and `admission_closed`. See [Troubleshooting](troubleshooting.md#torrents-stay-queued-after-an-internal-failure). |
 | `shutdown` | Stop the daemon cleanly. |
 
 In `get` JSON, `transfer.peers[].transport` is `"tcp"`, `"utp"` or `"http"`

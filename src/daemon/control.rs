@@ -1,11 +1,12 @@
 //! One in-process dispatcher shared by Unix control and HTTP.
+use crate::settings::Settings;
 use crate::{
     catalog::{Catalog, Checkpoint, Intent, Row},
     supervisor::Supervisor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use spill::engine::{selection::FileSelection, settings::TorrentSettings};
+use spill::engine::selection::FileSelection;
 use std::{io, path::PathBuf, sync::Arc};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -267,7 +268,7 @@ impl Control {
                 let row = find(&supervisor.db, &id)?;
                 let mut settings = serde_json::to_value(&row.settings)?;
                 settings.as_object_mut().unwrap().extend(values);
-                let settings: TorrentSettings = serde_json::from_value(settings)?;
+                let settings: Settings = serde_json::from_value(settings)?;
                 settings.validate()?;
                 if row.parsed.as_ref().is_some_and(|meta| meta.is_private())
                     && (settings.dht || settings.pex)

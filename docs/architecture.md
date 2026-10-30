@@ -23,11 +23,9 @@ The library exposes `spill::protocol` and `spill::engine`; the binary starts at
 knows nothing about the catalog or the CLI, and `daemon` only uses the engine's
 public API. Engine internals are restricted to the engine module.
 
-Codec tests live in `tests/protocol/`, and daemon end-to-end scenarios are
-grouped by behaviour in `tests/daemon/`, with shared harness code in
-`tests/common/`. `tests/protocol.rs` and `tests/daemon.rs` are the test entry
-points. Run them with `cargo test --test protocol` and
-`cargo test --test daemon`, or run both with `cargo test --locked`.
+Codec tests live in `tests/protocol/`; end-to-end scenarios live in
+`tests/daemon/` and `tests/engine/`, with shared harness code in `tests/common/`.
+Run tiers 0 and 1 without public networking with `cargo test --locked`.
 
 ## One process, one async thread
 
@@ -76,10 +74,53 @@ same port (DHT traffic, tracker replies and uTP peer packets are demultiplexed
 there), the uTP connections and timers, the outgoing connection queue, the global bandwidth budget,
 the HTTP client for trackers and the DHT node. It also enforces the address
 policy (`allow_local_network`) and the daemon-wide resource limits.
+`Session::bind` takes separate `NetworkOptions` and `Limits`. Network defaults
+use an ephemeral IPv4 port, uTP, no port mapping and no LAN permission; reusable
+sessions permit DHT only with `NetworkOptions::dht = Some(DhtOptions { ... })`.
+`dht_state()` does not start an unused node. See [Networking](networking.md#dht)
+for initialization and failure behaviour.
+Session handles are cloneable: dropping one clone does not stop transfers.
+Dropping the last requests stop; await `shutdown()` to prove cleanup finished.
+Cancelled shutdown waits remain joinable through another handle.
+`admit(TorrentOptions::new(source, destination))` returns a `TorrentHandle`
+synchronously after validation and reservation. Sources are metainfo or parsed
+magnets; the engine resolves metadata and prepares the destination. No catalog
+or persistence callbacks are required. `inspect()` resolves a magnet without
+creating payload files, using the same admission limits. Offline sessions accept
+only metainfo rechecks.
+
+Destinations require an existing directory: `Open` safely creates or adopts a
+complete seed, `Create` refuses existing payload, `Adopt` verifies a read-only
+seed, and `Recover` requires previously recorded authority. `recovery()` retains
+that authority and the latest acknowledged checkpoints for a subsequent execution.
+Stop is terminal; resuming means admitting a new execution after joined cleanup.
+Finished executions retire automatically; old handles cannot affect replacements.
+
+Transfer handles retain outcomes after retirement: `wait_complete()` waits for wanted
+content, while `outcome()` reports termination, errors and whether cleanup finished.
+`changed()` yields latest-value observations and returns false after the final
+report is consumed, without requiring a separate join waiter.
+A clean incomplete stop is not a successful download. A failed execution can still
+prove cleanup after its peers, writer and blocking jobs have joined; inspect
+`cleanup_complete` before reusing its destination. Resume and tracker-delivery
+callbacks, including resolved-metadata and destination-binding acknowledgements,
+run on blocking threads. Metadata acknowledgement precedes destination preparation;
+binding acknowledgement precedes file creation. Resume acknowledgements precede
+content completion; delivery acknowledgements precede advancing tracker delivery.
+Stop and shutdown join in-progress callbacks; they have no hard deadline.
+
+For an embedded download, `RunPolicy::UntilComplete` stops after wanted-content
+completion. It allows up to five seconds for a pending tracker completed announce;
+no pending delivery means no grace period. Partial selection does not announce
+full-torrent completion. Grace expiry is not a content failure, but persistence
+or cleanup failures still fail the execution. This grace does not bound blocking
+I/O or joined cleanup. The daemon uses `Persistent` to keep serving until stopped.
 
 ### A torrent
 
-Each running torrent is one task with three parts:
+Both daemon and library transfers use the same engine-owned lifecycle, including
+metadata resolution, preparation, recovery and joined cleanup. Within transfer,
+the three parts are:
 
 - **Core**: a deterministic state machine. It receives inputs (a peer message,
   a finished disk write, a timer tick) and returns actions (send a message,

@@ -25,6 +25,12 @@ Daemon-wide limits:
 There is no limit on how many torrents the catalog holds; torrents beyond the
 active slots wait as `queued`.
 
+Library callers have the same per-torrent resource bounds: `Profile.peers` must
+be 1–4096, and `cache_bytes` and `write_queue_bytes` must each be 16 KiB–1 GiB.
+Admission and magnet metadata resolution reject invalid profiles with
+`InvalidInput` before starting work. `Profile::validate()` checks these bounds
+without starting an execution.
+
 ## Resource use
 
 - **Memory**: each running torrent may buffer up to `cache_bytes` +

@@ -1,4 +1,5 @@
-use crate::common::{Daemon, Temp, WebSeed, metainfo, peer_frame, raw_peer, seed_metainfo};
+use crate::common::{Daemon, WebSeed, metainfo, peer_frame, raw_peer};
+use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;

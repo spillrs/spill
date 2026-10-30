@@ -5,33 +5,19 @@ use crate::{
 };
 use serde_json::{Value, json};
 use spill::engine::{
-    provisioning::NamedDestination,
     session::Session,
-    torrent::{RunPolicy, TorrentExit, TorrentOptions, TorrentStatus},
+    torrent::{
+        Destination, Persistence, RecoveryState, RunPolicy, TorrentHandle, TorrentOptions,
+        TorrentPhase, TorrentSource,
+    },
 };
-use std::{
-    collections::HashMap,
-    fs::File,
-    io,
-    sync::{Arc, Mutex as StdMutex},
-};
-use tokio::{
-    sync::{Mutex, watch},
-    task::JoinHandle,
-    time::Instant,
-};
+use std::{collections::HashMap, io};
+use tokio::{sync::watch, time::Instant};
 
-type SharedSession = Arc<Mutex<Session>>;
-#[derive(Default)]
-struct Live {
-    phase: String,
-    transfer: Option<TorrentStatus>,
-}
 struct Running {
-    stop: watch::Sender<bool>,
-    task: JoinHandle<io::Result<()>>,
-    live: Arc<StdMutex<Live>>,
-    last: Instant,
+    handle: TorrentHandle,
+    recheck: bool,
+    previous_seeding: f64,
     downloaded: u64,
     uploaded: u64,
     seed_seconds: f64,
@@ -45,32 +31,25 @@ struct Running {
     last_upload_at: Option<u64>,
     saved: Instant,
     complete: bool,
-    seed_active: bool,
+    /// Cleanup was not proven; its failure is recorded once and the session
+    /// admits nothing more until restart.
+    quarantined: bool,
 }
 pub struct Supervisor {
     pub config: Config,
     pub db: Catalog,
-    session: SharedSession,
-    dht: Option<spill::engine::session::dht::Handle>,
+    session: Session,
     dht_saved: Instant,
-    dht_attempted: bool,
     running: HashMap<String, Running>,
     pub shutdown: watch::Sender<bool>,
 }
 fn io_error(e: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::other(e)
 }
-fn completion(status: &TorrentStatus) -> Option<bool> {
-    let p = &status.progress;
-    // Fully verified bytes still await the durability barrier on seed recovery.
-    (p.ready && (p.completed || p.wanted_verified_bytes < p.wanted_bytes)).then_some(p.completed)
-}
 impl Supervisor {
     pub async fn new(config: Config, db: Catalog) -> io::Result<Self> {
         let total = config.active_downloads + config.active_seeds;
         let limits = spill::engine::session::Limits {
-            allow_local_network: config.allow_local_network,
-            utp: config.utp,
             torrents: total,
             peers: total * config.peers,
             payload_bytes: total * (config.cache_bytes + config.write_queue_bytes),
@@ -82,26 +61,26 @@ impl Supervisor {
                 .clone()
                 .unwrap_or(spill::engine::session::port_map::Gateway::Discover)
         });
-        let mut session = Session::bind(config.listen, limits, mapping).await?;
-        let dht = if config.defaults.dht {
-            Some(
-                session
-                    .enable_dht(spill::engine::session::DhtOptions {
-                        allow_network: true,
-                        saved: db.load_dht().map_err(io_error)?,
-                        routers: config.dht_bootstrap.clone(),
-                    })
-                    .await?,
-            )
-        } else {
-            None
+        let network = spill::engine::session::NetworkOptions {
+            listen: config.listen,
+            utp: config.utp,
+            allow_local_network: config.allow_local_network,
+            port_mapping: mapping,
+            dht: if config.listen.is_ipv4() {
+                Some(spill::engine::session::DhtOptions {
+                    saved: db.load_dht().map_err(io_error)?,
+                    routers: config.dht_bootstrap.clone(),
+                })
+            } else {
+                eprintln!("DHT disabled: DHT requires an IPv4 session listener");
+                None
+            },
         };
+        let session = Session::bind(network, limits).await?;
         Ok(Self {
-            dht_attempted: config.defaults.dht,
             config,
             db,
-            session: Arc::new(Mutex::new(session)),
-            dht,
+            session,
             dht_saved: Instant::now(),
             running: HashMap::new(),
             shutdown: watch::channel(false).0,
@@ -109,72 +88,80 @@ impl Supervisor {
     }
     pub async fn stop(&mut self, id: &str) -> io::Result<()> {
         if let Some(mut running) = self.running.remove(id) {
-            running.stop.send_replace(true);
-            let result = (&mut running.task).await.map_err(io_error)?;
-            self.sample(id, &mut running, true)?;
-            if let Err(error) = result
-                && error.kind() != io::ErrorKind::Interrupted
-            {
+            let result = running.handle.stop().await;
+            let outcome = running.handle.outcome().await;
+            if !outcome.cleanup_complete {
+                let first = !running.quarantined;
+                running.quarantined = true;
+                self.running.insert(id.to_owned(), running);
+                if first {
+                    let error = result.as_ref().expect_err("unproven cleanup must fail");
+                    self.db.failure(id, &error.to_string()).map_err(io_error)?;
+                }
+                return result;
+            }
+            Self::sample(&self.db, id, &mut running, true)?;
+            if running.recheck && outcome.recheck_finished {
+                self.db
+                    .checkpoint(id, |c| c.complete = outcome.wanted_complete)
+                    .map_err(io_error)?;
+                self.db.intent(id, Intent::Paused).map_err(io_error)?;
+            }
+            if let Err(error) = result {
                 self.db.failure(id, &error.to_string()).map_err(io_error)?;
             }
         }
         Ok(())
     }
-    fn sample(&self, id: &str, running: &mut Running, stopping: bool) -> io::Result<()> {
-        let live = running.live.lock().unwrap();
-        if let Some(s) = &live.transfer {
-            let complete = completion(s);
-            if s.progress.ready {
-                self.db.recovered(id).map_err(io_error)?;
-            }
-            let downloaded = s.progress.processed_payload_bytes - running.previous_downloaded;
-            let uploaded = s.progress.written_payload_bytes - running.previous_uploaded;
-            running.downloaded += downloaded;
-            running.hash_failed_bytes +=
-                s.progress.hash_failed_bytes - running.previous_hash_failed_bytes;
-            running.hash_failed_pieces +=
-                s.progress.hash_failed_pieces - running.previous_hash_failed_pieces;
-            running.previous_hash_failed_bytes = s.progress.hash_failed_bytes;
-            running.previous_hash_failed_pieces = s.progress.hash_failed_pieces;
-            running.uploaded += uploaded;
-            if downloaded != 0 {
-                running.last_download_at = Some(catalog::now());
-            }
-            if uploaded != 0 {
-                running.last_upload_at = Some(catalog::now());
-            }
-            running.previous_downloaded = s.progress.processed_payload_bytes;
-            running.previous_uploaded = s.progress.written_payload_bytes;
-            if running.seed_active {
-                running.seed_seconds += running.last.elapsed().as_secs_f64();
-            }
-            running.seed_active = s.progress.ready && s.progress.completed && !s.progress.joined;
-            if stopping
-                || s.progress.joined
-                || running.saved.elapsed().as_secs() >= 60
-                || complete.is_some_and(|complete| complete != running.complete)
-            {
-                self.db
-                    .checkpoint(id, |c| {
-                        c.downloaded = running.downloaded;
-                        c.hash_failed_bytes = running.hash_failed_bytes;
-                        c.hash_failed_pieces = running.hash_failed_pieces;
-                        c.uploaded = running.uploaded;
-                        c.last_download_at = running.last_download_at;
-                        c.last_upload_at = running.last_upload_at;
-                        c.seed_seconds = running.seed_seconds;
-                        if let Some(complete) = complete {
-                            c.complete = complete;
-                        }
-                    })
-                    .map_err(io_error)?;
-                running.saved = Instant::now();
+    fn sample(db: &Catalog, id: &str, running: &mut Running, stopping: bool) -> io::Result<()> {
+        let p = running.handle.snapshot().progress;
+        let complete = (p.recovered && (p.completed || p.wanted_verified_bytes < p.wanted_bytes))
+            .then_some(p.completed);
+        if p.ready {
+            db.recovered(id).map_err(io_error)?;
+        }
+        let downloaded = p.processed_payload_bytes - running.previous_downloaded;
+        let uploaded = p.written_payload_bytes - running.previous_uploaded;
+        running.downloaded += downloaded;
+        running.uploaded += uploaded;
+        running.hash_failed_bytes += p.hash_failed_bytes - running.previous_hash_failed_bytes;
+        running.hash_failed_pieces += p.hash_failed_pieces - running.previous_hash_failed_pieces;
+        running.previous_hash_failed_bytes = p.hash_failed_bytes;
+        running.previous_hash_failed_pieces = p.hash_failed_pieces;
+        running.previous_downloaded = p.processed_payload_bytes;
+        running.previous_uploaded = p.written_payload_bytes;
+        if downloaded != 0 {
+            running.last_download_at = Some(catalog::now());
+        }
+        if uploaded != 0 {
+            running.last_upload_at = Some(catalog::now());
+        }
+        let seeding = p.seeding_duration.as_secs_f64();
+        running.seed_seconds += seeding - running.previous_seeding;
+        running.previous_seeding = seeding;
+        if stopping
+            || p.joined
+            || running.saved.elapsed().as_secs() >= 60
+            || complete.is_some_and(|complete| complete != running.complete)
+        {
+            db.checkpoint(id, |c| {
+                c.downloaded = running.downloaded;
+                c.hash_failed_bytes = running.hash_failed_bytes;
+                c.hash_failed_pieces = running.hash_failed_pieces;
+                c.uploaded = running.uploaded;
+                c.last_download_at = running.last_download_at;
+                c.last_upload_at = running.last_upload_at;
+                c.seed_seconds = running.seed_seconds;
                 if let Some(complete) = complete {
-                    running.complete = complete;
+                    c.complete = complete;
                 }
+            })
+            .map_err(io_error)?;
+            running.saved = Instant::now();
+            if let Some(complete) = complete {
+                running.complete = complete;
             }
         }
-        running.last = Instant::now();
         Ok(())
     }
     pub async fn remove(&mut self, id: &str, delete: bool) -> io::Result<()> {
@@ -194,12 +181,20 @@ impl Supervisor {
         self.db.delete(id).map_err(io_error)
     }
     pub fn view(&self, row: &Row) -> Value {
-        let (phase, status) = self
-            .running
-            .get(&row.id)
+        let running = self.running.get(&row.id);
+        let (phase, status) = running
             .map(|r| {
-                let live = r.live.lock().unwrap();
-                (live.phase.clone(), live.transfer.clone())
+                let snapshot = r.handle.snapshot();
+                (
+                    crate::observation::phase(&snapshot, r.recheck),
+                    (!matches!(
+                        snapshot.progress.phase,
+                        TorrentPhase::Starting
+                            | TorrentPhase::ResolvingMetadata
+                            | TorrentPhase::PreparingDestination
+                    ))
+                    .then_some(snapshot),
+                )
             })
             .unwrap_or_else(|| {
                 let phase = match row.intent {
@@ -207,7 +202,7 @@ impl Supervisor {
                     Intent::Run if row.retry_at > catalog::now() => "retrying",
                     _ => "queued",
                 };
-                (phase.into(), None)
+                (phase, None)
             });
         let selected = row.meta().ok().filter(|_| status.is_none()).map(|meta| {
             let selection = if row.settings.file_priorities.is_empty() {
@@ -234,7 +229,11 @@ impl Supervisor {
             .or_else(|| selected.map(|p| p.1));
         let completed = status
             .as_ref()
-            .and_then(completion)
+            .and_then(|s| {
+                let p = &s.progress;
+                (p.recovered && (p.completed || p.wanted_verified_bytes < p.wanted_bytes))
+                    .then_some(p.completed)
+            })
             .unwrap_or(row.checkpoint.complete);
         let verified = status
             .as_ref()
@@ -248,45 +247,23 @@ impl Supervisor {
                     .map_or(0, |p| p.verified_bytes)
             });
         let meta = row.meta().ok();
-        let (uploaded, seed_seconds) = self
-            .running
-            .get(&row.id)
+        let (uploaded, seed_seconds) = running
             .map(|r| (r.uploaded, r.seed_seconds))
             .unwrap_or((row.checkpoint.uploaded, row.checkpoint.seed_seconds));
-        let (downloaded, last_download_at, last_upload_at) = self
-            .running
-            .get(&row.id)
+        let (downloaded, last_download_at, last_upload_at) = running
             .map(|r| (r.downloaded, r.last_download_at, r.last_upload_at))
             .unwrap_or((
                 row.checkpoint.downloaded,
                 row.checkpoint.last_download_at,
                 row.checkpoint.last_upload_at,
             ));
-        let (hash_failed_bytes, hash_failed_pieces) = self
-            .running
-            .get(&row.id)
+        let (hash_failed_bytes, hash_failed_pieces) = running
             .map(|r| (r.hash_failed_bytes, r.hash_failed_pieces))
             .unwrap_or((
                 row.checkpoint.hash_failed_bytes,
                 row.checkpoint.hash_failed_pieces,
             ));
-        let transfer = status.as_ref().map(|s| {
-            json!({"ready":s.progress.ready,"completed":s.progress.completed,
-            "active_peers":s.progress.active_peers,"downloaded_bytes":s.progress.processed_payload_bytes,
-            "uploaded_bytes":s.progress.written_payload_bytes,
-            "hash_failed_bytes":s.progress.hash_failed_bytes,"hash_failed_pieces":s.progress.hash_failed_pieces,
-            "download_bytes_per_second":s.progress.download_bytes_per_second,
-            "upload_bytes_per_second":s.progress.upload_bytes_per_second,
-            "utp_retransmits":s.diagnostics.as_ref().map(|d| d.utp_retransmits),
-            "pending_contacts":s.diagnostics.as_ref().map(|d| d.pending_contacts),
-            "writer_free_slots":s.diagnostics.as_ref().map(|d| d.writer_free_slots),
-            "upload_reads_in_flight":s.diagnostics.as_ref().map(|d| d.upload_reads_in_flight),
-            "upload_reads_finished":s.diagnostics.as_ref().map(|d| d.upload_reads_finished),
-            "peers":s.diagnostics.as_ref().map(|d| d.peers.as_slice()).unwrap_or_default(),
-            "trackers":s.diagnostics.as_ref().map(|d| d.trackers.as_slice()).unwrap_or_default(),
-            "web_seeds":s.diagnostics.as_ref().map(|d| d.web_seeds.as_slice()).unwrap_or_default(),
-            "dht":s.diagnostics.as_ref().and_then(|d| d.dht.as_ref())})
-        });
+        let transfer = status.as_ref().map(crate::observation::transfer);
         let tracker_error = status
             .as_ref()
             .and_then(|s| s.diagnostics.as_ref())
@@ -309,60 +286,41 @@ impl Supervisor {
             "tracker_message":tracker_message,"retry_at":row.retry_at,"transfer":transfer})
     }
     pub async fn reannounce(&self, hash: spill::protocol::identity::InfoHashV1) -> io::Result<()> {
-        let session = self.session.lock().await;
-        let observer = session
+        let observer = self
+            .session
             .torrent(hash)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "torrent is not running"))?;
         observer.reannounce();
         Ok(())
     }
     fn failure(&self, id: &str, error: io::Error) {
-        if let Err(e) = self.db.failure(id, &error.to_string()) {
+        if self.running.get(id).is_some_and(|r| r.quarantined) {
+            eprintln!("torrent {id}: {error}");
+        } else if let Err(e) = self.db.failure(id, &error.to_string()) {
             eprintln!("torrent {id}: {error}; recording failure: {e}");
         }
     }
     pub async fn reconcile(&mut self) -> io::Result<()> {
         let ids: Vec<_> = self.running.keys().cloned().collect();
         for id in ids {
-            if self.running[&id].task.is_finished() {
+            if self.running[&id].quarantined {
+                continue;
+            }
+            if self.running[&id].handle.is_finished() {
                 if let Err(e) = self.stop(&id).await {
                     self.failure(&id, e);
                 }
             } else {
-                let mut running = self.running.remove(&id).unwrap();
-                if let Err(e) = self.sample(&id, &mut running, false) {
+                let running = self.running.get_mut(&id).expect("running execution");
+                if let Err(e) = Self::sample(&self.db, &id, running, false) {
                     self.failure(&id, e);
                 }
-                self.running.insert(id, running);
             }
         }
         let rows = self.db.rows().map_err(io_error)?;
-        if !self.dht_attempted
-            && rows
-                .iter()
-                .any(|r| r.settings.dht && r.intent == Intent::Run)
-        {
-            self.dht_attempted = true;
-            let result = async {
-                self.session
-                    .lock()
-                    .await
-                    .enable_dht(spill::engine::session::DhtOptions {
-                        allow_network: true,
-                        saved: self.db.load_dht().map_err(io_error)?,
-                        routers: self.config.dht_bootstrap.clone(),
-                    })
-                    .await
-            }
-            .await;
-            match result {
-                Ok(handle) => self.dht = Some(handle),
-                Err(e) => eprintln!("DHT disabled: {e}"),
-            }
-        }
         if self.dht_saved.elapsed().as_secs() >= 300 {
             let result = async {
-                if let Some(saved) = self.session.lock().await.dht_state().await? {
+                if let Some(saved) = self.session.dht_state().await? {
                     self.db.save_dht(saved).map_err(io_error)?;
                 }
                 Ok::<_, io::Error>(())
@@ -378,6 +336,10 @@ impl Supervisor {
             .partition(|row| self.running.contains_key(&row.id));
         let (mut downloads, mut seeds) = (0, 0);
         for row in running.into_iter().chain(queued) {
+            // Re-recording would keep advancing the persisted retry backoff.
+            if self.running.get(&row.id).is_some_and(|r| r.quarantined) {
+                continue;
+            }
             if matches!(row.intent, Intent::RemoveKeep | Intent::RemoveDelete) {
                 if row.retry_at > catalog::now() {
                     continue;
@@ -392,14 +354,7 @@ impl Supervisor {
             }
             let running = self.running.get(&row.id);
             let complete = running
-                .and_then(|r| {
-                    r.live
-                        .lock()
-                        .unwrap()
-                        .transfer
-                        .as_ref()
-                        .and_then(completion)
-                })
+                .map(|r| r.complete)
                 .unwrap_or(row.checkpoint.complete);
             let (uploaded, seed_seconds) = running
                 .map(|r| (r.uploaded, r.seed_seconds))
@@ -436,27 +391,19 @@ impl Supervisor {
             }
             *used += 1;
             if !self.running.contains_key(&row.id) && row.retry_at <= catalog::now() {
-                let (stop, stopping) = watch::channel(false);
-                let live = Arc::new(StdMutex::new(Live {
-                    phase: "starting".into(),
-                    transfer: None,
-                }));
-                let task = tokio::spawn(run(
-                    row.clone(),
-                    self.config.clone(),
-                    self.db.clone(),
-                    self.session.clone(),
-                    self.dht.clone(),
-                    live.clone(),
-                    stopping,
-                ));
+                let handle = match self.start(row) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        self.failure(&row.id, error);
+                        continue;
+                    }
+                };
                 self.running.insert(
                     row.id.clone(),
                     Running {
-                        stop,
-                        task,
-                        live,
-                        last: Instant::now(),
+                        handle,
+                        recheck: row.intent == Intent::Recheck,
+                        previous_seeding: 0.0,
                         downloaded: row.checkpoint.downloaded,
                         uploaded: row.checkpoint.uploaded,
                         seed_seconds: row.checkpoint.seed_seconds,
@@ -470,7 +417,7 @@ impl Supervisor {
                         last_upload_at: row.checkpoint.last_upload_at,
                         saved: Instant::now(),
                         complete: row.checkpoint.complete,
-                        seed_active: false,
+                        quarantined: false,
                     },
                 );
             }
@@ -479,7 +426,7 @@ impl Supervisor {
     }
     pub async fn joined_shutdown(&mut self) -> io::Result<()> {
         for running in self.running.values() {
-            running.stop.send_replace(true);
+            running.handle.request_stop();
         }
         let ids: Vec<_> = self.running.keys().cloned().collect();
         let mut result = Ok(());
@@ -488,11 +435,10 @@ impl Supervisor {
                 result = Err(e);
             }
         }
-        let mut session = self.session.lock().await;
-        if let Err(e) = session.shutdown().await {
+        if let Err(e) = self.session.shutdown().await {
             result = Err(e);
         }
-        match session.dht_state().await {
+        match self.session.dht_state().await {
             Ok(Some(saved)) => {
                 if let Err(e) = self.db.save_dht(saved) {
                     eprintln!("saving DHT state: {e}");
@@ -503,154 +449,69 @@ impl Supervisor {
         }
         result
     }
-    pub fn health(&self) -> Value {
-        let session = self.session.try_lock().ok();
-        json!({"pid":std::process::id(),"running":self.running.len(),"listen":session.as_ref().map(|s|s.local_addr()),
-            "advertised_port":session.as_ref().map(|s|s.advertised_port()),
-            "port_mapping":session.as_ref().map(|s|s.port_mapping())})
-    }
-}
-async fn run(
-    mut row: Arc<Row>,
-    config: Config,
-    db: Catalog,
-    session: SharedSession,
-    dht: Option<spill::engine::session::dht::Handle>,
-    live: Arc<StdMutex<Live>>,
-    mut stop: watch::Receiver<bool>,
-) -> io::Result<()> {
-    if row.metainfo.is_none() {
-        live.lock().unwrap().phase = "metadata".into();
-        let magnet = spill::protocol::magnet::Magnet::parse(
-            row.magnet.as_deref().ok_or(io::ErrorKind::InvalidData)?,
-            Default::default(),
-        )
-        .map_err(io_error)?;
-        let mut network = session.lock().await.metadata_network()?;
-        let meta = match network
-            .resolve(
-                &magnet,
-                row.settings.trackers,
-                row.settings.dht,
-                config.profile(),
-                stop.clone(),
-            )
-            .await
-        {
-            Err(_) if *stop.borrow() => return Ok(()),
-            other => other?,
+    fn start(&self, row: &Row) -> io::Result<TorrentHandle> {
+        let source = match &row.metainfo {
+            Some(_) => TorrentSource::Metainfo(row.meta()?.clone()),
+            None => TorrentSource::Magnet(
+                spill::protocol::magnet::Magnet::parse(
+                    row.magnet.as_deref().expect("catalog source"),
+                    Default::default(),
+                )
+                .map_err(io_error)?,
+            ),
         };
-        db.resolved(&row.id, meta).map_err(io_error)?;
-        row = db
-            .row(&row.id)
-            .map_err(io_error)?
-            .ok_or(io::ErrorKind::NotFound)?;
-    }
-    if *stop.borrow() {
-        return Ok(());
-    }
-    let meta = row.meta()?.clone();
-    if meta.info_hash().to_string() != row.id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "metainfo identity mismatch",
-        ));
-    }
-    live.lock().unwrap().phase = "recovering".into();
-    let output = row.output_dir.clone();
-    let binding = row.created_files.clone();
-    let prepared_meta = meta.clone();
-    let canceled = stop.clone();
-    let profile = config.profile();
-    let binding_db = db.clone();
-    let binding_id = row.id.clone();
-    let sink = tokio::task::spawn_blocking(move || {
-        let root = File::open(&output)?;
-        if let Some(binding) = binding {
-            NamedDestination::reopen_for_recovery(root, &prepared_meta, &binding, || {
-                *canceled.borrow()
-            })
-        } else {
-            NamedDestination::open_cancellable(
-                root,
-                &prepared_meta,
-                |binding| binding_db.bind(&binding_id, binding).map_err(io_error),
-                || *canceled.borrow(),
-            )
-        }
-    })
-    .await
-    .map_err(io_error)??;
-    let resume = sink
-        .verified_resume()
-        .map(|b| b.to_vec())
-        .or_else(|| (!row.checkpoint.resume.is_empty()).then(|| row.checkpoint.resume.clone()));
-    if *stop.borrow() {
-        return Ok(());
-    }
-    let recheck = row.intent == Intent::Recheck;
-    let checkpoint_db = db.clone();
-    let checkpoint_id = row.id.clone();
-    let announce_db = db.clone();
-    let announce_id = row.id.clone();
-    let builder = TorrentOptions::new(meta, profile)
-        .settings(row.settings.clone())
-        .storage(sink)
-        .completion_announce(row.checkpoint.completed_announce, move |acknowledged| {
-            announce_db
-                .checkpoint(&announce_id, |c| c.completed_announce = Some(acknowledged))
-                .map_err(io_error)
-        })
-        .resume(resume)
-        .on_checkpoint(move |resume| {
-            checkpoint_db
-                .checkpoint(&checkpoint_id, |c| c.resume = resume)
-                .map_err(io_error)
-        })
-        .dht(dht.filter(|_| !recheck && row.settings.dht))
-        .diagnostics(true)
-        .run(if recheck {
+        let destination = match &row.created_files {
+            Some(binding) => Destination::Recover {
+                root: row.output_dir.clone(),
+                state: RecoveryState {
+                    binding: binding.clone(),
+                    resume: (!row.checkpoint.resume.is_empty())
+                        .then(|| row.checkpoint.resume.clone()),
+                    completed_announce: row.checkpoint.completed_announce,
+                },
+            },
+            None => Destination::Open(row.output_dir.clone()),
+        };
+        let mut options = TorrentOptions::new(source, destination);
+        options.profile = self.config.profile();
+        options.settings = row.settings.transfer_settings();
+        options.diagnostics = true;
+        options.run = if row.intent == Intent::Recheck {
             RunPolicy::Recheck
         } else {
             RunPolicy::Persistent
-        });
-    let (hash, mut observer) = {
-        let mut session = session.lock().await;
-        let hash = session.admit(builder).map_err(io_error)?;
-        (hash, session.torrent(hash).unwrap())
-    };
-    loop {
-        let snapshot = observer.snapshot();
-        let joined = snapshot.progress.joined;
-        {
-            let mut live = live.lock().unwrap();
-            live.phase = if recheck {
-                "checking"
-            } else if snapshot.progress.completed {
-                "seeding"
-            } else {
-                "downloading"
-            }
-            .into();
-            live.transfer = Some(snapshot);
-        }
-        if *stop.borrow() || joined {
-            break;
-        }
-        tokio::select! { _ = stop.changed() => {}, changed = observer.changed() => { if !changed { break; } } }
+        };
+        let resolved_db = self.db.clone();
+        let resolved_id = row.id.clone();
+        let binding_db = self.db.clone();
+        let binding_id = row.id.clone();
+        let checkpoint_db = self.db.clone();
+        let checkpoint_id = row.id.clone();
+        let announce_db = self.db.clone();
+        let announce_id = row.id.clone();
+        options.persistence = Persistence {
+            resolved: Some(Box::new(move |meta| {
+                resolved_db.resolved(&resolved_id, meta).map_err(io_error)
+            })),
+            binding: Some(Box::new(move |binding| {
+                binding_db.bind(&binding_id, &binding).map_err(io_error)
+            })),
+            checkpoint: Some(Box::new(move |resume| {
+                checkpoint_db
+                    .checkpoint(&checkpoint_id, |c| c.resume = resume)
+                    .map_err(io_error)
+            })),
+            completion_announce: Some(Box::new(move |delivered| {
+                announce_db
+                    .checkpoint(&announce_id, |c| c.completed_announce = Some(delivered))
+                    .map_err(io_error)
+            })),
+        };
+        self.session.admit(options)
     }
-    let owner = session.lock().await.take(hash).expect("owned torrent");
-    let joined = owner.join().await;
-    session.lock().await.finish_remove(&owner);
-    let snapshot = observer.snapshot();
-    if recheck && joined.is_ok() {
-        // A completed scan is authoritative even though it never sets network readiness.
-        if snapshot.progress.exit == Some(TorrentExit::Complete) {
-            db.checkpoint(&row.id, |c| c.complete = snapshot.progress.completed)
-                .map_err(io_error)?;
-        }
-        db.intent(&row.id, Intent::Paused).map_err(io_error)?;
+    pub fn health(&self) -> Value {
+        json!({"pid":std::process::id(),"running":self.running.len(),"listen":self.session.local_addr(),
+            "advertised_port":self.session.advertised_port(),
+            "port_mapping":self.session.port_mapping(),"admission_closed":self.session.admission_closed()})
     }
-    live.lock().unwrap().transfer = Some(snapshot);
-    joined.map_err(io_error)
 }

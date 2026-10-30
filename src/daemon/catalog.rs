@@ -1,7 +1,8 @@
 //! Pre-beta catalog. No legacy schema migrations or removal receipts.
+use crate::settings::Settings;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use spill::engine::{provisioning::DestinationBinding, settings::TorrentSettings};
+use spill::engine::provisioning::DestinationBinding;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -56,7 +57,7 @@ pub struct Row {
     pub magnet: Option<String>,
     pub output_dir: PathBuf,
     pub intent: Intent,
-    pub settings: TorrentSettings,
+    pub settings: Settings,
     pub checkpoint: Checkpoint,
     pub created_files: Option<DestinationBinding>,
     pub last_error: Option<String>,
@@ -111,8 +112,8 @@ impl Catalog {
                     retry_count INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0,
                     CHECK(metainfo IS NOT NULL OR magnet IS NOT NULL));
                 CREATE TABLE dht (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node_id BLOB NOT NULL, nodes BLOB NOT NULL);
-                PRAGMA user_version=4; COMMIT;")?;
-        } else if version != 4 {
+                PRAGMA user_version=5; COMMIT;")?;
+        } else if version != 5 {
             return Err(Error::Version(version));
         }
         c.prepare("SELECT settings, resume, uploaded, seed_seconds, complete, created_files, retry_at FROM torrents LIMIT 0")?;
@@ -270,7 +271,7 @@ impl Catalog {
             Ok(())
         })
     }
-    pub fn settings(&self, id: &str, settings: &TorrentSettings) -> Result<()> {
+    pub fn settings(&self, id: &str, settings: &Settings) -> Result<()> {
         self.update(id, |c, row| {
             if row.settings.file_priorities != settings.file_priorities {
                 row.checkpoint.complete = false;

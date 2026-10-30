@@ -1,4 +1,6 @@
 mod common;
+#[path = "common/payload.rs"]
+mod payload;
 
 #[path = "daemon/accounting.rs"]
 mod accounting;

@@ -1,9 +1,8 @@
 //! Bounded latest observations. Rates/totals belong to the current owner, not
 //! durable torrent history. No observer drives network work.
-use serde::Serialize;
 use std::net::SocketAddr;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct PeerStatus {
     pub connection: u64,
     pub endpoint: Option<SocketAddr>,
@@ -19,7 +18,7 @@ pub struct PeerStatus {
     pub detail: PeerDiagnostics,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerDiagnostics {
     pub downloaded_bytes: u64,
     pub uploaded_bytes: Option<u64>,
@@ -42,7 +41,7 @@ pub struct PeerDiagnostics {
     pub ignored_bytes_remaining: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct TrackerStatus {
     pub url: String,
     /// Zero-based original metainfo tier/slot, not scheduler preference order.
@@ -63,7 +62,7 @@ pub struct TrackerStatus {
     pub warning: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct WebSeedStatus {
     pub url: String,
     pub state: &'static str,
@@ -71,7 +70,7 @@ pub struct WebSeedStatus {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct DhtStatus {
     pub lookup_pending: bool,
     pub next_lookup_ms: u64,

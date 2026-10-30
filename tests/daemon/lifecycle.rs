@@ -1,4 +1,5 @@
-use crate::common::{BIN, Daemon, Temp, WebSeed, metainfo, seed_metainfo};
+use crate::common::{BIN, Daemon, WebSeed, metainfo};
+use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -130,7 +131,7 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_old_catalogs() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
     let resume: Vec<u8> = db
         .query_row("SELECT resume FROM torrents", [], |r| r.get(0))

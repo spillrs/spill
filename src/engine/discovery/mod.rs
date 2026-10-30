@@ -92,6 +92,8 @@ pub(in crate::engine) struct Announcer {
     completed_pending: bool,
     completed_acknowledged: bool,
     checkpoint: Arc<dyn Fn(bool) -> io::Result<()> + Send + Sync>,
+    // A select! cancellation must not abandon an in-progress acknowledgement.
+    checkpoint_job: Option<(bool, tokio::task::JoinHandle<io::Result<()>>)>,
     sent_event: Option<AnnounceEvent>,
     cursor: (usize, usize),
     pending: Option<Pending>,
@@ -183,6 +185,7 @@ impl Announcer {
             completed_pending: completed_announce == Some(false),
             completed_acknowledged: completed_announce == Some(true),
             checkpoint,
+            checkpoint_job: None,
             sent_event: None,
             cursor: (0, 0),
             pending: None,
@@ -216,10 +219,11 @@ impl Announcer {
             })
             .unwrap_or_default()
     }
-    pub(in crate::engine) fn request(&mut self, event: AnnounceEvent) -> io::Result<()> {
+    pub(in crate::engine) async fn request(&mut self, event: AnnounceEvent) -> io::Result<()> {
         match event {
             AnnounceEvent::Completed if !self.completed_pending && !self.completed_acknowledged => {
-                (self.checkpoint)(false)?;
+                self.start_checkpoint(false);
+                self.acknowledge().await?;
                 self.completed_pending = true;
             }
             AnnounceEvent::Completed => return Ok(()),
@@ -230,6 +234,33 @@ impl Announcer {
             self.due = Instant::now();
         }
         Ok(())
+    }
+    fn start_checkpoint(&mut self, delivered: bool) {
+        assert!(self.checkpoint_job.is_none());
+        let checkpoint = self.checkpoint.clone();
+        self.checkpoint_job = Some((
+            delivered,
+            tokio::task::spawn_blocking(move || checkpoint(delivered)),
+        ));
+    }
+    async fn join_checkpoint(&mut self) -> io::Result<Option<bool>> {
+        let Some((delivered, job)) = &mut self.checkpoint_job else {
+            return Ok(None);
+        };
+        let delivered = *delivered;
+        let result = job.await.map_err(io::Error::other).and_then(|r| r);
+        self.checkpoint_job = None;
+        result.map(|()| Some(delivered))
+    }
+    async fn acknowledge(&mut self) -> io::Result<()> {
+        if self.join_checkpoint().await? == Some(true) {
+            self.completed_pending = false;
+            self.completed_acknowledged = true;
+        }
+        Ok(())
+    }
+    pub(in crate::engine) fn completion_pending(&self) -> bool {
+        self.completed_pending
     }
     pub(in crate::engine) fn reannounce(&mut self) {
         if self.pending.is_none() {
@@ -291,6 +322,7 @@ impl Announcer {
     }
     /// Retain each exchange across select! cancellation; never restart network I/O on a tick.
     pub(in crate::engine) async fn next(&mut self) -> io::Result<Vec<SocketAddr>> {
+        self.acknowledge().await?;
         tokio::time::sleep_until(self.due).await;
         loop {
             let (tier, slot) = self.cursor;
@@ -328,17 +360,16 @@ impl Announcer {
                     self.due =
                         Instant::now() + reply.interval.clamp(MIN, MAX).max(reply.min_interval);
                     self.backoff = MIN;
+                    let successful = self.tiers[tier].remove(slot);
+                    self.tiers[tier].insert(0, successful);
+                    self.cursor = (0, 0);
                     if matches!(self.sent_event, Some(AnnounceEvent::Completed)) {
-                        (self.checkpoint)(true)?;
-                        self.completed_pending = false;
-                        self.completed_acknowledged = true;
+                        self.start_checkpoint(true);
+                        self.acknowledge().await?;
                     }
                     if self.completed_pending {
                         self.due = Instant::now();
                     }
-                    let successful = self.tiers[tier].remove(slot);
-                    self.tiers[tier].insert(0, successful);
-                    self.cursor = (0, 0);
                     return Ok(reply.peers);
                 }
                 Err(error) => {
@@ -360,8 +391,12 @@ impl Announcer {
             }
         }
     }
-    pub(in crate::engine) async fn shutdown(&mut self) {
+    pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
         self.pending = None;
+        self.join_checkpoint().await.map(|_| ())
+    }
+    pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
+        let checkpoint = self.drain().await;
         let exchanges: Vec<_> = self
             .tiers
             .iter()
@@ -375,6 +410,7 @@ impl Announcer {
             }
         })
         .await;
+        checkpoint
     }
 }
 
@@ -719,13 +755,27 @@ impl Discovery {
         _: crate::engine::torrent::RunPolicy,
     ) -> io::Result<()> {
         self.dht = None;
-        if let Some(a) = &mut self.announces {
-            a.shutdown().await;
-        }
+        let announces = if let Some(a) = &mut self.announces {
+            a.shutdown().await
+        } else {
+            Ok(())
+        };
+        announces.and(self.drain().await)
+    }
+    pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
+        self.dht = None;
+        let announces = if let Some(a) = &mut self.announces {
+            a.drain().await
+        } else {
+            Ok(())
+        };
+        self.announces = None;
         self.contacts = None;
-        if let Some(d) = &mut self.dials {
-            d.shutdown().await?;
-        }
-        Ok(())
+        let dials = if let Some(d) = &mut self.dials {
+            d.shutdown().await
+        } else {
+            Ok(())
+        };
+        announces.and(dials)
     }
 }

@@ -1,6 +1,9 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    if env::var_os("CARGO_FEATURE_DAEMON").is_none() {
+        return;
+    }
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("src/daemon/web");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files: Vec<_> = fs::read_dir(root)

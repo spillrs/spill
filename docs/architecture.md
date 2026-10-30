@@ -27,6 +27,50 @@ Codec tests live in `tests/protocol/`; end-to-end scenarios live in
 `tests/daemon/` and `tests/engine/`, with shared harness code in `tests/common/`.
 Run tiers 0 and 1 without public networking with `cargo test --locked`.
 
+### Embedding
+
+The default `daemon` feature builds the binary and its database, CLI and web
+integration. Library consumers use `default-features = false` to exclude
+`rusqlite`, `axum`, `clap`, `toml` and `serde_json`. HTTP/TLS and filesystem
+support remain engine dependencies. On macOS, engine gateway discovery still
+needs Tokio's process support when port mapping is explicitly enabled.
+
+The library requires a caller-owned Tokio runtime on Linux/macOS, with I/O and
+time drivers enabled. Current-thread and multithread runtimes are supported;
+consumers enable Tokio's `rt-multi-thread` for the latter. Spill creates no runtime,
+signal handler or global tracing subscriber.
+
+`spill::engine::download(source, destination).await` owns a short-lived session
+and joins cleanup before returning success or failure. It uses an ephemeral
+IPv4 listener, DHT with the [default routers](networking.md#dht), no port mapping
+and no LAN permission. Dropping its future requests stop but cannot await
+cleanup. For cancellation with cleanup proof, retain an explicit session/handle,
+request stop and then join shutdown, even if an earlier wait timed out.
+
+Two examples build without daemon features:
+
+```sh
+mkdir -p downloads recovery
+cargo run --no-default-features --example download -- FILE.torrent downloads
+cargo run --no-default-features --example download -- --magnet 'magnet:?...' downloads
+cargo run --no-default-features --example progress -- downloads recovery A.torrent B.torrent
+```
+
+`download()` keeps no recovery record. Spill never overwrites files it has no
+recorded authority for, so rerunning it after an interruption fails with
+`AlreadyExists` until the partial files are removed.
+
+Applications with durable storage supply the optional binding and other
+acknowledgements through `Persistence`; applications without it need no
+callbacks. The progress example saves the destination binding, resume
+checkpoints and completed-announce delivery state from these callbacks, and on
+the next run passes them back as `Destination::Recover`, so interrupted
+downloads resume. The resume record alone does not authorize reopening partial
+payload; the binding does, and only for the directory it was recorded in, so
+store the two together. Store the resume bytes as given, and
+`DestinationBinding` through its serde implementation. Its serialized form may
+change before 1.0.
+
 ## One process, one async thread
 
 The daemon runs on a single-threaded Tokio runtime. Every network operation is

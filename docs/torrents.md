@@ -26,6 +26,10 @@ adding another torrent never stops one that is transferring.
 
 ## Adding torrents
 
+To make a `.torrent` from your own files first, use
+[`spill create`](cli.md#creating-torrents). Creation works without a daemon and
+does not automatically add the torrent.
+
 Add a local `.torrent` file, an HTTP(S) torrent URL, or a magnet link.
 The daemon fetches torrent URLs and checks the file before adding it. A magnet
 link is added right away and resolves its metadata from peers found via its

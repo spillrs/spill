@@ -5,6 +5,8 @@ mod payload;
 mod admission;
 #[path = "engine/completion.rs"]
 mod completion;
+#[path = "engine/create.rs"]
+mod create;
 #[path = "engine/dht.rs"]
 mod dht;
 #[path = "engine/lifecycle.rs"]

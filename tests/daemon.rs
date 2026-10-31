@@ -9,6 +9,8 @@ mod accounting;
 mod cli;
 #[path = "daemon/config.rs"]
 mod config;
+#[path = "daemon/create.rs"]
+mod create;
 #[path = "daemon/discovery.rs"]
 mod discovery;
 #[path = "daemon/lifecycle.rs"]

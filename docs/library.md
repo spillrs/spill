@@ -1,7 +1,7 @@
 # Rust library
 
-Embed spill's BitTorrent engine in your application to download, seed, inspect
-magnets, and manage concurrent torrents without a
+Embed spill's BitTorrent engine in your application to create torrents, download,
+seed, inspect magnets, and manage concurrent torrents without a
 separate daemon, SQLite catalog, CLI, or web server.
 
 ## Dependencies and runtime
@@ -51,6 +51,43 @@ recovery for resumable transfers.
 
 Dropping the download future requests stop but cannot await cleanup. For timeouts
 or cancellation that must prove files have been released, use an explicit session.
+
+## Create a torrent
+
+`spill::engine::create::create` hashes a file or directory without a session,
+network access, or a Tokio runtime:
+
+```rust
+use spill::engine::create::{self, Options};
+
+fn main() -> std::io::Result<()> {
+    let options = Options {
+        announce: vec![vec!["https://tracker.example/announce".into()]],
+        creation_date: None,
+        ..Default::default()
+    };
+    let torrent = create::create(std::path::Path::new("payload"), &options,
+        &mut |done, total| {
+            eprintln!("{done}/{total} pieces");
+            Ok(())
+        })?;
+    std::fs::write("payload.torrent", torrent.metainfo)
+}
+```
+
+This is a blocking API; use `spawn_blocking` when calling it from an async
+application. The progress callback runs on the calling thread. Return an error
+from it to cancel; creation joins its workers before returning. The result
+includes encoded metainfo, its info hash, root name, total bytes, and piece count.
+The caller owns output publication; the CLI additionally refuses overwrites and
+publishes the completed document atomically.
+
+`Options::piece_length` is in **bytes**, unlike the CLI's exponent. Defaults are
+256 KiB pieces and the available CPU count. Files are byte-sorted, symlinks are
+followed, and the source is never modified. Keep it unchanged until the call
+returns. See [Creating torrents](cli.md#creating-torrents) for supported fields,
+source traversal, limits, and the separate add-and-seed workflow; rustdoc owns
+the exact API contract.
 
 ## Sessions and progress
 

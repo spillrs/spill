@@ -3,6 +3,7 @@ mod catalog;
 mod cli;
 mod config;
 mod control;
+mod create;
 #[path = "../http.rs"]
 mod http;
 mod metainfo_url;
@@ -31,12 +32,28 @@ fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
+    if let cli::Command::Create(args) = &cli.command {
+        return match create::run(args, cli.json) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::from(if error.kind() == io::ErrorKind::InvalidInput {
+                    2
+                } else {
+                    1
+                })
+            }
+        };
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime");
     let code = runtime.block_on(async {
         match cli.command {
+            cli::Command::Create(_) => {
+                unreachable!("creation is dispatched before starting the runtime")
+            }
             cli::Command::Serve { config } => match serve(config.as_deref()).await {
                 Ok(()) => 0,
                 Err(e) => {

@@ -13,6 +13,13 @@ Torrents beyond these limits are refused when added.
 
 Only the first 32 web seeds of a torrent are used.
 
+Offline [torrent creation](cli.md#creating-torrents) uses the same file, piece
+count, and metainfo-size ceilings. It accepts power-of-two piece sizes from
+32 KiB to 256 MiB (default 256 KiB), follows symlinks, and limits paths to
+32 levels including the torrent root. It rejects entirely empty directories;
+zero-length files are supported. A fixed piece size that would exceed the
+piece count or metainfo-size limit must be increased explicitly.
+
 Daemon-wide limits:
 
 | Limit | Value |

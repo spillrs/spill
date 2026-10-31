@@ -2,12 +2,14 @@
 
 ```text
 spill serve [--config PATH]
+spill [--json] create [OPTIONS] TARGET
 spill [--socket PATH] [--json] COMMAND
 spill --version
 ```
 
-`spill serve` runs the daemon in the foreground. All other commands talk to a
-running daemon over its Unix socket. Without `--socket`, client commands use:
+`spill serve` runs the daemon in the foreground. `spill create` creates torrent
+files locally without a daemon. Other commands talk to a running daemon over its
+Unix socket. Without `--socket`, client commands use:
 
 - Linux: `$XDG_RUNTIME_DIR/spill.sock`, falling back to
   `~/.local/state/spill/spill.sock`.
@@ -17,7 +19,8 @@ Pass `--socket` if your config sets a different `control_socket`.
 
 `--json` prints the daemon's raw JSON response data instead of text, one
 document per line. Use it for scripts. `--socket` and `--json` can appear
-before or after the client command.
+before or after the client command. For `create`, `--json` prints the output path,
+`info_hash`, `total_bytes`, and `piece_count`; progress stays on stderr.
 
 ## IDs
 
@@ -28,6 +31,7 @@ prefix that matches exactly one torrent; an ambiguous prefix is an input error.
 
 | Command | What it does |
 |---|---|
+| `create TARGET [OPTIONS]` | Create a BitTorrent v1 `.torrent` from a file or directory, without a daemon. See below. |
 | `add SOURCE [--output DIR]` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. Prints the new ID. Adding a torrent that already exists is an error. |
 | `list [--watch]` | All torrents: ID prefix, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
 | `status` | Same data as `list`, plus daemon health. Most useful with `--json`. |
@@ -49,6 +53,50 @@ running owner, including peers that have closed; restarting the owner resets it.
 Counts are sampled while peer I/O is attached; later FIN-linger retransmissions
 are not included. `transfer.pending_contacts` counts queued and currently dialing
 discovery contacts, not established peers. These diagnostics are not wire traces.
+
+## Creating torrents
+
+```sh
+spill create ./payload -a https://tracker.example/announce -o payload.torrent
+spill create ./payload -d -l 20 -t 4 -p -s my-source
+spill --json create ./payload -w https://seed.example/payload/
+```
+
+The options follow mktorrent's conventions:
+
+| Option | Meaning |
+|---|---|
+| `-a`, `--announce URL[,URL]` | Tracker tier. Comma-separated URLs are alternatives; repeating the option adds backup tiers. HTTP(S) and UDP are supported. Optional for trackerless torrents. |
+| `-c`, `--comment TEXT` | Comment outside the info hash. |
+| `-d`, `--no-date` | Omit the creation date, making unchanged input and options reproducible across worker counts. |
+| `-l`, `--piece-length N` | Piece size is **2^N bytes**, not N bytes. Range 15–28 (32 KiB–256 MiB); default 18 (256 KiB). |
+| `-n`, `--name NAME` | Torrent root name; defaults to the target basename. |
+| `-o`, `--output PATH` | Output path; default `NAME.torrent` in the current directory. Existing files, directories and symlinks are never replaced. Parent directory must exist. |
+| `-p`, `--private` | Set `info.private=1`. |
+| `-s`, `--source TEXT` | Set `info.source`; affects the info hash, like the private flag. |
+| `-t`, `--threads N` | Nonzero hashing worker count; default is the available CPU count. Each worker uses a 64 KiB read buffer. |
+| `-v`, `--verbose` | Show piece progress even when stderr is not a terminal. Progress is otherwise automatic on terminals. |
+| `-w`, `--web-seed URL[,URL]` | HTTP(S) web seeds. May be repeated. For directory torrents, use a directory URL ending in `/`. |
+
+Files are sorted by their relative path bytes. Hidden and zero-length files are
+included; empty directories are omitted. Symlinks to files and directories are
+followed, including links outside the target tree; ancestor cycles, dangling
+links and special files are errors. Keep the source unchanged until creation
+finishes. Creation checks for observed file changes but does not take a
+filesystem snapshot.
+
+Unlike mktorrent, spill rejects a directory containing no files, matching its
+supported metainfo format. [Limits](limits.md) apply; if a payload needs too many
+pieces, select a larger piece length. Paths are limited to 32 levels including
+the torrent root. This creates v1 torrents, not v2 or hybrid torrents.
+
+Creation only reads the source; it does not add or start seeding the torrent.
+Afterward, use `spill add FILE.torrent --output /absolute/parent` to verify and
+seed files already at the expected destination. A directory torrent expects
+`PARENT/NAME/`; a single-file torrent expects `PARENT/NAME`. A name override or
+spill's [filesystem name sanitization](torrents.md#adding-torrents) can make those
+paths differ from the original source paths. Source symlinks are followed during
+creation, but are not adopted as payload paths when seeding.
 
 ## Accounting in JSON
 

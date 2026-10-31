@@ -55,6 +55,12 @@ spill remove ID                 # keep downloaded files
 spill shutdown
 ```
 
+Create a torrent from a local file or directory without a running daemon:
+
+```sh
+spill create ./payload -a https://tracker.example/announce -o payload.torrent
+```
+
 Replace `ID` with the ID printed by `add`, or an unambiguous prefix.
 See the [CLI reference](https://spill.rs/docs/cli/) and
 [configuration reference](https://spill.rs/docs/configuration/).

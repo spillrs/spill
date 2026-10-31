@@ -19,7 +19,11 @@ then open <http://127.0.0.1:8080> locally.
   lifetime downloaded/uploaded totals, rates, peers, ETA and discovery policy.
   Hover over status for the latest error or tracker message.
 - Adding a `.torrent` file, magnet link, or HTTP(S) torrent URL, with an optional
-  output directory. Paste URLs into the same field as magnet links.
+  output directory. Paste URLs into the same field as magnet links. The add
+  dialog initializes Trackers, DHT, PEX and Web seeds from daemon defaults;
+  DHT is unavailable with an IPv6 listener. These policies and “Start immediately”
+  are applied in the add request, before any discovery or payload transfer.
+  Private metainfo always disables DHT and PEX.
 - Pause, resume, recheck, reannounce and remove (optionally deleting payload).
 - A resizable bottom inspector with Overview, Files, Peers and Sources tabs.
   Overview groups lifetime accounting, selected progress, completion, UTC dates,
@@ -68,7 +72,11 @@ Operations: `add` (magnets or torrent URLs), `get`, `set`, `list`, `status`,
 `files`, `pause`, `resume`, `recheck`, `reannounce`, `remove`, `health`, `shutdown`.
 
 For a URL add, send `{"op":"add","url":"https://example.org/file.torrent"}`
-with an optional `output_dir`.
+with optional `output_dir`, `paused`, and `settings` fields. For example,
+`{"op":"add","url":"https://example.org/file.torrent","paused":true,"settings":{"web_seeds":false}}`
+fetches metainfo but does not start discovery or payload transfer. Settings merge
+with daemon defaults and are validated before saving. See the
+[control protocol](cli.md#control-protocol).
 
 The `get` response includes `transfer.peers[].transport`: `"tcp"`, `"utp"`
 or `"http"` (web seed), just like the Unix control API. The same diagnostics
@@ -78,7 +86,8 @@ see [Command line](cli.md#commands) for their meaning.
 ### `POST /api/upload`
 
 Upload a `.torrent` file as the raw request body (at most 16 MiB). The output
-directory is an optional, URL-encoded query parameter:
+directory is an optional, URL-encoded query parameter. `paused=true` and
+`settings` (a URL-encoded JSON object of initial overrides) are also accepted:
 
 ```sh
 curl -s "http://127.0.0.1:8080/api/upload?output_dir=%2Fsrv%2Ftorrents" \

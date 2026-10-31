@@ -257,7 +257,13 @@ $('#detail-body').onchange = e => {
 };
 $('#close-detail').onclick = () => { focused = null; resetFiles(); $('#inspector').hidden = true; };
 ['pause','resume','recheck','reannounce'].forEach(op => $('#'+op+'-button').onclick = () => action(op));
-$('#add-button').onclick = () => $('#add-dialog').showModal();
+$('#add-button').onclick = () => {
+  for (const [id,key] of [['allow-trackers','trackers'],['allow-dht','dht'],['allow-pex','pex'],['allow-web','web_seeds']]) {
+    $('#'+id).checked = addDefaults.settings[key];
+  }
+  $('#allow-dht').disabled = !addDefaults.dht_available;
+  $('#add-dialog').showModal();
+};
 $('#cancel-add').onclick = () => $('#add-dialog').close();
 $('#add-form').onsubmit = e => {
   e.preventDefault();
@@ -267,6 +273,9 @@ $('#add-form').onsubmit = e => {
   if (!file && !magnet && !/^https?:\/\//i.test(source)) { notify('Enter a magnet link or HTTP(S) torrent URL.'); return; }
   const output_dir = $('#output').value.trim() || null;
   if (output_dir && !output_dir.startsWith('/')) { notify('Download location must be an absolute daemon-side path.'); return; }
+  const paused = !$('#start-now').checked;
+  const settings = {trackers:$('#allow-trackers').checked, dht:$('#allow-dht').checked,
+    pex:$('#allow-pex').checked, web_seeds:$('#allow-web').checked};
   mutate(async () => {
     let result;
     const submit = $('#add-form button[type="submit"]');
@@ -277,18 +286,16 @@ $('#add-form').onsubmit = e => {
         if (!file.size || file.size > 16*1024*1024) throw new Error('Torrent file must be nonempty and at most 16 MiB.');
         const options = new URLSearchParams();
         if (output_dir) options.set('output_dir',output_dir);
+        options.set('paused',String(paused));
+        options.set('settings',JSON.stringify(settings));
         result = await request('/api/upload?'+options,file,true);
       } else {
-        result = await api('add',{[magnet ? 'magnet' : 'url']:source,output_dir});
+        result = await api('add',{[magnet ? 'magnet' : 'url']:source,output_dir,paused,settings});
       }
     } finally {
       submit.disabled = false;
       submit.textContent = 'Add torrent';
     }
-    const added = await api('get',{id:result.id});
-    await api('set',{id:result.id,values:{trackers:$('#allow-trackers').checked,
-      dht:added.private ? false : $('#allow-dht').checked, web_seeds:$('#allow-web').checked}});
-    if (!$('#start-now').checked) await api('pause',{id:result.id});
     selected = new Set([result.id]); focused = result.id; resetFiles(); filter = 'all'; query = ''; $('#search').value = '';
     $('#inspector').hidden = false; $('#add-dialog').close(); $('#add-form').reset();
     notify('Torrent accepted by daemon.');

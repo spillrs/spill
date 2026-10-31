@@ -50,6 +50,12 @@ pub enum Operation {
         /// Absolute output directory; defaults to the configured download_dir.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Add paused, without starting discovery or payload I/O.
+        #[arg(long)]
+        paused: bool,
+        /// Initial per-torrent setting as KEY=JSON; may be repeated.
+        #[arg(long = "set", value_name = "KEY=JSON")]
+        settings: Vec<String>,
     },
     /// Stop a torrent and keep it paused across restarts.
     Pause { id: String },
@@ -124,7 +130,12 @@ pub async fn query(path: &Path, request: &Request) -> Result<Response, Error> {
 }
 fn request(operation: Operation) -> Result<Request, Error> {
     Ok(match operation {
-        Operation::Add { source, output } => {
+        Operation::Add {
+            source,
+            output,
+            paused,
+            settings,
+        } => {
             let (metainfo, magnet, url) = if source.starts_with("magnet:") {
                 (None, Some(source), None)
             } else if source
@@ -151,6 +162,8 @@ fn request(operation: Operation) -> Result<Request, Error> {
                 magnet,
                 url,
                 output_dir: output,
+                paused,
+                settings: parse_values(settings)?,
             }
         }
         Operation::Pause { id } => Request::Pause { id },
@@ -159,25 +172,29 @@ fn request(operation: Operation) -> Result<Request, Error> {
         Operation::Recheck { id } => Request::Recheck { id },
         Operation::Reannounce { id } => Request::Reannounce { id },
         Operation::Get { id } => Request::Get { id },
-        Operation::Set { id, values } => {
-            let mut parsed = Map::new();
-            for value in values {
-                let (key, value) = value
-                    .split_once('=')
-                    .ok_or_else(|| Error::Usage("expected key=JSON_VALUE".into()))?;
-                let value = serde_json::from_str(value).map_err(|e| Error::Usage(e.to_string()))?;
-                if parsed.insert(key.into(), value).is_some() {
-                    return Err(Error::Usage(format!("duplicate key {key}")));
-                }
-            }
-            Request::Set { id, values: parsed }
-        }
+        Operation::Set { id, values } => Request::Set {
+            id,
+            values: parse_values(values)?,
+        },
         Operation::List { .. } => Request::List,
         Operation::Status => Request::Status,
         Operation::Files { id } => Request::Files { id },
         Operation::Health => Request::Health,
         Operation::Shutdown => Request::Shutdown,
     })
+}
+fn parse_values(settings: Vec<String>) -> Result<Map<String, Value>, Error> {
+    let mut parsed = Map::new();
+    for setting in settings {
+        let (key, value) = setting
+            .split_once('=')
+            .ok_or_else(|| Error::Usage("expected key=JSON_VALUE".into()))?;
+        let value = serde_json::from_str(value).map_err(|e| Error::Usage(e.to_string()))?;
+        if parsed.insert(key.into(), value).is_some() {
+            return Err(Error::Usage(format!("duplicate key {key}")));
+        }
+    }
+    Ok(parsed)
 }
 fn clean(value: &str) -> String {
     value

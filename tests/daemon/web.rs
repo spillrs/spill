@@ -1,6 +1,8 @@
 use crate::common::{Daemon, WebSeed, http, metainfo};
 use crate::payload::Temp;
+use base64::{Engine, prelude::BASE64_STANDARD};
 use serde_json::json;
+use std::{sync::atomic::Ordering, time::Duration};
 
 #[tokio::test]
 async fn web_smoke_dispatches_in_process_with_csrf_protection() {
@@ -84,5 +86,102 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
     );
     let health = http(address, "POST", "/api", Some(token), b"{\"op\":\"health\"}").await;
     assert!(health.contains(&daemon.child.id().unwrap().to_string()));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn web_add_applies_defaults_and_paused_policy_before_starting_on_ipv6() {
+    let root = Temp::new();
+    let source = WebSeed::new().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    std::fs::write(root.0.join("config.toml"), format!(
+        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"[::1]:0\"\nweb_listen=\"{address}\"\nport_mapping=false\nallow_local_network=true\ndht_bootstrap=[]\n[defaults]\ntrackers=false\ndht=false\npex=true\nweb_seeds=true\nupload_limit=321\n",
+        root.0.join("state"), root.0.join("downloads"), root.0.join("control.sock"))).unwrap();
+    let mut daemon = Daemon::start_config(&root.0).await;
+    let index = http(address, "GET", "/", None, b"").await;
+    let defaults: serde_json::Value = serde_json::from_str(
+        index
+            .split("const addDefaults=")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(defaults["dht_available"], false);
+    assert_eq!(defaults["settings"]["dht"], false);
+    assert_eq!(defaults["settings"]["pex"], true);
+    assert_eq!(defaults["settings"]["upload_limit"], 321);
+    let token = index
+        .split("const token='")
+        .nth(1)
+        .unwrap()
+        .split('\'')
+        .next()
+        .unwrap();
+    let bytes = metainfo(Some(&source.url));
+    for settings in [
+        json!({"dht":true}),
+        json!({"unknown":false}),
+        json!({"seed_ratio":-1}),
+        json!({"file_priorities":["normal","skip"]}),
+    ] {
+        let response = http(
+            address,
+            "POST",
+            "/api",
+            Some(token),
+            json!({
+                "op":"add", "metainfo":BASE64_STANDARD.encode(&bytes), "settings":settings
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .await;
+        let result: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(result["code"], 2, "{result}");
+        assert!(
+            daemon.call(json!({"op":"list"})).await["torrents"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!root.0.join("downloads").exists());
+    }
+    let settings = json!({"trackers":false,"dht":false,"pex":false,"web_seeds":false}).to_string();
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("paused", "true")
+        .append_pair("settings", &settings)
+        .finish();
+    let uploaded = http(
+        address,
+        "POST",
+        &format!("/api/upload?{query}"),
+        Some(token),
+        &bytes,
+    )
+    .await;
+    let added: serde_json::Value =
+        serde_json::from_str(uploaded.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(added["code"], 0, "{added}");
+    let id = added["data"]["id"].as_str().unwrap();
+    let row = daemon.state(id, "paused").await;
+    assert_eq!(row["settings"]["web_seeds"], false);
+    assert_eq!(row["settings"]["pex"], false);
+    assert_eq!(row["settings"]["upload_limit"], 321);
+    assert!(!root.0.join("downloads/x").exists());
+    assert_eq!(daemon.call(json!({"op":"health"})).await["running"], 0);
+    daemon.call(json!({"op":"resume","id":id})).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(source.hits.load(Ordering::Relaxed), 0);
+    daemon
+        .call(json!({"op":"set","id":id,"values":{"web_seeds":true}}))
+        .await;
+    daemon.state(id, "seeding").await;
+    assert_eq!(source.hits.load(Ordering::Relaxed), 1);
     daemon.stop().await;
 }

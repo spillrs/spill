@@ -48,6 +48,10 @@ pub enum Request {
         magnet: Option<String>,
         url: Option<String>,
         output_dir: Option<PathBuf>,
+        #[serde(default)]
+        paused: bool,
+        #[serde(default)]
+        settings: Map<String, Value>,
     },
     Pause {
         id: String,
@@ -152,6 +156,7 @@ impl Control {
             magnet,
             url,
             output_dir,
+            ..
         } = &mut request
         {
             if usize::from(metainfo.is_some())
@@ -199,6 +204,8 @@ impl Control {
                 magnet,
                 url: _,
                 output_dir,
+                paused,
+                settings,
             } => {
                 let parsed = Default::default();
                 let mut row = Row {
@@ -208,8 +215,8 @@ impl Control {
                     magnet,
                     output_dir: output_dir
                         .unwrap_or_else(|| supervisor.config.download_dir.clone()),
-                    intent: Intent::Run,
-                    settings: supervisor.config.defaults.clone(),
+                    intent: if paused { Intent::Paused } else { Intent::Run },
+                    settings: patch_settings(&supervisor.config.defaults, settings)?,
                     checkpoint: Checkpoint::default(),
                     created_files: None,
                     last_error: None,
@@ -243,6 +250,7 @@ impl Control {
                     }
                     _ => unreachable!("add source validated before dispatch"),
                 };
+                validate_settings(&row, &row.settings, supervisor.config.listen)?;
                 if supervisor.db.row(&id)?.is_some() {
                     return Err(Error::Invalid("torrent already exists".into()));
                 }
@@ -266,27 +274,8 @@ impl Control {
             }
             Request::Set { id, values } => {
                 let row = find(&supervisor.db, &id)?;
-                let mut settings = serde_json::to_value(&row.settings)?;
-                settings.as_object_mut().unwrap().extend(values);
-                let settings: Settings = serde_json::from_value(settings)?;
-                settings.validate()?;
-                if row.parsed.as_ref().is_some_and(|meta| meta.is_private())
-                    && (settings.dht || settings.pex)
-                {
-                    return Err(Error::Invalid(
-                        "DHT and PEX are disabled for private torrents".into(),
-                    ));
-                }
-                if settings.dht && !supervisor.config.listen.is_ipv4() {
-                    return Err(Error::Invalid("DHT requires an IPv4 listen address".into()));
-                }
-                if !settings.file_priorities.is_empty() {
-                    let _ = row.metainfo.as_deref().ok_or_else(|| {
-                        Error::Invalid("wait for metadata before selecting files".into())
-                    })?;
-                    let meta = row.meta()?;
-                    FileSelection::new(meta.layout(), &settings.file_priorities)?;
-                }
+                let settings = patch_settings(&row.settings, values)?;
+                validate_settings(&row, &settings, supervisor.config.listen)?;
                 supervisor.stop(&row.id).await?;
                 supervisor.db.settings(&row.id, &settings)?;
                 supervisor.reconcile().await?;
@@ -339,6 +328,35 @@ impl Control {
             }
         }
     }
+}
+fn patch_settings(base: &Settings, values: Map<String, Value>) -> Result<Settings, Error> {
+    let mut settings = serde_json::to_value(base)?;
+    settings.as_object_mut().unwrap().extend(values);
+    Ok(serde_json::from_value(settings)?)
+}
+fn validate_settings(
+    row: &Row,
+    settings: &Settings,
+    listen: std::net::SocketAddr,
+) -> Result<(), Error> {
+    settings.validate()?;
+    if row.parsed.as_ref().is_some_and(|meta| meta.is_private()) && (settings.dht || settings.pex) {
+        return Err(Error::Invalid(
+            "DHT and PEX are disabled for private torrents".into(),
+        ));
+    }
+    if settings.dht && !listen.is_ipv4() {
+        return Err(Error::Invalid("DHT requires an IPv4 listen address".into()));
+    }
+    if !settings.file_priorities.is_empty() {
+        let _ = row
+            .metainfo
+            .as_deref()
+            .ok_or_else(|| Error::Invalid("wait for metadata before selecting files".into()))?;
+        let meta = row.meta()?;
+        FileSelection::new(meta.layout(), &settings.file_priorities)?;
+    }
+    Ok(())
 }
 const MAX_REQUEST: usize = spill::engine::profile::MAX_META.div_ceil(3) * 4 + 4096;
 pub async fn unix_client(stream: tokio::net::UnixStream, control: Control) -> io::Result<()> {

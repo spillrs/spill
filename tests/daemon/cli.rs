@@ -28,8 +28,23 @@ async fn client_commands_are_top_level_without_a_ctl_alias() {
     let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
     let torrent = root.0.join("x.torrent");
     std::fs::write(&torrent, metainfo(Some(&source.url))).unwrap();
-    let added = client(&daemon, &["add", torrent.to_str().unwrap()]).await;
+    let added = client(
+        &daemon,
+        &[
+            "add",
+            torrent.to_str().unwrap(),
+            "--paused",
+            "--set",
+            "web_seeds=false",
+        ],
+    )
+    .await;
     let id = added["id"].as_str().unwrap();
+    let paused = daemon.state(id, "paused").await;
+    assert_eq!(paused["settings"]["web_seeds"], false);
+    assert!(!root.0.join("downloads/x").exists());
+    client(&daemon, &["set", id, "web_seeds=true"]).await;
+    client(&daemon, &["resume", id]).await;
     daemon.state(id, "seeding").await;
 
     assert_eq!(client(&daemon, &["get", id]).await["verified_bytes"], 3);

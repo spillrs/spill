@@ -32,7 +32,7 @@ prefix that matches exactly one torrent; an ambiguous prefix is an input error.
 | Command | What it does |
 |---|---|
 | `create TARGET [OPTIONS]` | Create a BitTorrent v1 `.torrent` from a file or directory, without a daemon. See below. |
-| `add SOURCE [--output DIR]` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. Prints the new ID. Adding a torrent that already exists is an error. |
+| `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the new ID. Adding a torrent that already exists is an error. |
 | `list [--watch]` | All torrents: ID prefix, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
 | `status` | Same data as `list`, plus daemon health. Most useful with `--json`. |
 | `get ID` | Everything about one torrent: settings, state, progress, lifetime downloaded/uploaded bytes, timestamps, seeding time, errors, tracker messages, and live transfer details (rates, peers, trackers). |
@@ -179,8 +179,13 @@ echo '{"op":"get","id":"3f2a"}' | socat - "UNIX-CONNECT:$socket"
 ```
 
 Requests use `op` plus the same fields as the commands (`id`, `values`,
-`delete_payload`, `magnet`, `url`, `output_dir`). For `add`, `metainfo` is the
+`delete_payload`, `magnet`, `url`, `output_dir`, `paused`, `settings`). For `add`, `metainfo` is the
 `.torrent` file as a standard base64 string (at most 16 MiB decoded); give
-exactly one of `metainfo`, `magnet`, or `url`.
+exactly one of `metainfo`, `magnet`, or `url`. Optional `settings` is an object
+of per-torrent overrides merged with daemon defaults; `paused` defaults to false.
+Settings are validated before the torrent is saved or started. Private metainfo
+always disables DHT and PEX, including initial overrides. An HTTP(S) torrent URL
+is still fetched when adding paused; payload transfer and discovery wait for
+`resume`.
 Responses are `{"code":0,"data":…,"error":null}`;
 `code` uses the exit codes above. Requests are limited to about 22 MiB.

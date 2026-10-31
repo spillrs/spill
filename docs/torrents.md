@@ -35,6 +35,11 @@ The daemon fetches torrent URLs and checks the file before adding it. A magnet
 link is added right away and resolves its metadata from peers found via its
 `tr=` trackers and the DHT; trackers from the magnet are kept for the download.
 
+Use `spill add SOURCE --paused` to add without starting discovery or payload
+transfer. Set initial overrides atomically with repeated `--set KEY=JSON` options,
+for example `--set dht=false --set pex=false`. Omitted settings inherit daemon
+defaults. HTTP(S) torrent URLs still fetch metainfo when added paused.
+
 Torrents are saved under the output directory: a single-file torrent as one
 file, a multi-file torrent in a directory named after the torrent. Names are
 made safe for the filesystem: `:` and `\` become `_`, components such as `..`

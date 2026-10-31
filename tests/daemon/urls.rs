@@ -210,7 +210,9 @@ async fn web_url_add_requires_auth_and_applies_private_torrent_policy() {
         .split('\'')
         .next()
         .unwrap();
-    let body = json!({"op":"add","url":format!("{}/private",source.url)}).to_string();
+    let body = json!({"op":"add","url":format!("{}/private",source.url),"paused":true,
+        "settings":{"dht":true,"pex":true,"upload_limit":123}})
+    .to_string();
     let denied = http(address, "POST", "/api", None, body.as_bytes()).await;
     assert!(denied.starts_with("HTTP/1.1 403"));
     assert_eq!(source.hits.load(Ordering::SeqCst), 0);
@@ -223,6 +225,9 @@ async fn web_url_add_requires_auth_and_applies_private_torrent_policy() {
     assert_eq!(row["private"], true);
     assert_eq!(row["settings"]["dht"], false);
     assert_eq!(row["settings"]["pex"], false);
+    assert_eq!(row["settings"]["upload_limit"], 123);
+    assert_eq!(row["state"], "paused");
+    assert!(!root.0.join("downloads/x").exists());
     daemon.stop().await;
 }
 

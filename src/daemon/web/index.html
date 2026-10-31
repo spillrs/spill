@@ -74,7 +74,7 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 <label class="upload-area"><svg><use href="#file"/></svg>Or choose a .torrent file<input type="file" id="torrent-file" accept=".torrent"></label>
 <label class="field" for="output">Download location</label><input type="text" id="output" placeholder="Daemon default (or absolute path)">
 <div class="options"><label><input type="checkbox" id="start-now" checked> Start immediately</label></div>
-<div class="options"><label><input type="checkbox" id="allow-trackers" checked> Trackers</label><label><input type="checkbox" id="allow-dht" checked> DHT</label><label><input type="checkbox" id="allow-web" checked> Web seeds</label></div>
+<div class="options"><label><input type="checkbox" id="allow-trackers"> Trackers</label><label><input type="checkbox" id="allow-dht"> DHT</label><label><input type="checkbox" id="allow-pex"> PEX</label><label><input type="checkbox" id="allow-web"> Web seeds</label></div>
 <p class="telemetry-note">Discovery follows daemon policy. Unresolved magnets may disclose their hash before privacy is known.</p>
 <div class="actions"><button type="button" class="secondary" id="cancel-add">Cancel</button><button class="primary" type="submit">Add torrent</button></div></form></dialog>
 <dialog id="remove-dialog" aria-labelledby="remove-title" aria-describedby="remove-description"><h2 id="remove-title">Remove from spill?</h2><p id="remove-description"></p><ul class="remove-transfers" id="remove-transfers"></ul><label><input type="checkbox" id="delete-data"> Also delete downloaded files</label><div class="actions"><button class="secondary" id="cancel-remove">Keep transfers</button><button class="primary danger" id="confirm-remove">Remove</button></div></dialog>
@@ -87,7 +87,7 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 <label class="field" for="seed-time">Active seeding seconds</label><input id="seed-time" type="number" min="0" max="9007199254740991" step="1" required>
 <div class="actions"><button type="button" class="secondary" id="cancel-seeding">Cancel</button><button class="primary" type="submit">Save rules</button></div></form></dialog>
 <div class="toast" id="toast" role="status" hidden></div>
-<script>const token='__TOKEN__';</script>
+<script>const token='__TOKEN__'; const addDefaults=__ADD_DEFAULTS__;</script>
 <script src="/details.js" defer></script>
 <script src="/app.js" defer></script>
 </body></html>

@@ -37,8 +37,19 @@ async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Re
     if !authorized_host(&headers, app.port) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let mut response =
-        Html(include_str!("web/index.html").replace("__TOKEN__", &app.token)).into_response();
+    let defaults = {
+        let supervisor = app.control.0.lock().await;
+        serde_json::json!({
+            "settings": supervisor.config.defaults,
+            "dht_available": supervisor.config.listen.is_ipv4(),
+        })
+    };
+    let mut response = Html(
+        include_str!("web/index.html")
+            .replace("__TOKEN__", &app.token)
+            .replace("__ADD_DEFAULTS__", &defaults.to_string()),
+    )
+    .into_response();
     response
         .headers_mut()
         .insert("cache-control", "no-store".parse().unwrap());
@@ -83,6 +94,9 @@ fn authorized(app: &App, headers: &HeaderMap) -> bool {
 #[derive(serde::Deserialize)]
 struct Upload {
     output_dir: Option<PathBuf>,
+    #[serde(default)]
+    paused: bool,
+    settings: Option<String>,
 }
 async fn upload(
     State(app): State<App>,
@@ -100,6 +114,14 @@ async fn upload(
                 magnet: None,
                 url: None,
                 output_dir: options.output_dir,
+                paused: options.paused,
+                settings: options
+                    .settings
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .unwrap_or_default(),
             })
             .await,
     ))

@@ -80,10 +80,6 @@ impl WebSeeds {
     }
 }
 
-struct PinnedClient {
-    client: Client,
-    addresses: Vec<SocketAddr>,
-}
 pub(in crate::engine) struct Seed {
     url: Url,
     meta: OwnedMetainfo,
@@ -221,7 +217,7 @@ impl Seed {
             .await
             .map_err(closed)
     }
-    async fn client(&self) -> io::Result<PinnedClient> {
+    async fn client(&self) -> io::Result<Client> {
         let host = self
             .url
             .host_str()
@@ -230,7 +226,7 @@ impl Seed {
             .url
             .port_or_known_default()
             .ok_or_else(|| invalid("invalid web seed port"))?;
-        let addresses: Vec<SocketAddr> = match self.url.host() {
+        let mut addresses: Vec<SocketAddr> = match self.url.host() {
             Some(url::Host::Ipv4(ip)) => vec![SocketAddr::new(ip.into(), port)],
             Some(url::Host::Ipv6(ip)) => vec![SocketAddr::new(ip.into(), port)],
             _ => timeout(
@@ -241,17 +237,13 @@ impl Seed {
             .map_err(|_| invalid("web seed DNS deadline"))?
             .map_err(|_| invalid("web seed DNS failed"))?
             .take(crate::engine::profile::MAX_DNS_ANSWERS)
-            .filter(|a| crate::engine::network::source(*a, self.allow_local_network))
             .collect(),
         };
-        if addresses.is_empty()
-            || addresses
-                .iter()
-                .any(|a| !crate::engine::network::source(*a, self.allow_local_network))
-        {
+        addresses.retain(|a| crate::engine::network::source(*a, self.allow_local_network));
+        if addresses.is_empty() {
             return Err(invalid("no usable web seed address"));
         }
-        let client = crate::http::client()
+        crate::http::client()
             .redirect(redirect::Policy::none())
             .retry(reqwest::retry::never())
             .no_gzip()
@@ -265,10 +257,9 @@ impl Seed {
             .user_agent(crate::engine::identity::CLIENT_NAME)
             .resolve_to_addrs(host, &addresses)
             .build()
-            .map_err(transport)?;
-        Ok(PinnedClient { client, addresses })
+            .map_err(transport)
     }
-    async fn fetch(&self, client: &PinnedClient, start: u64, length: u32) -> io::Result<Vec<u8>> {
+    async fn fetch(&self, client: &Client, start: u64, length: u32) -> io::Result<Vec<u8>> {
         if length > crate::engine::profile::MAX_PIECE_LEN {
             return Err(invalid("web seed range budget"));
         }
@@ -291,7 +282,6 @@ impl Seed {
                 segment.file_offset,
                 segment.length,
                 file.length(),
-                self.allow_local_network,
             )
             .await?;
             body.extend_from_slice(&bytes);
@@ -342,30 +332,20 @@ fn component(path: &mut String, bytes: &[u8]) {
     }
 }
 async fn get_range(
-    client: &PinnedClient,
+    client: &Client,
     mut url: Url,
     start: u64,
     length: u64,
     total: u64,
-    allow_local_network: bool,
 ) -> io::Result<Vec<u8>> {
     let end = start
         .checked_add(length)
         .and_then(|n| n.checked_sub(1))
         .ok_or_else(|| invalid("invalid web seed range"))?;
     let origin = url.origin();
+    // Same-origin redirects preserve the client's DNS pins on every hop.
     for redirects in 0..=3 {
-        // The same-origin restriction below preserves these pins on every hop.
-        if client.addresses.is_empty()
-            || client
-                .addresses
-                .iter()
-                .any(|a| !crate::engine::network::source(*a, allow_local_network))
-        {
-            return Err(invalid("web seed endpoint blocked by network policy"));
-        }
         let mut response = client
-            .client
             .get(url.clone())
             .header(header::RANGE, format!("bytes={start}-{end}"))
             .header(header::ACCEPT_ENCODING, "identity")

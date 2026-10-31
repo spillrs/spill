@@ -14,6 +14,7 @@ download_limit = 0
 upload_limit = 0
 seed_ratio = 0.0
 seed_time = 0
+file_priorities = []
 trackers = true
 dht = true
 pex = true

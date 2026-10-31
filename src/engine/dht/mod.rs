@@ -8,7 +8,10 @@ mod state;
 
 use crate::engine::{
     identity::entropy,
-    session::dht::{Handle, MAX_SAVED_NODES, SavedState},
+    session::{
+        dht::{Handle, MAX_SAVED_NODES, SavedState},
+        udp,
+    },
 };
 use crate::protocol::{
     bencode::{self, Node as BNode, Value},
@@ -28,7 +31,6 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::UdpSocket,
     sync::{Semaphore, mpsc, oneshot, watch},
     time::Instant,
 };
@@ -86,7 +88,7 @@ struct Pending {
 /// Dropping it closes all pending callers; no child tasks are spawned.
 pub(in crate::engine) struct Node {
     allow_local_network: bool,
-    socket: Arc<UdpSocket>,
+    transport: udp::Transport,
     incoming: mpsc::Receiver<(Vec<u8>, SocketAddr)>,
     id: NodeId,
     limits: Limits,
@@ -109,13 +111,13 @@ mod handle;
 impl Node {
     /// Restore identity; reverify saved contacts before consented, pinned router bootstrap.
     pub(in crate::engine) fn with_state(
-        socket: Arc<UdpSocket>,
+        transport: udp::Transport,
         incoming: mpsc::Receiver<(Vec<u8>, SocketAddr)>,
         allow_local_network: bool,
         saved: Option<SavedState>,
         routers: Vec<String>,
     ) -> io::Result<(Self, Handle)> {
-        let address = socket.local_addr()?;
+        let address = transport.address;
         let limits = Limits::DEFAULT;
         let id = if let Some(saved) = &saved {
             saved.id
@@ -129,7 +131,7 @@ impl Node {
             allow_local_network,
             commands: sender,
             address,
-            ipv6: address.is_ipv6(),
+            families: transport.families,
             id,
             lookups: Arc::new(Semaphore::new(limits.max_lookups)),
             lookup_queries: limits.max_lookup_queries,
@@ -143,13 +145,12 @@ impl Node {
         let bootstrap = Some(Box::pin(async move {
             let saved = saved.unwrap_or(SavedState { id, nodes: vec![] });
             let run = |ipv6| {
-                let mut handle = bootstrap_handle.clone();
-                handle.ipv6 = ipv6;
+                let handle = bootstrap_handle.clone();
                 let saved = saved.clone();
                 let routers = routers.clone();
                 async move {
-                    if handle.supports(ipv6) {
-                        bootstrap::run(handle, saved, routers, allow_local_network).await?;
+                    if handle.families[usize::from(ipv6)] {
+                        bootstrap::run(handle, ipv6, saved, routers, allow_local_network).await?;
                     }
                     Ok::<(), io::Error>(())
                 }
@@ -163,7 +164,7 @@ impl Node {
         Ok((
             Self {
                 allow_local_network,
-                socket,
+                transport,
                 incoming,
                 id,
                 limits,
@@ -354,18 +355,19 @@ impl Node {
         while self.pending.contains_key(&transaction) {
             transaction = entropy()?;
         }
+        let want = if matches!(query, Query::FindNode(_)) {
+            Want {
+                ipv4: self.transport.families[0],
+                ipv6: self.transport.families[1],
+            }
+        } else {
+            Want {
+                ipv4: address.is_ipv4(),
+                ipv6: address.is_ipv6(),
+            }
+        };
         let packet = query
-            .encode(
-                &transaction,
-                self.id,
-                Some(Want {
-                    ipv4: address.is_ipv4(),
-                    ipv6: address.is_ipv6(),
-                }),
-                CODEC,
-                K,
-                100,
-            )
+            .encode(&transaction, self.id, Some(want), CODEC, K, 100)
             .map_err(io::Error::other)?;
         match self.send(&packet, address).await {
             Ok(()) => {
@@ -395,14 +397,14 @@ impl Node {
             ));
         }
         let destination = match address {
-            SocketAddr::V4(v4) if self.socket.local_addr()?.is_ipv6() => {
+            SocketAddr::V4(v4) if self.transport.address.is_ipv6() => {
                 SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port())
             }
             address => address,
         };
         tokio::time::timeout(
             Duration::from_secs(1),
-            self.socket.send_to(packet, destination),
+            self.transport.socket.send_to(packet, destination),
         )
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "DHT send timed out"))??;
@@ -426,7 +428,11 @@ impl Node {
                     self.dropped = self.dropped.saturating_add(1);
                     return Ok(());
                 }
-                let packet = self.answer(message.transaction_id(), query, address, now)?;
+                self.tokens.rotate(now)?;
+                let Ok(packet) = self.answer(message.transaction_id(), query, address, now) else {
+                    self.dropped = self.dropped.saturating_add(1);
+                    return Ok(());
+                };
                 if self.rate.reply(packet.len(), now) {
                     if self.send(&packet, address).await.is_ok() {
                         self.answered = self.answered.saturating_add(1);
@@ -462,11 +468,8 @@ impl Node {
                 if pending.address != address || Instant::now() >= pending.deadline {
                     return Ok(());
                 }
-                let has_nodes = if address.is_ipv6() {
-                    nodes6.is_some()
-                } else {
-                    nodes.is_some()
-                };
+                let has_nodes = self.transport.families[0] && nodes.is_some()
+                    || self.transport.families[1] && nodes6.is_some();
                 if nodes.is_some_and(|n| !n.remainder().is_empty())
                     || nodes6.is_some_and(|n| !n.remainder().is_empty())
                     || matches!(pending.query, Query::FindNode(_)) && !has_nodes
@@ -500,11 +503,24 @@ impl Node {
                         })
                     }))
                     .filter(|n| {
-                        n.address.is_ipv6() == address.is_ipv6()
+                        self.transport.families[usize::from(n.address.is_ipv6())]
                             && valid_address(n.address, false)
                             && crate::engine::network::peer(n.address, self.allow_local_network)
                     })
                     .collect();
+                // Cross-family referrals are hints, never proof of reachability.
+                for node in nodes
+                    .iter()
+                    .filter(|n| n.address.is_ipv6() != address.is_ipv6())
+                    .take(K)
+                {
+                    if node.id != self.id && !self.routers.contains(&node.address) {
+                        let routing = &self.routing[usize::from(node.address.is_ipv6())];
+                        if !routing.closest(node.id, Instant::now()).contains(node) {
+                            self.probe(node.address).await?;
+                        }
+                    }
+                }
                 if let Some(reply) = pending.reply.take() {
                     let peers = message
                         .peers()
@@ -549,14 +565,12 @@ impl Node {
         query: WireQuery<'_>,
         source: SocketAddr,
         now: Instant,
-    ) -> io::Result<Vec<u8>> {
-        self.tokens.rotate(now)?;
+    ) -> Result<Vec<u8>, crate::protocol::dht::krpc::Error> {
         let mut fields = BTreeMap::from([(b"id".as_slice(), bytes(&self.id.0))]);
         let raw_nodes;
         let raw_nodes6;
-        let mut node_bytes = 0;
         let token;
-        let raw_peers;
+        let mut raw_peers = Vec::new();
         let target = match query {
             WireQuery::FindNode { target, want } => Some((target, want)),
             WireQuery::GetPeers { info_hash, want } => Some((NodeId(*info_hash.as_bytes()), want)),
@@ -578,7 +592,6 @@ impl Node {
                         NodeV4 { id: n.id, address }.encode()
                     })
                     .collect::<Vec<_>>();
-                node_bytes += raw_nodes.len();
                 fields.insert(b"nodes", bytes(&raw_nodes));
             }
             if want.ipv6 {
@@ -594,7 +607,6 @@ impl Node {
                             .expect("unscoped IPv6 contact")
                     })
                     .collect::<Vec<_>>();
-                node_bytes += raw_nodes6.len();
                 fields.insert(b"nodes6", bytes(&raw_nodes6));
             }
         }
@@ -607,8 +619,6 @@ impl Node {
                     .peers
                     .get(info_hash.as_bytes(), source.is_ipv6(), now)
                     .into_iter()
-                    // Reserve the envelope, node keys, token and 32-byte transaction ID.
-                    .take((1024 - 128 - node_bytes) / if source.is_ipv6() { 21 } else { 8 })
                     .map(|p| match p {
                         SocketAddr::V4(p) => compact::encode_v4(p).to_vec(),
                         SocketAddr::V6(p) => {
@@ -616,12 +626,6 @@ impl Node {
                         }
                     })
                     .collect::<Vec<_>>();
-                if !raw_peers.is_empty() {
-                    fields.insert(
-                        b"values",
-                        BNode::new(Value::List(raw_peers.iter().map(|p| bytes(p)).collect())),
-                    );
-                }
                 None
             }
             WireQuery::AnnouncePeer {
@@ -642,14 +646,31 @@ impl Node {
             }
             WireQuery::Unknown { .. } => Some((204, b"unknown method".as_slice())),
         };
-        let body = if let Some((code, message)) = error {
-            Body::Error { code, message }
-        } else {
-            Body::Response(BNode::new(Value::Dictionary(fields)))
-        };
-        Message::new(transaction, body, None, K * 2, 100)
-            .and_then(|m| m.encode(CODEC))
-            .map_err(io::Error::other)
+        loop {
+            let mut response = fields.clone();
+            if !raw_peers.is_empty() {
+                response.insert(
+                    b"values",
+                    BNode::new(Value::List(raw_peers.iter().map(|p| bytes(p)).collect())),
+                );
+            }
+            let body = if let Some((code, message)) = error {
+                Body::Error { code, message }
+            } else {
+                Body::Response(BNode::new(Value::Dictionary(response)))
+            };
+            let encoded =
+                Message::new(transaction, body, None, K * 2, 100).and_then(|m| m.encode(CODEC));
+            match encoded {
+                Err(crate::protocol::dht::krpc::Error::Bencode(ref error))
+                    if error.kind == bencode::ErrorKind::OutputLimit && !raw_peers.is_empty() =>
+                {
+                    // Fit the actual envelope, including any optional fields.
+                    raw_peers.pop();
+                }
+                result => return result,
+            }
+        }
     }
 }
 pub(in crate::engine) fn valid_address(address: SocketAddr, bind: bool) -> bool {

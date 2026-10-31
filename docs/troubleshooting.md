@@ -120,8 +120,8 @@ allow only spill. The firewall permission does not configure your router.
 ## The DHT doesn't work
 
 - The DHT uses the families supported by `listen`. IPv6-only listeners need
-  reachable IPv6 routers or saved IPv6 contacts; IPv4 contacts cannot bootstrap
-  the IPv6 routing table. `listen = "[::]:…"` enables both families.
+  reachable IPv6 routers or saved IPv6 contacts. Dual-stack listeners can also
+  learn IPv6 contacts from IPv4 nodes, then verify them over IPv6. `listen = "[::]:…"` enables both families.
 - `dht_bootstrap = []` with no saved nodes leaves the DHT with nobody to talk to.
 
 ## Files look wrong after a crash or power loss

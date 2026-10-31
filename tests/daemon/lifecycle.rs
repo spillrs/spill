@@ -130,7 +130,7 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_old_catalogs() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        5
     );
     let resume: Vec<u8> = db
         .query_row("SELECT resume FROM torrents", [], |r| r.get(0))

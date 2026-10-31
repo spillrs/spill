@@ -112,8 +112,8 @@ impl Catalog {
                     retry_count INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0,
                     CHECK(metainfo IS NOT NULL OR magnet IS NOT NULL));
                 CREATE TABLE dht (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node_id BLOB NOT NULL, nodes BLOB NOT NULL);
-                PRAGMA user_version=6; COMMIT;")?;
-        } else if version != 6 {
+                PRAGMA user_version=5; COMMIT;")?;
+        } else if version != 5 {
             return Err(Error::Version(version));
         }
         c.prepare("SELECT settings, resume, uploaded, seed_seconds, complete, created_files, retry_at FROM torrents LIMIT 0")?;
@@ -410,13 +410,7 @@ impl Catalog {
         Ok(saved.and_then(|(id, nodes)| {
             let nodes: Vec<([u8; 20], std::net::SocketAddr)> =
                 serde_json::from_slice(&nodes).ok()?;
-            let cap = spill::engine::session::dht::MAX_SAVED_NODES;
-            if nodes.iter().filter(|(_, a)| a.is_ipv4()).count() > cap
-                || nodes.iter().filter(|(_, a)| a.is_ipv6()).count() > cap
-            {
-                return None;
-            }
-            Some(spill::engine::session::dht::SavedState {
+            let saved = spill::engine::session::dht::SavedState {
                 id: spill::protocol::dht::NodeId(id.try_into().ok()?),
                 nodes: nodes
                     .into_iter()
@@ -425,7 +419,9 @@ impl Catalog {
                         address,
                     })
                     .collect(),
-            })
+            };
+            saved.validate().ok()?;
+            Some(saved)
         }))
     }
     pub fn save_dht(&self, state: spill::engine::session::dht::SavedState) -> Result<()> {

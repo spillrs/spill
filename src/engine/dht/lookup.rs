@@ -106,10 +106,6 @@ impl Handle {
                 "private torrents cannot use DHT",
             ));
         }
-        let _permit = self
-            .lookups
-            .try_acquire()
-            .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DHT lookup limit"))?;
         self.lookup(meta.info_hash(), Some(port), peers).await
     }
     pub(in crate::engine) async fn metadata_peers(
@@ -117,10 +113,6 @@ impl Handle {
         hash: InfoHashV1,
         peers: tokio::sync::mpsc::Sender<SocketAddr>,
     ) -> io::Result<Lookup> {
-        let _permit = self
-            .lookups
-            .try_acquire()
-            .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DHT lookup limit"))?;
         self.lookup(hash, None, Some(peers)).await
     }
     async fn lookup(
@@ -129,27 +121,40 @@ impl Handle {
         port: Option<tokio::sync::watch::Receiver<u16>>,
         peer_stream: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
     ) -> io::Result<Lookup> {
+        let _permit = self
+            .lookups
+            .try_acquire_many(self.families.iter().filter(|&&enabled| enabled).count() as u32)
+            .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DHT lookup limit"))?;
         let run = |ipv6| {
-            let mut handle = self.clone();
-            handle.ipv6 = ipv6;
+            let handle = self.clone();
             let port = port.clone();
             let peers = peer_stream.clone();
             async move {
-                if !handle.supports(ipv6) {
+                if !handle.families[usize::from(ipv6)] {
                     return Ok(Lookup {
                         peers: Vec::new(),
                         queried: 0,
                         announced: 0,
                     });
                 }
-                handle.lookup_family(hash, port, peers).await
+                handle.lookup_family(ipv6, hash, port, peers).await
             }
         };
         let (v4, v6) = tokio::join!(run(false), run(true));
         match (v4, v6) {
             (Ok(mut a), Ok(b)) => {
-                a.peers.extend(b.peers);
-                a.peers.truncate(self.max_peers);
+                let mut peers = Vec::new();
+                for index in 0..a.peers.len().max(b.peers.len()) {
+                    for family in [&a.peers, &b.peers] {
+                        if let Some(&peer) = family.get(index)
+                            && peers.len() < self.max_peers
+                            && !peers.contains(&peer)
+                        {
+                            peers.push(peer);
+                        }
+                    }
+                }
+                a.peers = peers;
                 a.queried += b.queried;
                 a.announced += b.announced;
                 Ok(a)
@@ -164,13 +169,14 @@ impl Handle {
     }
     async fn lookup_family(
         &self,
+        ipv6: bool,
         hash: InfoHashV1,
         port: Option<tokio::sync::watch::Receiver<u16>>,
         peer_stream: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
     ) -> io::Result<Lookup> {
         let target = NodeId(*hash.as_bytes());
         let mut closest: Vec<_> = self
-            .closest(target)
+            .closest(ipv6, target)
             .await?
             .into_iter()
             .take(self.lookup_queries)
@@ -181,7 +187,7 @@ impl Handle {
             })
             .collect();
         let mut peers: Vec<_> = self
-            .local_peers(hash)
+            .local_peers(ipv6, hash)
             .await?
             .into_iter()
             .filter(|p| port.is_none() || *p != self.address)
@@ -257,7 +263,8 @@ impl Handle {
                         token: reply.token,
                     });
                     for contact in reply.nodes {
-                        if contact.id != self.id()
+                        if contact.address.is_ipv6() == ipv6
+                            && contact.id != self.id()
                             && !closest.iter().any(|c| {
                                 c.node.id == contact.id || c.node.address == contact.address
                             })

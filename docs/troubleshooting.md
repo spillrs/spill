@@ -26,7 +26,7 @@ silently keeping the low limit. Client commands do not query or change this limi
 Check the system cap with
 `sysctl kern.maxfilesperproc`. The launchd example also requests 10240 files.
 For unusually large workloads, increase the system cap and the agent's hard
-limit through your system administration policy before restarting Spill.
+limit through your system administration policy before restarting spill.
 
 ## `daemon unavailable` (exit code 4)
 
@@ -45,17 +45,17 @@ A client command can't reach the control socket.
 | Error | Fix |
 |---|---|
 | `Address already in use` | Another program (often another client) uses the `listen` port for TCP or UDP. Pick another port or stop it. |
-| `control socket already in use` | Another Spill is running with the same socket. |
-| `Resource temporarily unavailable` | Another Spill holds the lock on the same `state_dir` (`daemon.lock`). |
-| `unsupported catalog version` | The catalog is from an older Spill. Use a fresh `state_dir`; re-add torrents, and complete files are adopted without downloading. |
+| `control socket already in use` | Another spill is running with the same socket. |
+| `Resource temporarily unavailable` | Another spill holds the lock on the same `state_dir` (`daemon.lock`). |
+| `unsupported catalog version` | The catalog is from an older spill. Use a fresh `state_dir`; re-add torrents, and complete files are adopted without downloading. |
 | `absolute paths and a nonzero active cap are required` | A path in the config is relative, or uses `~`, or the active slots are invalid, or `web_listen` isn't loopback, or `dht = true` with an IPv6 `listen`. |
 | `unknown field …` | A typo or a removed key in the config (for example `allow_local_peers`, now `allow_local_network`). |
 
 ## Adding a torrent fails
 
 - `file already exists; choose another output directory`: some of the
-  torrent's files (or a directory with a file's name) already exist and Spill
-  won't overwrite them. If all files are present and complete, Spill adopts
+  torrent's files (or a directory with a file's name) already exist and spill
+  won't overwrite them. If all files are present and complete, spill adopts
   them instead; otherwise move them away or choose another `--output`.
 - `torrent already exists`: it's already in the catalog; `spill list`.
 - `output_dir must be absolute`: give a full path to `--output`.
@@ -79,7 +79,7 @@ A client command can't reach the control socket.
 ## Torrents stay queued after an internal failure
 
 If `spill health` shows `"admission_closed": true` while the daemon is running,
-a torrent stopped without proving that its files were released. Spill then
+a torrent stopped without proving that its files were released. spill then
 starts no further torrents, so it never opens the same files twice. The
 torrent's `last_error` names the failure. Restart the daemon, and report the
 error if it repeats.
@@ -112,10 +112,10 @@ outbound connections still work when mapping fails. Double NAT and carrier-grade
 NAT may require changes upstream; a mapping at the local router alone cannot
 make those reachable. Automatic mapping currently requires an IPv4 listener.
 
-On macOS, allow Spill's incoming-connections prompt. In System Settings →
+On macOS, allow spill's incoming-connections prompt. In System Settings →
 Network → Firewall → Options, allow the installed `spill` binary. Replacing
 an unsigned development binary may prompt again. Don't disable the firewall;
-allow only Spill. The firewall permission does not configure your router.
+allow only spill. The firewall permission does not configure your router.
 
 ## The DHT doesn't work
 
@@ -125,5 +125,5 @@ allow only Spill. The firewall permission does not configure your router.
 
 ## Files look wrong after a crash or power loss
 
-Run `spill recheck ID`, then `resume`. Recheck hashes every piece and
-downloads anything missing or corrupt.
+Run `spill recheck ID`, then `spill resume ID`. Recheck hashes every piece and
+leaves the torrent paused. Resuming downloads any missing or corrupt pieces.

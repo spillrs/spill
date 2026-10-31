@@ -1,18 +1,18 @@
 # Interoperability smoke tests
 
 Requires Python 3.11+, Transmission **4.1+** (`transmission-daemon` on PATH),
-`findmnt`, and a built Spill daemon. The harness uses `--preferred-transports`,
+`findmnt`, and a built spill daemon. The harness uses `--preferred-transports`,
 which is not supported by Transmission 4.0. `--transport tcp` is the default;
 `--transport utp` enables and prefers uTP and requires observing uTP peers in
-Spill's diagnostics in both directions (TCP fallback alone cannot pass).
+spill's diagnostics in both directions (TCP fallback alone cannot pass).
 Use a sufficiently large fixture to span diagnostic sampling, and the machine's
 actual LAN address (not the literal `LAN_IP`). `--rate-limit 1MiB` applies a
-Spill upload/download payload cap for small fixtures that would otherwise finish
+spill upload/download payload cap for small fixtures that would otherwise finish
 before diagnostic sampling. It defaults to unlimited; leave it unset for throughput
 comparisons. Network access is explicitly opt-in.
 
 ```sh
-# Transmission -> Spill, then Spill -> Transmission; verifies SHA-256 both ways.
+# Transmission -> spill, then spill -> Transmission; verifies SHA-256 both ways.
 python tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release
 
 # uTP in both directions; also combine with --kill-at 0.5 or --magnet.
@@ -23,7 +23,7 @@ python tests/interop/transmission_smoke.py --allow-network --host LAN_IP --relea
 python tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release \
   --private --http-tracker --restart-check
 
-# Kill Spill partway through the download, restart, and verify recovery.
+# Kill spill partway through the download, restart, and verify recovery.
 # Use a larger fixture so the kill threshold can be sampled before completion.
 python tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release \
   --size 1GiB --piece-length 1MiB --kill-at 0.5
@@ -43,11 +43,11 @@ No public tracker, DHT, PEX, LPD, NAT mapping or encryption is
 used by the Transmission harness. TCP-only runs disable uTP in both clients.
 
 `transport-samples.jsonl` records each direction's elapsed time, observed transports,
-payload progress and Spill's outgoing uTP retransmit count since the first sample
+payload progress and spill's outgoing uTP retransmit count since the first sample
 of that direction, about once per second. The latest samples are also retained in `result.json` under
 `directions`, including on timeout. Counters survive owner restarts within the
 harness's sampled totals. Transmission does not expose its uTP retransmit count
-through RPC, so `spill_utp_retransmits` is explicitly Spill's count, not the
+through RPC, so `spill_utp_retransmits` is explicitly spill's count, not the
 remote sender's. These are sampled diagnostics, not complete packet traces.
 
 `--reference` retains elapsed time and sampled payload rates in `result.json`
@@ -62,7 +62,7 @@ after successful runs unless `--keep` is supplied. Tmpfs requires explicit
 
 ## Tier 3: named disk baselines
 
-`scale.py` requires Python 3.11+, `findmnt`, and Spill, but not Transmission.
+`scale.py` requires Python 3.11+, `findmnt`, and spill, but not Transmission.
 It uses only local HTTP range sources; it measures storage, scheduling, catalog,
 and control behaviour, not peer-wire throughput or choking. Runs are opt-in and
 must stay off CI. No Python packages or JavaScript build step are needed.
@@ -115,12 +115,12 @@ end-to-end tests.
 
 ## Tier 3: peer-wire swarm
 
-`swarm.py` uses one Transmission 4.1+ seed and N independently networked Spill
+`swarm.py` uses one Transmission 4.1+ seed and N independently networked spill
 leechers. A local HTTP tracker returns all participants, permitting leecher-to-
 leecher transfers as well as seed uploads. Web seeds, DHT, PEX, LPD, NAT mapping,
 and encryption are disabled. HTTP carries only tracker messages; payload uses
 BitTorrent TCP by default. Pass `--transport utp` to prefer uTP in all clients;
-Spill runs then require an observed uTP peer for every leecher. The default workload is eight leechers, each downloading a
+spill runs then require an observed uTP peer for every leecher. The default workload is eight leechers, each downloading a
 256 MiB fixture with 1 MiB pieces and no bandwidth caps.
 
 ```sh
@@ -128,7 +128,7 @@ python tests/interop/swarm.py --allow-network --host LAN_IP --release
 python tests/interop/swarm.py --allow-network --host LAN_IP --release --transport utp
 
 # Same seed, fixture shape, disk and leecher count, using Transmission leechers.
-# Run separately, not concurrently with the Spill workload.
+# Run separately, not concurrently with the spill workload.
 python tests/interop/swarm.py --allow-network --host LAN_IP --leecher transmission
 
 # Isolated one-to-one 1 GiB comparison, including sampled payload-only rates.
@@ -143,15 +143,15 @@ choking/upload counts, aggregate throughput, process RSS, and every payload's
 SHA-256 check. Upload byte figures are the latest live counter samples and can
 lag final socket writes. More than one leecher requires observed multi-peer
 connections. `peer-samples.jsonl` retains each leecher's live peer diagnostics:
-Spill snapshots include Fast negotiation, choke flags, assigned and authorized
+spill snapshots include Fast negotiation, choke flags, assigned and authorized
 requests, upload queue lengths, grants, output backpressure, writer free slots,
-and pending/finished upload reads. Spill refreshes
+and pending/finished upload reads. spill refreshes
 these snapshots about every two seconds, so repeated polling can return the same
 observation. The trace helps investigate stalls without relying on tracing logs;
 it does not record disconnect reasons or individual wire requests.
 These measurements exercise peer-wire traffic but do not instrument request
 pipeline depth; they are not evidence of a particular scheduling algorithm.
-Spill completion includes its durability barrier; Transmission completion uses
+spill completion includes its durability barrier; Transmission completion uses
 RPC `percentDone`, so the completion guarantees are not identical. Startup,
 connection delays, seed choking and filesystem cache state affect elapsed rates.
 Neither runner drops filesystem caches. Keep full timings and sampled payload

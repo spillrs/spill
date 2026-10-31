@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#172b46">
-<title>Spill — Transfers</title>
+<title>spill — Transfers</title>
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
 <script>
 document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
@@ -27,12 +27,12 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 <div class="app">
 <aside class="sidebar">
 <div class="brand"><img src="/logo.svg" alt="" width="28" height="28"><span>spill</span></div>
-<div class="workspace"><div class="server-icon"><svg><use href="#server"/></svg></div><div><strong>Spill daemon</strong><div class="tiny"><span id="sidebar-status">Connecting…</span></div></div></div>
+<div class="workspace"><div class="server-icon"><svg><use href="#server"/></svg></div><div><strong>spill daemon</strong><div class="tiny"><span id="sidebar-status">Connecting…</span></div></div></div>
 <div class="section-label">Library</div><nav class="nav" aria-label="Transfer filters" id="navigation"></nav>
 <div class="sidebar-bottom"><div class="tiny">Local web interface · 1s refresh</div></div>
 </aside>
 <main class="main">
-<header class="topbar"><div class="breadcrumb">Spill daemon <span>/</span><span>Transfers</span></div><div class="top-actions"><button class="secondary" id="theme-button" type="button" aria-pressed="false">Dark mode</button><span class="status-badge">CONNECTING</span><button class="primary" id="add-button"><svg><use href="#plus"/></svg>Add torrent</button></div></header>
+<header class="topbar"><div class="breadcrumb">spill daemon <span>/</span><span>Transfers</span></div><div class="top-actions"><button class="secondary" id="theme-button" type="button" aria-pressed="false">Dark mode</button><span class="status-badge">CONNECTING</span><button class="primary" id="add-button"><svg><use href="#plus"/></svg>Add torrent</button></div></header>
 <section class="overview" aria-label="Session transfer rates"><div class="stats">
 <div class="stat"><div class="stat-label"><svg class="download-color"><use href="#down"/></svg>Download</div><div class="stat-value" id="download-stat">—</div></div>
 <div class="stat"><div class="stat-label"><svg class="upload-color"><use href="#up"/></svg>Upload</div><div class="stat-value" id="upload-stat">—</div></div>
@@ -77,7 +77,7 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 <div class="options"><label><input type="checkbox" id="allow-trackers" checked> Trackers</label><label><input type="checkbox" id="allow-dht" checked> DHT</label><label><input type="checkbox" id="allow-web" checked> Web seeds</label></div>
 <p class="telemetry-note">Discovery follows daemon policy. Unresolved magnets may disclose their hash before privacy is known.</p>
 <div class="actions"><button type="button" class="secondary" id="cancel-add">Cancel</button><button class="primary" type="submit">Add torrent</button></div></form></dialog>
-<dialog id="remove-dialog" aria-labelledby="remove-title" aria-describedby="remove-description"><h2 id="remove-title">Remove from Spill?</h2><p id="remove-description"></p><ul class="remove-transfers" id="remove-transfers"></ul><label><input type="checkbox" id="delete-data"> Also delete downloaded files</label><div class="actions"><button class="secondary" id="cancel-remove">Keep transfers</button><button class="primary danger" id="confirm-remove">Remove</button></div></dialog>
+<dialog id="remove-dialog" aria-labelledby="remove-title" aria-describedby="remove-description"><h2 id="remove-title">Remove from spill?</h2><p id="remove-description"></p><ul class="remove-transfers" id="remove-transfers"></ul><label><input type="checkbox" id="delete-data"> Also delete downloaded files</label><div class="actions"><button class="secondary" id="cancel-remove">Keep transfers</button><button class="primary danger" id="confirm-remove">Remove</button></div></dialog>
 <dialog id="limits-dialog"><form id="limits-form"><h2>Payload rate limits</h2><p>Bytes per second. 0 means unlimited. Limits apply to this torrent.</p>
 <label class="field" for="limit-down">Download bytes/s</label><input id="limit-down" type="number" min="0" max="9007199254740991" step="1" required>
 <label class="field" for="limit-up">Upload bytes/s</label><input id="limit-up" type="number" min="0" max="9007199254740991" step="1" required>

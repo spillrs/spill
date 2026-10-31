@@ -1,5 +1,32 @@
 # Install
 
+Install spill with the hosted script, a manual release download, or Cargo.
+spill is not yet distributed through OS package managers.
+
+## Install with the script (recommended)
+
+```sh
+curl -fsSL https://spill.rs/install.sh | sh
+spill --version
+```
+
+The script installs the latest published release to `~/.local/bin`, checks its
+SHA-256 checksum, and replaces the binary atomically. It does not use sudo,
+change shell profiles, or start a service. If `spill` is not found, follow the
+printed PATH instructions or run `"$HOME/.local/bin/spill"` directly.
+
+Requires `curl`, `tar`, and `sha256sum` or `shasum`. Supported platforms and
+binary compatibility are listed below. Inspect or pin the script installation:
+
+```sh
+curl -fsSL https://spill.rs/install.sh -o install.sh
+# Read install.sh before running it.
+sh install.sh --version 0.6.0 --install-dir "$HOME/.local/bin"
+```
+
+Stop a running daemon before replacing its binary. Checksums detect corruption,
+not a compromised release publisher. For upgrades, also read [Upgrading](#upgrading).
+
 ## Install a release binary
 
 Download an archive and `SHA256SUMS` from the
@@ -45,7 +72,7 @@ service instructions below.
 
 ## Install from crates.io
 
-Spill supports Linux and macOS and needs a current stable Rust toolchain
+spill supports Linux and macOS and needs a current stable Rust toolchain
 (see `rust-toolchain.toml`). SQLite is bundled; no system libraries are
 required beyond a C compiler.
 
@@ -76,7 +103,7 @@ such as `spill list`, control the running daemon.
 spill serve
 ```
 
-Without `--config`, Spill uses built-in defaults:
+Without `--config`, spill uses built-in defaults:
 
 | What | Default |
 |---|---|
@@ -102,13 +129,15 @@ State and the control socket live in `~/Library/Application Support/spill`,
 and downloads in `~/Downloads`.
 
 To run at login, install the launchd user agent. Stop any manually running
-Spill first. From the repository root:
+spill first. Obtain `deploy/` from the matching source tag, then run from that
+source directory:
 
 ```sh
 mkdir -p "$HOME/Library/Application Support/spill" "$HOME/Library/LaunchAgents"
 cp deploy/spill-macos.toml "$HOME/Library/Application Support/spill/spill.toml"
 agent="$HOME/Library/LaunchAgents/rs.spill.daemon.plist"
 cp deploy/spill.plist "$agent"
+plutil -replace ProgramArguments.0 -string "$(command -v spill)" "$agent"
 plutil -replace ProgramArguments.3 -string "$HOME/Library/Application Support/spill/spill.toml" "$agent"
 plutil -replace StandardOutPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
 plutil -replace StandardErrorPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
@@ -116,8 +145,8 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/rs.spill.daemon.p
 tail -f "$HOME/Library/Application Support/spill/spill.log"
 ```
 
-The template assumes `/usr/local/bin/spill`; change `ProgramArguments[0]` if
-installed elsewhere. launchd does not expand `~`, so the commands substitute
+The commands set the executable to your installed `spill`, including script
+and Cargo installations. launchd does not expand `~`, so the commands substitute
 absolute paths. Edit the TOML before loading if needed; its example enables
 the web interface on `127.0.0.1:8080`. The agent restarts after failure, not
 clean shutdown. The log is not rotated automatically; truncate or rotate it
@@ -128,17 +157,21 @@ launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/rs.spill.daemon.pli
 ```
 
 Allow incoming connections when the macOS application firewall prompts for
-Spill. See [Troubleshooting](troubleshooting.md) for firewall and file-limit
+spill. See [Troubleshooting](troubleshooting.md) for firewall and file-limit
 settings. The Linux-only `tests/interop` harnesses are not supported on macOS.
 
 ## Run as a Linux user service (recommended)
 
-Example units live in `deploy/` in the source repository.
+Obtain `deploy/` from the matching source tag and run from that source directory.
+The unit template uses `/usr/local/bin/spill`; set it to your installed path:
 
 ```sh
 mkdir -p ~/.config/spill ~/.config/systemd/user
 cp deploy/spill-user.toml ~/.config/spill/spill.toml
 cp deploy/spill-user.service ~/.config/systemd/user/spill.service
+systemctl --user edit --full spill.service
+# Set ExecStart to the absolute path printed by: command -v spill
+# Keep the serve --config arguments.
 systemctl --user daemon-reload
 systemctl --user enable --now spill
 journalctl --user -u spill -f
@@ -150,7 +183,7 @@ To keep the daemon running after you log out, enable lingering with
 
 ## Run as a Linux system service
 
-`spill.service` and `spill.toml` in the same directory run Spill as a dedicated
+`spill.service` and `spill.toml` in the same directory run spill as a dedicated
 `spill` account with state in `/var/lib/spill` and the control socket at
 `/run/spill/control.sock`:
 
@@ -164,21 +197,22 @@ sudo systemctl enable --now spill
 sudo -u spill spill --socket /run/spill/control.sock list
 ```
 
-The unit uses systemd sandboxing (`ProtectSystem=strict`, `ProtectHome`), so
-the download directory must be listed in `ReadWritePaths`.
+The system unit expects `/usr/local/bin/spill`. Install the binary there first;
+a user-local script or Cargo binary is not accessible under its `ProtectHome`
+sandbox. The download directory must be listed in `ReadWritePaths`.
 
 ## Open the port
 
 Peers, the DHT and UDP trackers all use the listen port, default `6881`, over
 both TCP and UDP. Outbound traffic needs no rules. For inbound peers, allow
-that port through the host firewall. Spill tries automatic NAT-PMP and UPnP
+that port through the host firewall. spill tries automatic NAT-PMP and UPnP
 router mapping by default; check `spill health`. If mapping is disabled
 (as in the system-service example) or your router refuses, forward the listen
 port for TCP and UDP yourself. See [Networking](networking.md#automatic-port-mapping).
 
 ## Upgrading
 
-Before 1.0, Spill does not migrate old catalogs. If an upgrade reports
+Before 1.0, spill does not migrate old catalogs. If an upgrade reports
 `unsupported catalog version`, start with a fresh `state_dir`. Keep your
 download directory: re-adding a torrent whose complete files are already there
 verifies and seeds them without downloading again.

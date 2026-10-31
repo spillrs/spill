@@ -35,7 +35,7 @@ without starting an execution.
 
 - **Memory**: each running torrent may buffer up to `cache_bytes` +
   `write_queue_bytes` (32 MiB by default) at peak. Typical use is far lower.
-- **Open files**: Spill keeps every file of a running torrent open while it
+- **Open files**: spill keeps every file of a running torrent open while it
   runs. A torrent with 100,000 files uses about 100,000 file descriptors. The
   daemon raises its soft descriptor limit to the hard limit at startup on
   Linux. On macOS it uses the smaller of the hard limit and
@@ -46,16 +46,26 @@ without starting an execution.
 ## Measured baselines
 
 Measured on a Linux desktop (Intel Core Ultra 7 265, ext4) on a local network,
-against Transmission 4.1. They are measurements, not guarantees; raw data is in
-`tests/interop/baselines/`.
+against Transmission 4.1. These are historical workload measurements, not
+rankings or guarantees for the current release. Raw summaries, source revisions,
+and workload details are in
+[the baseline records](https://github.com/spillrs/spill/tree/main/tests/interop/baselines).
 
 | Scenario | Result |
 |---|---|
-| 1 GiB from one Transmission seed | Spill 11.2 s, Transmission 19.5 s |
-| 8 leechers × 256 MiB from one Transmission seed | Spill ~10.6 s (p50 of 10 runs), Transmission 13.7 s |
+| 1 GiB from one Transmission seed | spill 11.2 s, Transmission 19.5 s |
+| 8 leechers × 256 MiB from one Transmission seed | spill ~10.6 s (p50 of 10 runs), Transmission 13.7 s |
 | 33 torrents, 768 MiB, 4 download slots | 35 MiB peak memory, 118 open files, 1.5 ms p95 control latency |
 | Restart with 33 complete torrents | 0.1 s, nothing downloaded again |
 | One torrent with 100,000 files | 184 MiB peak memory, 100,018 open files; restart 9.7 s |
+
+The peer-wire comparisons include startup and choking delays. Filesystem caches
+were not dropped, some recorded source trees were dirty, and completion is not
+defined identically: spill includes its durability barrier; Transmission is
+observed through RPC progress. The 33-torrent workload uses local web seeds,
+not a peer-wire swarm. See the
+[measurement methodology](https://github.com/spillrs/spill/blob/main/tests/interop/README.md)
+and per-run notes before drawing comparisons.
 
 ## Known gaps
 

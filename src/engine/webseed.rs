@@ -251,10 +251,7 @@ impl Seed {
         {
             return Err(invalid("no usable web seed address"));
         }
-        let client = Client::builder()
-            .use_rustls_tls()
-            .http1_only()
-            .no_proxy()
+        let client = crate::http::client()
             .redirect(redirect::Policy::none())
             .retry(reqwest::retry::never())
             .no_gzip()

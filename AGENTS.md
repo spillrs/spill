@@ -3,9 +3,11 @@
 Rules for any agent working in this repository. They override habits from
 other codebases. When a rule and a request conflict, ask before breaking it.
 
-## What Spill is
+## What spill is
 
-A single-user BitTorrent v1 daemon for Linux and macOS, written in Rust.
+A modern torrent client built in Rust.
+It is a single-user BitTorrent v1 daemon for Linux and macOS and a supported
+embeddable engine for applications.
 Correctness and interoperability with other clients come first, then stability
 under real use, then performance. The code must stay minimal: every line has to earn its place.
 
@@ -24,7 +26,22 @@ under real use, then performance. The code must stay minimal: every line has to 
 | `deploy` | Example configs and service definitions | Depend on local machine paths |
 | `tests/engine` | Public-library end-to-end scenarios with in-process peers, trackers or web seeds | Depend on the daemon binary or test-only engine APIs |
 | `tests/interop` | Python harnesses against real clients (Transmission) | Require changes in `src/` to work |
-| `docs` | End-user documentation, rendered on the homepage (`SUMMARY.md` is the page order) | Describe internals that churn; link to code instead |
+| `docs` | User and integration guides, published at spill.rs/docs/ from the latest release (`SUMMARY.md` is the page order) | Describe internals that churn; link to code instead |
+
+## Documentation and messaging
+
+- Brand casing is lowercase `spill`; preserve case-sensitive API and wire identifiers.
+- Present the daemon and embeddable engine as current supported uses, without
+  version-history qualifiers such as "since v…". Do not label spill beta.
+- Humans and agents use the same documented CLI and library APIs.
+- README covers usage, installation/build, tests and license. `docs/` owns user
+  and integration guides; rustdoc owns exact API contracts and compilable examples.
+- Website `/docs/` follows the latest published release, not development `main`.
+  Source docs describe their checkout; changes reach the website with a release.
+- Keep installation guidance to the script, manual binaries and Cargo. There is
+  no OS package-manager distribution yet.
+- Support performance and interoperability statements with evidence; do not claim
+  universal compatibility or unmeasured capacity.
 
 ## Testing policy
 

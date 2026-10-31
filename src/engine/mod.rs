@@ -1,7 +1,11 @@
-//! Bounded torrent tasks with explicit caller consent for networking.
-//! Identity comes from original metainfo bytes; only hash-verified pieces are served.
-//! Verification, durable storage, socket writes and remote receipt are distinct.
-//! Shutdown joins peer tasks and storage work before releasing a destination.
+//! The shared engine for the spill daemon and embedded applications.
+//!
+//! Start with [`download`] for one-shot transfers or [`session::Session`] for
+//! reusable networking, concurrent torrents, progress, and recovery. Networking
+//! policy is explicit; sessions do not enable DHT without caller consent.
+//! Only hash-verified pieces are served. Verification, durable storage, socket
+//! writes, and remote receipt are distinct. Shutdown joins owned work before
+//! releasing a destination. See the [library guide](https://spill.rs/docs/library/).
 
 #![warn(unreachable_pub)]
 
@@ -49,7 +53,12 @@ pub(in crate::engine) async fn join_blocking<T>(
 /// Download wanted content and join cleanup in a caller-owned Tokio runtime.
 /// Uses an ephemeral IPv4 listener, default DHT routers, no port mapping and no
 /// LAN permission. Dropping this future requests stop but cannot join cleanup;
-/// use an explicit Session when cleanup proof is needed after a timeout.
+/// use an explicit [`session::Session`] when cleanup proof is needed after a timeout.
+///
+/// The destination root must exist. This function stores no recovery record;
+/// repeating it after interruption cannot reopen unauthorized partial files.
+/// Use [`torrent::Persistence`] and [`torrent::Destination::Recover`] for that.
+/// Returns an error for incomplete transfers or failed cleanup, not just failed I/O.
 pub async fn download(
     source: torrent::TorrentSource,
     destination: torrent::Destination,

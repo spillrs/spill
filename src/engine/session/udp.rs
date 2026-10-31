@@ -71,7 +71,7 @@ impl Transport {
         let waiting = &mut routes.waiting;
         loop {
             let mut bytes = [0; 4];
-            getrandom::getrandom(&mut bytes).map_err(io::Error::other)?;
+            getrandom::fill(&mut bytes).map_err(io::Error::other)?;
             let id = u32::from_ne_bytes(bytes);
             let key = (id, endpoint);
             if let std::collections::hash_map::Entry::Vacant(entry) = waiting.entry(key) {

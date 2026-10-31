@@ -3,6 +3,8 @@ mod catalog;
 mod cli;
 mod config;
 mod control;
+#[path = "../http.rs"]
+mod http;
 mod metainfo_url;
 mod observation;
 mod settings;

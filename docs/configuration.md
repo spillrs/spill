@@ -1,6 +1,6 @@
 # Configuration
 
-Spill reads a TOML file only when started with `spill serve --config PATH`.
+spill reads a TOML 1.1 file only when started with `spill serve --config PATH`.
 Without it, every key below takes its default. The file is limited to 64 KiB.
 
 Rules that apply to the whole file:

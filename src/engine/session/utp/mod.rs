@@ -74,7 +74,7 @@ impl Mux {
     }
     fn random() -> io::Result<u16> {
         let mut bytes = [0; 2];
-        getrandom::getrandom(&mut bytes).map_err(io::Error::other)?;
+        getrandom::fill(&mut bytes).map_err(io::Error::other)?;
         Ok(u16::from_ne_bytes(bytes))
     }
     fn send(&self, mut address: SocketAddr, header: Header, sack: &[u8], payload: &[u8]) {

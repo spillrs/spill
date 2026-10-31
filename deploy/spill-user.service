@@ -1,5 +1,5 @@
 [Unit]
-Description=Spill background downloads
+Description=spill torrent daemon
 Wants=network-online.target
 After=network-online.target
 

@@ -18,12 +18,12 @@ pub(in crate::engine) fn generate_peer_id() -> io::Result<[u8; 20]> {
             _ => panic!("peer ID version component exceeds base 36"),
         };
     }
-    getrandom::getrandom(&mut id[8..]).map_err(io::Error::other)?;
+    getrandom::fill(&mut id[8..]).map_err(io::Error::other)?;
     Ok(id)
 }
 
 pub(in crate::engine) fn entropy<const N: usize>() -> io::Result<[u8; N]> {
     let mut bytes = [0; N];
-    getrandom::getrandom(&mut bytes).map_err(io::Error::other)?;
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     Ok(bytes)
 }

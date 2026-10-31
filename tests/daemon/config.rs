@@ -74,7 +74,12 @@ async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
     #[cfg(not(target_os = "macos"))]
     let socket = runtime.join("spill.sock");
     let config = root.0.join("defaults.toml");
-    std::fs::write(&config, "port_mapping=false\ndht_bootstrap=[]\n[defaults]\ndht=false\ntrackers=false\npex=false\nweb_seeds=false\n").unwrap();
+    std::fs::write(
+        &config,
+        "port_mapping=false\ndht_bootstrap=[]\ndefaults = {\n\
+         dht=false,\ntrackers=false,\npex=false,\nweb_seeds=false,\n}\n",
+    )
+    .unwrap();
     let child = tokio::process::Command::new(BIN)
         .args(["serve", "--config"])
         .arg(config)

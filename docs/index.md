@@ -1,43 +1,52 @@
-# Spill
+# spill
 
-a modern torrent client implemented in Rust.
+A modern torrent client built in Rust.
 
-Spill runs in the background on Linux and macOS for a single user, downloads
-and seeds torrents, and is controlled from the command line (`spill`) or
-an optional local web page.
+Run spill as a single-user daemon on Linux and macOS, controlled through the
+CLI or an optional local web interface. Or embed the same engine in your Rust
+application without running a separate daemon.
 
-Spill aims to be correct, interoperable with other clients, stable under long
-running use and small. It is in beta.
+## Run the client
 
-## What it does
+[Install spill](install.md), then follow the [quickstart](quickstart.md) to
+start the daemon and add your first torrent. Use the
+[CLI and JSON output](cli.md) for interactive control and automation, or enable
+the [local web interface and HTTP API](web.md).
 
-- Downloads and seeds BitTorrent v1 torrents from `.torrent` files and magnet links.
-- Connects to peers over TCP and uTP (BEP 29).
-- Finds peers through HTTP, HTTPS and UDP trackers, the DHT, peer exchange (PEX)
-  and HTTP web seeds.
-- Supports private torrents (BEP 27): DHT and PEX are switched off and tracker
-  announces follow private-tracker expectations.
-- Selects files and priorities per torrent, limits download and upload rates,
-  and stops seeding at a ratio or time goal.
-- Survives restarts and crashes: verified progress is checkpointed, and only
-  files that changed on disk are rehashed.
-- Keeps everything in one state directory with an SQLite catalog. One port
-  (TCP and UDP, same number) is all that needs to be reachable. Automatically
-  requests router mappings using NAT-PMP or UPnP IGD.
+## Embed the engine
 
-## What it does not do (yet)
+The [Rust library guide](library.md) covers dependencies, your Tokio runtime,
+one-shot downloads, reusable sessions, progress, recovery, and shutdown.
+The [Rust API reference](https://docs.rs/spill) describes the public interfaces.
+Applications and agents can use the library directly; no daemon or SQLite
+catalog is required.
 
-- BitTorrent v2 or hybrid torrents.
-- Protocol encryption (MSE/PE) or local peer discovery.
-- Multiple users, remote web access or authentication. The web interface only
-  listens on loopback.
-- Platforms other than Linux and macOS.
+## Capabilities
 
-## Where to go next
+- Download and seed BitTorrent v1 torrents from `.torrent` files and magnet links.
+- Connect to peers over TCP and uTP (BEP 29).
+- Discover peers through HTTP, HTTPS and UDP trackers, the DHT, and peer exchange
+  (PEX); download from HTTP web seeds.
+- Use private torrents (BEP 27), with DHT and PEX disabled.
+- Select files and priorities, limit transfer rates, and configure daemon seeding
+  goals.
+- Recover verified progress after restarts using checkpoints and file fingerprints.
+- Share one peer port over TCP and UDP, with optional NAT-PMP or UPnP mapping.
 
-- [Install](install.md) Spill and run it as a service.
-- Follow the [Quickstart](quickstart.md) to add your first torrent.
-- Look up any setting in [Configuration](configuration.md) and any command in
-  [Command line](cli.md).
-- Read [Torrents](torrents.md) and [Networking](networking.md) to understand
-  what Spill does with your files and your network.
+Read [Torrents](torrents.md), [Networking](networking.md), and
+[Private trackers](private-trackers.md) for exact behavior.
+[Limits and performance](limits.md) documents resource bounds and measured workloads.
+
+## Scope
+
+spill supports Linux and macOS and BitTorrent v1. It does not support v2 or
+hybrid torrents, protocol encryption (MSE/PE), or local peer discovery.
+The daemon is single-user; its optional web interface listens only on loopback
+and has no multi-user authentication. Remote access requires an SSH tunnel.
+
+## Documentation versions
+
+The website's `/docs/` guide follows the latest published release. Documentation
+in a source checkout describes that checkout. Check `spill --version` and use
+the corresponding version in the Rust API reference when integrating an older
+release.

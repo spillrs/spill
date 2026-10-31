@@ -2,7 +2,7 @@
 
 ## One port
 
-Spill uses a single port number, `listen` (default `6881`), for everything
+spill uses a single port number, `listen` (default `6881`), for everything
 inbound:
 
 - **TCP**: incoming peer connections.
@@ -10,11 +10,11 @@ inbound:
 
 Both must be free when the daemon starts, even with the DHT disabled. Allow
 inbound TCP and UDP through the host firewall. Without inbound reachability,
-Spill still downloads and uploads over connections it makes itself.
+spill still downloads and uploads over connections it makes itself.
 
 ## Peer transports
 
-Spill accepts TCP and uTP (BEP 29) peer connections. Outbound connections try
+spill accepts TCP and uTP (BEP 29) peer connections. Outbound connections try
 uTP first, then TCP if uTP does not answer within three seconds. A failed uTP
 attempt is remembered for that contact while its torrent runs; subsequent dials
 use TCP directly. TCP and uTP are not raced.
@@ -40,23 +40,23 @@ acknowledge FINs before remaining connections are reset.
 
 ## Automatic port mapping
 
-With `port_mapping = true` (the default), Spill asks the IPv4 default gateway
+With `port_mapping = true` (the default), spill asks the IPv4 default gateway
 for TCP and UDP mappings, first using NAT-PMP, then UPnP IGD. PCP is not yet
 supported. The system-service example disables mapping; user and macOS
 examples leave it enabled. An IPv6 listener does not use automatic mapping.
 An IP-valued `port_mapping_gateway` overrides NAT-PMP gateway discovery. An
 HTTP description URL instead skips NAT-PMP and SSDP, using that UPnP IGD directly.
 
-Spill requests the listen port as the external port for both protocols. If the
+spill requests the listen port as the external port for both protocols. If the
 gateway grants a different number, trackers, new extension handshakes and DHT
 announces advertise that external port. A port change does not trigger extra
 announces: the next regular announce carries it. Different TCP and UDP external
-ports are rejected, since Spill advertises one port. When disabled or after a
+ports are rejected, since spill advertises one port. When disabled or after a
 failed mapping attempt, the advertised port remains the listen port.
 
 NAT-PMP requests a two-hour lease and renews at half the granted lifetime.
 UPnP also requests a two-hour lease and renews halfway through it. If the
-router returns error 725 (only permanent leases supported), Spill retries with
+router returns error 725 (only permanent leases supported), spill retries with
 lease 0 and reasserts the mapping hourly. Failed attempts retry after 60 seconds,
 doubling up to 30 minutes. Clean shutdown tries to remove mappings with a
 two-second timeout.
@@ -79,9 +79,13 @@ See [Troubleshooting](troubleshooting.md#nobody-can-connect-to-me) if mapping fa
 All four are on by default, configurable per torrent. Private torrents always
 have DHT and PEX off.
 
+HTTP connections use HTTP/1 without system proxies. HTTPS verifies certificates
+against bundled Mozilla roots, not the OS trust store; this also applies to
+[adding a torrent by URL](torrents.md).
+
 ### Trackers
 
-- Trackers are grouped in tiers (BEP 12). Spill announces to one working
+- Trackers are grouped in tiers (BEP 12). spill announces to one working
   tracker at a time, trying the next in the tier, then the next tier, when one
   fails. A tracker that answers moves to the front of its tier.
 - Announces follow the tracker's `interval` and `min interval`.
@@ -110,14 +114,14 @@ The library's one-shot `download()` permits DHT with `default_routers()`:
 therefore perform router DNS lookups and UDP discovery. Reusable library sessions
 permit DHT only when their `NetworkOptions::dht` explicitly supplies capability.
 
-After switching `listen` to IPv6, Spill logs that DHT is unavailable and continues
+After switching `listen` to IPv6, spill logs that DHT is unavailable and continues
 with other discovery sources. Saved per-torrent DHT settings are preserved.
 
 ## Local addresses
 
-By default Spill never connects out to private, loopback or link-local
+By default spill never connects out to private, loopback or link-local
 addresses, whether it got them from a tracker, the DHT, PEX or a web seed URL.
-This keeps a malicious torrent from making Spill probe your local network.
+This keeps a malicious torrent from making spill probe your local network.
 Set `allow_local_network = true` to use LAN peers or trackers. Multicast,
 broadcast, unspecified addresses and port 0 are always refused. Incoming
 connections are accepted from any address.
@@ -127,7 +131,7 @@ connections are accepted from any address.
 - `listen = "0.0.0.0:6881"` (default): IPv4 only.
 - `listen = "[::]:6881"`: IPv6 and IPv4 for peers and UDP trackers. The DHT is
   unavailable, because it needs an IPv4 listen address.
-- Peers from trackers and PEX can be IPv4 or IPv6; Spill connects to whichever
+- Peers from trackers and PEX can be IPv4 or IPv6; spill connects to whichever
   your host can reach.
 - IPv6 UDP trackers need an IPv6 or dual-stack `listen`.
 
@@ -135,8 +139,10 @@ connections are accepted from any address.
 
 - Up to `peers` connections per torrent (default 50), and at most 8 peers are
   uploaded to at once per torrent.
-- Spill identifies as `-sP0510-` in its peer ID (`sP` plus base-36 version
-  digits) and as `Spill/VERSION` in extension handshakes and HTTP requests.
+- spill derives its peer ID prefix from its package version: `-sP` followed by
+  base-36 major, minor and patch digits, a reserved `0`, and `-`.
+  Extension handshakes and HTTP requests identify as `Spill/VERSION`; this
+  case-sensitive wire identifier is not the prose brand casing.
 - If the same peer connects twice (for example, both sides dialed each other),
   one connection is dropped.
 - Peers that send bad data are banned for the torrent; unhelpful peers are
@@ -147,8 +153,8 @@ connections are accepted from any address.
 - Trackers, DHT nodes and peers see your IP address and what you download. This
   is inherent to BitTorrent.
 - A magnet link announces its info hash (to the DHT and its trackers) before
-  Spill knows whether the torrent is private. Use a `.torrent` file for private
+  spill knows whether the torrent is private. Use a `.torrent` file for private
   trackers; private metadata from magnets is rejected.
-- Spill does not encrypt peer connections.
+- spill does not encrypt peer connections.
 - Detailed tracker and web-seed observations expose full URLs, which may contain
   passkeys or other secrets, even when transport errors redact them.

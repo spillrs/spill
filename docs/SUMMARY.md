@@ -1,8 +1,8 @@
 # Summary
 
-[Spill](index.md)
+[spill](index.md)
 
-# Using Spill
+# Using spill
 
 - [Install](install.md)
 - [Quickstart](quickstart.md)
@@ -10,7 +10,7 @@
 - [Command line](cli.md)
 - [Web interface and HTTP API](web.md)
 
-# How Spill behaves
+# How spill behaves
 
 - [Torrents](torrents.md)
 - [Networking](networking.md)
@@ -18,6 +18,7 @@
 - [Limits and performance](limits.md)
 - [Troubleshooting](troubleshooting.md)
 
-# Internals
+# Building with spill
 
+- [Rust library](library.md)
 - [Architecture](architecture.md)

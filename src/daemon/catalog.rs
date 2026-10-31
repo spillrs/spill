@@ -1,4 +1,4 @@
-//! Pre-beta catalog. No legacy schema migrations or removal receipts.
+//! Single-user catalog. No legacy schema migrations or removal receipts.
 use crate::settings::Settings;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};

@@ -1,13 +1,13 @@
 [package]
 name = "spill"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 publish = ["crates-io"]
-description = "Modern torrent client"
+description = "A modern torrent client built in Rust"
 license = "Apache-2.0"
 repository = "https://github.com/spillrs/spill"
 homepage = "https://spill.rs"
-documentation = "https://spill.rs/docs/"
+documentation = "https://docs.rs/spill"
 readme = "README.md"
 keywords = ["bittorrent", "torrent", "daemon"]
 categories = ["command-line-utilities", "network-programming"]
@@ -51,21 +51,24 @@ path = "tests/daemon.rs"
 required-features = ["daemon"]
 
 [dependencies]
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23.1", optional = true }
 clap = { version = "4.6.7", features = ["derive"], optional = true }
-sha1 = "0.11"
-serde = { version = "1", features = ["derive", "rc"] }
+sha1 = { version = "0.11", default-features = false }
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # Optional-to-observe structured diagnostics; no subscriber, payload or endpoint logging.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 # OS entropy for peer IDs/transactions; std retains error sources (MIT/Apache-2.0).
-getrandom = { version = "0.2", features = ["std"] }
+getrandom = { version = "0.4.3", features = ["std"] }
 # Established URL syntax/host parser; no resolver or HTTP client (MIT/Apache-2.0).
 url = "2.5.8"
 # One dual-stack session UDP socket for tracker exchanges.
 socket2 = "0.6"
 # HTTP/1 + rustls/ring with bundled Mozilla roots; no system TLS, proxies or compression.
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+# Explicit TLS configuration preserves ring and bundled roots without global state.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 
 # Engine port mapping uses /sbin/route for macOS gateway discovery.
@@ -73,17 +76,17 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sy
 tokio = { version = "1", features = ["process"] }
 
 [target.'cfg(unix)'.dependencies]
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"], optional = true }
 # Platform errno constants only; no unsafe syscall wrappers.
 libc = "0.2"
 # Safe descriptor-relative filesystem operations and advisory locks.
 rustix = { version = "1.1", features = ["fs"] }
 serde_json = { version = "1", optional = true }
-toml = { version = "0.8", optional = true }
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"], optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"], optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["process", "rt-multi-thread", "test-util"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread"] }
 # Lets the engine-only progress example persist its serde destination binding.
 serde_json = "1"
 

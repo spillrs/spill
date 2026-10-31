@@ -385,8 +385,7 @@ async fn upnp(address: SocketAddr, description: Option<&reqwest::Url>) -> io::Re
         }
     }
     // This client has no torrent endpoint resolver/filter: gateway LAN access is intentional.
-    let client = reqwest::Client::builder()
-        .no_proxy()
+    let client = crate::http::client()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(3))

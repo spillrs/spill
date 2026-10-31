@@ -1,5 +1,5 @@
 //! Bounded HTTP ingestion before a torrent enters the catalog.
-use reqwest::{Client, StatusCode, header};
+use reqwest::{StatusCode, header};
 use spill::engine::profile::MAX_META;
 use std::{io, time::Duration};
 use url::Url;
@@ -28,8 +28,7 @@ fn transport(error: reqwest::Error) -> io::Error {
 pub async fn fetch(source: &str) -> io::Result<Vec<u8>> {
     let mut url = Url::parse(source).map_err(|_| invalid("invalid torrent URL"))?;
     validate(&url)?;
-    let client = Client::builder()
-        .no_proxy()
+    let client = crate::http::client()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .build()

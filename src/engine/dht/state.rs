@@ -21,7 +21,7 @@ impl Tokens {
     pub(in crate::engine) fn new(now: Instant) -> io::Result<Self> {
         let mut secrets = [[0; 20]; 2];
         for secret in &mut secrets {
-            getrandom::getrandom(secret).map_err(io::Error::other)?;
+            getrandom::fill(secret).map_err(io::Error::other)?;
         }
         Ok(Self {
             secrets,
@@ -32,9 +32,9 @@ impl Tokens {
         let age = now.duration_since(self.rotated);
         if age >= ROTATE {
             self.secrets[1] = self.secrets[0];
-            getrandom::getrandom(&mut self.secrets[0]).map_err(io::Error::other)?;
+            getrandom::fill(&mut self.secrets[0]).map_err(io::Error::other)?;
             if age >= ROTATE * 2 {
-                getrandom::getrandom(&mut self.secrets[1]).map_err(io::Error::other)?;
+                getrandom::fill(&mut self.secrets[1]).map_err(io::Error::other)?;
             }
             self.rotated += ROTATE * (age.as_secs() / ROTATE.as_secs()) as u32;
         }

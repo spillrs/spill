@@ -27,18 +27,28 @@ use tokio::{
 };
 use tracing::Instrument;
 
+/// Validated metainfo or a parsed magnet whose metadata the engine will resolve.
 pub enum TorrentSource {
     Metainfo(OwnedMetainfo),
     Magnet(Magnet),
 }
 
+/// Payload policy within an existing root directory. Existing partial files
+/// require recorded recovery authority; a resume bitmap alone is insufficient.
 pub enum Destination {
+    /// Create payload or verify and adopt an already complete read-only seed.
     Open(PathBuf),
+    /// Create new payload, refusing existing files.
     Create(PathBuf),
+    /// Verify an existing read-only seed without taking write/delete authority.
     Adopt(PathBuf),
+    /// Reopen payload authorized by a previous binding in its original root.
     Recover { root: PathBuf, state: RecoveryState },
 }
 
+/// Latest acknowledged recovery records. Persist the binding together with its
+/// original root directory; preserve resume bytes unchanged. The binding's serde
+/// format may change before 1.0.
 #[derive(Clone)]
 pub struct RecoveryState {
     pub binding: DestinationBinding,
@@ -49,8 +59,14 @@ pub struct RecoveryState {
 /// Acknowledge an encoded resume checkpoint. Failure fails the execution.
 pub type Checkpoint = Box<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync>;
 
-/// Acknowledgements run on blocking threads and remain owned through stop.
-/// Callbacks must not synchronously wait on this execution or session shutdown.
+/// Optional durable-record acknowledgements; failures fail the execution.
+/// Callbacks run on blocking threads and remain owned through stop. They must not
+/// synchronously wait on this execution or session shutdown.
+///
+/// Metadata acknowledgement precedes destination preparation; binding acknowledgement
+/// precedes file creation; checkpoint acknowledgement precedes content completion.
+/// Tracker-delivery acknowledgement precedes advancing delivery state. Stop and
+/// shutdown join callbacks already in progress without a hard deadline.
 #[derive(Default)]
 pub struct Persistence {
     pub resolved: Option<Box<dyn Fn(OwnedMetainfo) -> io::Result<()> + Send + Sync>>,
@@ -59,6 +75,8 @@ pub struct Persistence {
     pub completion_announce: Option<Box<dyn Fn(bool) -> io::Result<()> + Send + Sync>>,
 }
 
+/// Execution inputs. Construct with [`Self::new`], then set policy, resource
+/// budgets, discovery settings, diagnostics, and optional persistence callbacks.
 pub struct TorrentOptions {
     pub source: TorrentSource,
     pub destination: Destination,
@@ -143,6 +161,9 @@ pub enum TorrentExit {
     MetadataResolved,
 }
 
+/// Terminal result, distinct from wanted-content completion. A clean incomplete
+/// stop is not a successful download. Inspect `cleanup_complete` before reusing
+/// a destination after failure; an I/O error can coexist with joined cleanup.
 #[derive(Debug)]
 pub struct TorrentOutcome {
     pub termination: TorrentExit,
@@ -284,9 +305,12 @@ impl TorrentHandle {
     pub fn metainfo(&self) -> Option<OwnedMetainfo> {
         self.metadata.borrow().metainfo.clone()
     }
+    /// Retain the latest acknowledged binding and checkpoints for another execution.
+    /// This is an in-memory observation; use [`Persistence`] for process recovery.
     pub fn recovery(&self) -> Option<RecoveryState> {
         self.recovery.lock().unwrap().clone()
     }
+    /// Wait for resolved and acknowledged metadata, or an execution failure.
     pub async fn wait_metadata(&self) -> io::Result<OwnedMetainfo> {
         let mut metadata = self.metadata.clone();
         loop {
@@ -315,9 +339,12 @@ impl TorrentHandle {
     pub fn reannounce(&self) {
         self.reannounce.send_replace(());
     }
+    /// Request terminal stop without waiting. Join cleanup before admitting a
+    /// replacement that will use the same destination.
     pub fn request_stop(&self) {
         self.stop.send_replace(true);
     }
+    /// Current latest-value progress, not a durable checkpoint or event history.
     pub fn snapshot(&self) -> TorrentStatus {
         self.status.borrow().clone()
     }
@@ -335,6 +362,8 @@ impl TorrentHandle {
     pub(in crate::engine) fn cleanup_unproven(&self) -> bool {
         self.is_finished() && !self.join.finalized.load(Ordering::Acquire)
     }
+    /// Wait for selected-content completion, not termination or joined cleanup.
+    /// Inspection handles have no payload and return `InvalidInput`.
     pub async fn wait_complete(&self) -> io::Result<()> {
         if self.inspection {
             return Err(io::Error::new(
@@ -360,6 +389,8 @@ impl TorrentHandle {
             return Err(outcome.incomplete("execution ended before wanted content completed"));
         }
     }
+    /// Join termination and retain its outcome. Cancellation leaves this wait
+    /// joinable through another handle. Check `cleanup_complete` after failure.
     pub async fn outcome(&self) -> Arc<TorrentOutcome> {
         let mut state = self.join.state.lock().await;
         if state.outcome.is_none() {
@@ -389,9 +420,12 @@ impl TorrentHandle {
         }
         state.outcome.as_ref().expect("terminal outcome").clone()
     }
+    /// Join termination and return its error, if any. A clean incomplete stop can
+    /// return `Ok`; use [`Self::wait_complete`] to require completed content.
     pub async fn join(&self) -> io::Result<()> {
         self.outcome().await.result()
     }
+    /// Request stop and join termination. See [`Self::outcome`] for cleanup proof.
     pub async fn stop(&self) -> io::Result<()> {
         self.request_stop();
         self.join().await

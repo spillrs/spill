@@ -5,7 +5,7 @@ Torrents with the `private` flag (BEP 27) are fully supported. Add them from a
 
 ## What changes for private torrents
 
-- **DHT and PEX are always off.** Spill doesn't advertise them in handshakes,
+- **DHT and PEX are always off.** spill doesn't advertise them in handshakes,
   doesn't send DHT port messages, and refuses `set dht=true` or `pex=true`. The
   web interface disables those controls.
 - **Peers come only from the torrent's trackers** (and its web seeds, if any).
@@ -14,7 +14,7 @@ Torrents with the `private` flag (BEP 27) are fully supported. Add them from a
 
 ## Announces
 
-Private trackers track your ratio from announces, so Spill is careful about them:
+Private trackers track your ratio from announces, so spill follows these rules:
 
 - `started` is sent when a torrent starts; `stopped` when it is paused, removed
   or the daemon shuts down. Resuming starts a fresh session with counters at zero.
@@ -43,8 +43,9 @@ Both appear in `spill get` and on the web page.
 
 ## Client whitelists
 
-Most private trackers only accept whitelisted clients. Spill identifies itself
-honestly, as peer ID prefix `-sP0510-` and `Spill/VERSION`, and never
-impersonates another client. Until a tracker whitelists Spill, its announces may
-be rejected with a failure reason saying so. Check your tracker's rules before
-using Spill there.
+Most private trackers only accept whitelisted clients. spill identifies itself
+with a version-derived `-sP…-` peer ID prefix and the wire identifier
+`Spill/VERSION`; it never impersonates another client. See
+[Peer connections](networking.md#peer-connections) for the prefix format.
+Until a tracker whitelists spill, its announces may be rejected. Check your
+tracker's rules before using spill there.

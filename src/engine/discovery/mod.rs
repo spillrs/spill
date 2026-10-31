@@ -40,7 +40,7 @@ fn tracker_failure(message: &[u8]) -> io::Error {
 }
 fn random() -> io::Result<u32> {
     let mut bytes = [0; 4];
-    getrandom::getrandom(&mut bytes).map_err(io::Error::other)?;
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     Ok(u32::from_ne_bytes(bytes))
 }
 #[derive(Clone, Copy)]
@@ -438,9 +438,8 @@ impl reqwest::dns::Resolve for Resolver {
     }
 }
 pub(in crate::engine) fn http_client(allow_local_network: bool) -> io::Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::http::client()
         .user_agent(concat!("Spill/", env!("CARGO_PKG_VERSION")))
-        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .pool_idle_timeout(Duration::from_secs(90))

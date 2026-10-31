@@ -14,7 +14,7 @@
 | `downloading` | Transferring data. |
 | `seeding` | Complete (for the selected files) and uploading. |
 | `paused` | Stopped by you or by a seed goal. Stays stopped across restarts. |
-| `retrying` | Failed; Spill retries automatically. `get` shows the error and when the next attempt happens. |
+| `retrying` | Failed; spill retries automatically. `get` shows the error and when the next attempt happens. |
 
 ## Queueing
 
@@ -39,12 +39,12 @@ unique.
 
 ### Existing files
 
-- If **all** of a torrent's files already exist at the destination, Spill
+- If **all** of a torrent's files already exist at the destination, spill
   verifies them and seeds them without downloading. These adopted files are
-  treated as read-only: Spill never writes to or deletes them.
+  treated as read-only: spill never writes to or deletes them.
 - If only **some** of them exist, or a directory sits where a file should go,
   the add fails with `file already exists; choose another output directory`.
-  Spill never overwrites files it didn't create.
+  spill never overwrites files it didn't create.
 
 ### `.part` files
 
@@ -106,7 +106,7 @@ pieces. Library offline rechecks require supplied metainfo.
 
 ## Restarts, crashes and durability
 
-Spill saves each torrent's verified pieces together with a fingerprint (size,
+spill saves each torrent's verified pieces together with a fingerprint (size,
 modification time and identity) of every file:
 
 - every two minutes while a torrent runs,
@@ -117,7 +117,7 @@ On the next start, files whose fingerprint still matches are trusted; pieces
 in files that changed are hashed again. A crash therefore costs at most the
 unsaved progress plus rehashing the files that were being written.
 
-Like other clients, Spill does not sync data to disk on every write. It syncs
+Like other clients, spill does not sync data to disk on every write. It syncs
 a torrent's files once, when the download completes, before marking it complete.
 After a power loss during a download, data written in the last moments may be
 lost without changing the files' fingerprint; a `recheck` finds and repairs it.
@@ -125,15 +125,15 @@ lost without changing the files' fingerprint; a `recheck` finds and repairs it.
 ## Failures and retries
 
 If a torrent fails (disk full, permission denied, a file removed underneath
-it), it shows the error and enters `retrying`. Spill retries after 10 seconds,
+it), it shows the error and enters `retrying`. spill retries after 10 seconds,
 doubling the delay each time up to 30 minutes. Pausing and resuming clears the
 delay. Problems with a single peer, tracker or web seed never fail a torrent;
 that source is dropped or retried on its own.
 
 ## Removing torrents
 
-- `remove ID` deletes the torrent from Spill and keeps all files.
-- `remove ID --delete-payload` also deletes the files Spill created for it,
-  then any directories that became empty. Files Spill did not create (adopted
+- `remove ID` deletes the torrent from spill and keeps all files.
+- `remove ID --delete-payload` also deletes the files spill created for it,
+  then any directories that became empty. Files spill did not create (adopted
   seeds, anything else in those directories) are left alone, and non-empty
   directories are kept.

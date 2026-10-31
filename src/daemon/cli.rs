@@ -13,18 +13,27 @@ use std::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Parser)]
-#[command(name = "spill", version, about = "Single-user BitTorrent daemon")]
+#[command(
+    name = "spill",
+    version,
+    about = "A modern torrent client built in Rust",
+    after_help = "Run `spill serve` in one terminal, then use client commands in another.\nTorrent IDs accept unambiguous prefixes. Use --json for automation.\nGuide: https://spill.rs/docs/ | Rust engine: https://docs.rs/spill"
+)]
 pub struct Cli {
     #[arg(long, global = true)]
+    /// Unix control socket of the running daemon.
     pub socket: Option<PathBuf>,
     #[arg(long, global = true)]
+    /// Print response data as JSON for automation.
     pub json: bool,
     #[command(subcommand)]
     pub command: Command,
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Run the single-user daemon in the foreground.
     Serve {
+        /// Absolute TOML config path; omit to use built-in defaults.
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -36,44 +45,45 @@ pub enum Operation {
     /// Add a local .torrent file, magnet link, or HTTP(S) torrent URL.
     Add {
         source: String,
+        /// Absolute output directory; defaults to the configured download_dir.
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    Pause {
-        id: String,
-    },
-    Resume {
-        id: String,
-    },
+    /// Stop a torrent and keep it paused across restarts.
+    Pause { id: String },
+    /// Allow a paused torrent to run when a slot is available.
+    Resume { id: String },
+    /// Remove a torrent, keeping downloaded files unless explicitly deleted.
     Remove {
         id: String,
         #[arg(long)]
+        /// Also delete payload files created by spill, never adopted files.
         delete_payload: bool,
     },
-    Recheck {
-        id: String,
-    },
+    /// Verify payload on disk, then leave the torrent paused.
+    Recheck { id: String },
     /// Announce again when the tracker permits it.
-    Reannounce {
-        id: String,
-    },
-    Get {
-        id: String,
-    },
+    Reannounce { id: String },
+    /// Show one torrent's progress, settings, accounting, peers, and sources.
+    Get { id: String },
+    /// Change per-torrent settings using KEY=JSON values.
     Set {
         id: String,
         #[arg(required = true)]
         values: Vec<String>,
     },
+    /// List torrents; --watch refreshes until interrupted.
     List {
         #[arg(long)]
         watch: bool,
     },
+    /// Show torrents and daemon health.
     Status,
-    Files {
-        id: String,
-    },
+    /// List files and priorities in torrent order.
+    Files { id: String },
+    /// Show daemon health, listener, port mapping, and admission state.
     Health,
+    /// Stop the daemon cleanly and save progress.
     Shutdown,
 }
 #[derive(Debug, thiserror::Error)]

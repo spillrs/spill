@@ -1,4 +1,8 @@
-//! Shared services and execution ownership. Reservations last through joined cleanup.
+//! Shared networking, resource budgets, and execution ownership.
+//!
+//! Bind a [`Session`], then [`Session::admit`] torrents. Admission reserves budgets
+//! through joined cleanup; [`Session::shutdown`] stops and joins owned work.
+//! Unlike [`super::download`], default reusable sessions do not enable DHT.
 pub mod dht;
 pub(in crate::engine) mod dial;
 mod listener;
@@ -37,11 +41,18 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+/// Network permissions and listeners. Defaults use an ephemeral IPv4 port and uTP,
+/// with no LAN access, router mapping, or DHT.
 pub struct NetworkOptions {
+    /// Bind TCP and UDP to the same address and port; zero selects a free port.
     pub listen: SocketAddr,
+    /// Accept uTP and try it before TCP when dialing.
     pub utp: bool,
+    /// Permit outbound private, loopback, and link-local destinations.
     pub allow_local_network: bool,
+    /// Opt into IPv4 NAT-PMP/UPnP mapping.
     pub port_mapping: Option<port_map::Gateway>,
+    /// Opt into the IPv4 DHT with supplied routers and optional saved state.
     pub dht: Option<DhtOptions>,
 }
 impl Default for NetworkOptions {
@@ -55,6 +66,8 @@ impl Default for NetworkOptions {
         }
     }
 }
+/// Session-wide admission budgets. Payload reservations are not a total RSS cap;
+/// transport buffers, hashing scratch space, and other bookkeeping are additional.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub torrents: usize,
@@ -388,6 +401,8 @@ impl Session {
             .map(|owner| owner.handle.clone())
             .collect()
     }
+    /// Resolve magnet metadata without creating payload files. The returned
+    /// handle supports metadata observation and joined cleanup, not content completion.
     pub fn inspect(
         &self,
         magnet: crate::protocol::magnet::Magnet,
@@ -402,6 +417,10 @@ impl Session {
         options.settings = settings;
         self.admit_execution(options, true)
     }
+    /// Validate and reserve a torrent execution; preparation proceeds asynchronously.
+    /// Returns `WouldBlock` when budgets are exhausted and `InvalidInput` for
+    /// invalid options, duplicate torrents, or a closed session. Finished executions
+    /// retire automatically; stopped handles cannot control a later replacement.
     pub fn admit(&self, options: TorrentOptions) -> io::Result<TorrentHandle> {
         self.admit_execution(options, false)
     }
@@ -504,9 +523,14 @@ impl Session {
         start.send(()).expect("installed execution");
         Ok(handle)
     }
+    /// Request stop without waiting. Use [`Self::shutdown`] to join cleanup.
     pub fn request_shutdown(&self) {
         self.shared.request_stop();
     }
+    /// Stop and join owned work, including blocking I/O and persistence callbacks.
+    /// There is no hard deadline. Cancelling this wait does not discard join state;
+    /// another retained session clone can await it again. Drop all clones after
+    /// joined shutdown to release the listener. Errors retain joined cleanup state.
     pub async fn shutdown(&self) -> io::Result<()> {
         self.request_shutdown();
         let shared = &self.shared;

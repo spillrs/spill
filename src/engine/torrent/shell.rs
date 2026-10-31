@@ -41,7 +41,7 @@ impl Shell {
         verified: Vec<u8>,
     ) -> io::Result<Self> {
         let mut entropy = [0; 8];
-        getrandom::getrandom(&mut entropy).map_err(io::Error::other)?;
+        getrandom::fill(&mut entropy).map_err(io::Error::other)?;
         let core = Torrent::new(
             Instant::now().into_std(),
             meta.clone(),

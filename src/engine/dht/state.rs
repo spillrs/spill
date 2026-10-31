@@ -4,7 +4,7 @@ use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
     io,
-    net::{Ipv4Addr, SocketAddrV4},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     time::Duration,
 };
 use tokio::time::Instant;
@@ -40,17 +40,20 @@ impl Tokens {
         }
         Ok(())
     }
-    fn hash(secret: &[u8; 20], ip: Ipv4Addr, hash: &[u8; 20]) -> [u8; 4] {
+    fn hash(secret: &[u8; 20], ip: IpAddr, hash: &[u8; 20]) -> [u8; 4] {
         let mut digest = Sha1::new();
-        digest.update(ip.octets());
+        match ip {
+            IpAddr::V4(ip) => digest.update(ip.octets()),
+            IpAddr::V6(ip) => digest.update(ip.octets()),
+        }
         digest.update(secret);
         digest.update(hash);
         digest.finalize()[..4].try_into().expect("four-byte token")
     }
-    pub(in crate::engine) fn issue(&self, ip: Ipv4Addr, hash: &[u8; 20]) -> [u8; 4] {
+    pub(in crate::engine) fn issue(&self, ip: IpAddr, hash: &[u8; 20]) -> [u8; 4] {
         Self::hash(&self.secrets[0], ip, hash)
     }
-    pub(in crate::engine) fn valid(&self, token: &[u8], ip: Ipv4Addr, hash: &[u8; 20]) -> bool {
+    pub(in crate::engine) fn valid(&self, token: &[u8], ip: IpAddr, hash: &[u8; 20]) -> bool {
         token.len() == 4
             && self.secrets.iter().any(|secret| {
                 let expected = Self::hash(secret, ip, hash);
@@ -64,7 +67,7 @@ impl Tokens {
 }
 
 pub(super) struct Peers {
-    torrents: HashMap<[u8; 20], Vec<(SocketAddrV4, Instant)>>,
+    torrents: HashMap<[u8; 20], Vec<(SocketAddr, Instant)>>,
     limits: Limits,
 }
 impl Peers {
@@ -83,7 +86,7 @@ impl Peers {
     pub(in crate::engine) fn put(
         &mut self,
         hash: [u8; 20],
-        peer: SocketAddrV4,
+        peer: SocketAddr,
         now: Instant,
     ) -> bool {
         if peer.port() == 0 {
@@ -102,12 +105,17 @@ impl Peers {
         }
         true
     }
-    pub(in crate::engine) fn get(&self, hash: &[u8; 20], now: Instant) -> Vec<SocketAddrV4> {
+    pub(in crate::engine) fn get(
+        &self,
+        hash: &[u8; 20],
+        ipv6: bool,
+        now: Instant,
+    ) -> Vec<SocketAddr> {
         self.torrents
             .get(hash)
             .into_iter()
             .flatten()
-            .filter(|(_, seen)| now.duration_since(*seen) < PEER_AGE)
+            .filter(|(peer, seen)| peer.is_ipv6() == ipv6 && now.duration_since(*seen) < PEER_AGE)
             .take(self.limits.max_peers_reply)
             .map(|(p, _)| *p)
             .collect()
@@ -137,7 +145,7 @@ impl Credit {
     }
 }
 pub(super) struct Rate {
-    sources: HashMap<Ipv4Addr, Credit>,
+    sources: HashMap<IpAddr, Credit>,
     output: Credit,
     limits: Limits,
 }
@@ -156,7 +164,12 @@ impl Rate {
         self.sources
             .retain(|_, c| now.duration_since(c.updated) < SOURCE_AGE);
     }
-    pub(in crate::engine) fn query(&mut self, ip: Ipv4Addr, now: Instant) -> bool {
+    pub(in crate::engine) fn query(&mut self, ip: IpAddr, now: Instant) -> bool {
+        // A /64 must not gain more query credit by rotating interface IDs.
+        let ip = match ip {
+            IpAddr::V6(ip) => IpAddr::V6(Ipv6Addr::from(u128::from(ip) & (u128::MAX << 64))),
+            ip => ip,
+        };
         if !self.sources.contains_key(&ip) && self.sources.len() >= self.limits.max_rate_sources {
             return false;
         }

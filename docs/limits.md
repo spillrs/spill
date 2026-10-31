@@ -78,7 +78,6 @@ and per-run notes before drawing comparisons.
 
 - No protocol encryption, so peers that require it can't be reached.
 - Automatic mapping supports NAT-PMP and UPnP IGD, not PCP or IPv6 pinholes.
-- The DHT is IPv4 only.
 - No BitTorrent v2 or hybrid torrents.
 - Files of a running torrent stay open; torrents with very many files are
   costly (see above).

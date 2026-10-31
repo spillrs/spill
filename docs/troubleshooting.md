@@ -48,7 +48,7 @@ A client command can't reach the control socket.
 | `control socket already in use` | Another spill is running with the same socket. |
 | `Resource temporarily unavailable` | Another spill holds the lock on the same `state_dir` (`daemon.lock`). |
 | `unsupported catalog version` | The catalog is from an older spill. Use a fresh `state_dir`; re-add torrents, and complete files are adopted without downloading. |
-| `absolute paths and a nonzero active cap are required` | A path in the config is relative, or uses `~`, or the active slots are invalid, or `web_listen` isn't loopback, or `dht = true` with an IPv6 `listen`. |
+| `absolute paths and a nonzero active cap are required` | A path in the config is relative, or uses `~`, or the active slots are invalid, or `web_listen` isn't loopback. |
 | `unknown field …` | A typo or a removed key in the config (for example `allow_local_peers`, now `allow_local_network`). |
 
 ## Adding a torrent fails
@@ -119,8 +119,9 @@ allow only spill. The firewall permission does not configure your router.
 
 ## The DHT doesn't work
 
-- The DHT needs an IPv4 `listen` address. With `listen = "[::]:…"` the daemon
-  logs `DHT disabled` and runs without it.
+- The DHT uses the families supported by `listen`. IPv6-only listeners need
+  reachable IPv6 routers or saved IPv6 contacts; IPv4 contacts cannot bootstrap
+  the IPv6 routing table. `listen = "[::]:…"` enables both families.
 - `dht_bootstrap = []` with no saved nodes leaves the DHT with nobody to talk to.
 
 ## Files look wrong after a crash or power loss

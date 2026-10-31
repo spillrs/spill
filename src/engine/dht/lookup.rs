@@ -1,7 +1,7 @@
 //! Iterative BEP 5 lookups: alpha=3, eight live results, bounded fallback candidates.
 //! Futures are polled in the torrent owner; cancellation spawns/abandons no tasks.
 use super::{
-    Handle, NodeId, NodeV4, Query, Reply,
+    Contact, Handle, NodeId, Query, Reply,
     routing::{self, K},
 };
 use crate::protocol::{identity::InfoHashV1, metainfo::OwnedMetainfo};
@@ -9,7 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     future::{Future, poll_fn},
     io,
-    net::SocketAddrV4,
+    net::SocketAddr,
     pin::Pin,
     task::Poll,
     time::Duration,
@@ -23,16 +23,16 @@ const REANNOUNCE: Duration = Duration::from_secs(15 * 60);
 const RETRY: Duration = Duration::from_secs(30);
 #[derive(Debug)]
 pub(in crate::engine) struct Lookup {
-    pub(in crate::engine) peers: Vec<SocketAddrV4>,
+    pub(in crate::engine) peers: Vec<SocketAddr>,
     pub(in crate::engine) queried: usize,
     pub(in crate::engine) announced: usize,
 }
 struct Candidate {
-    node: NodeV4,
+    node: Contact,
     verified: bool,
     token: Option<Vec<u8>>,
 }
-type Request = Pin<Box<dyn Future<Output = (SocketAddrV4, io::Result<Reply>)> + Send>>;
+type Request = Pin<Box<dyn Future<Output = (SocketAddr, io::Result<Reply>)> + Send>>;
 
 /// Slow requests stay alive for late replies, but stop occupying an alpha slot.
 /// The separate hard cap bounds speculative work and global pending pressure.
@@ -54,13 +54,13 @@ impl Requests {
     pub(in crate::engine) fn is_empty(&self) -> bool {
         self.active.is_empty()
     }
-    pub(in crate::engine) fn push(&mut self, handle: Handle, address: SocketAddrV4, query: Query) {
+    pub(in crate::engine) fn push(&mut self, handle: Handle, address: SocketAddr, query: Query) {
         self.active.push((
             Box::pin(async move { (address, handle.request_wait(address, query).await) }),
             Instant::now(),
         ));
     }
-    pub(in crate::engine) async fn next(&mut self) -> Option<(SocketAddrV4, io::Result<Reply>)> {
+    pub(in crate::engine) async fn next(&mut self) -> Option<(SocketAddr, io::Result<Reply>)> {
         let now = Instant::now();
         let hedge = if self.active.len() < MAX_ACTIVE {
             self.active
@@ -98,7 +98,7 @@ impl Handle {
         &self,
         meta: &OwnedMetainfo,
         port: tokio::sync::watch::Receiver<u16>,
-        peers: Option<tokio::sync::mpsc::Sender<SocketAddrV4>>,
+        peers: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
     ) -> io::Result<Lookup> {
         if meta.is_private() {
             return Err(io::Error::new(
@@ -115,7 +115,7 @@ impl Handle {
     pub(in crate::engine) async fn metadata_peers(
         &self,
         hash: InfoHashV1,
-        peers: tokio::sync::mpsc::Sender<SocketAddrV4>,
+        peers: tokio::sync::mpsc::Sender<SocketAddr>,
     ) -> io::Result<Lookup> {
         let _permit = self
             .lookups
@@ -127,7 +127,46 @@ impl Handle {
         &self,
         hash: InfoHashV1,
         port: Option<tokio::sync::watch::Receiver<u16>>,
-        peer_stream: Option<tokio::sync::mpsc::Sender<SocketAddrV4>>,
+        peer_stream: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
+    ) -> io::Result<Lookup> {
+        let run = |ipv6| {
+            let mut handle = self.clone();
+            handle.ipv6 = ipv6;
+            let port = port.clone();
+            let peers = peer_stream.clone();
+            async move {
+                if !handle.supports(ipv6) {
+                    return Ok(Lookup {
+                        peers: Vec::new(),
+                        queried: 0,
+                        announced: 0,
+                    });
+                }
+                handle.lookup_family(hash, port, peers).await
+            }
+        };
+        let (v4, v6) = tokio::join!(run(false), run(true));
+        match (v4, v6) {
+            (Ok(mut a), Ok(b)) => {
+                a.peers.extend(b.peers);
+                a.peers.truncate(self.max_peers);
+                a.queried += b.queried;
+                a.announced += b.announced;
+                Ok(a)
+            }
+            (Ok(found), Err(_)) | (Err(_), Ok(found))
+                if found.queried > 0 || !found.peers.is_empty() =>
+            {
+                Ok(found)
+            }
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+    async fn lookup_family(
+        &self,
+        hash: InfoHashV1,
+        port: Option<tokio::sync::watch::Receiver<u16>>,
+        peer_stream: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
     ) -> io::Result<Lookup> {
         let target = NodeId(*hash.as_bytes());
         let mut closest: Vec<_> = self
@@ -167,7 +206,7 @@ impl Handle {
             ));
         }
         let mut asked = HashSet::new();
-        let mut responded_nodes: HashMap<SocketAddrV4, NodeId> = HashMap::new();
+        let mut responded_nodes: HashMap<SocketAddr, NodeId> = HashMap::new();
         let mut active = Requests::default();
         let mut responded = 0;
         loop {
@@ -210,7 +249,7 @@ impl Handle {
                     }
                     closest.retain(|c| c.node.address != address);
                     closest.push(Candidate {
-                        node: NodeV4 {
+                        node: Contact {
                             id: reply.id,
                             address,
                         },
@@ -273,7 +312,7 @@ impl Handle {
     }
 }
 pub(in crate::engine) enum DiscoveryEvent {
-    Peers(Vec<SocketAddrV4>),
+    Peers(Vec<SocketAddr>),
     Finished(Lookup),
 }
 pub(in crate::engine) struct Discovery {
@@ -282,7 +321,7 @@ pub(in crate::engine) struct Discovery {
     port: tokio::sync::watch::Receiver<u16>,
     due: Instant,
     pending: Option<Pin<Box<dyn Future<Output = io::Result<Lookup>> + Send>>>,
-    peers: Option<tokio::sync::mpsc::Receiver<SocketAddrV4>>,
+    peers: Option<tokio::sync::mpsc::Receiver<SocketAddr>>,
     last_lookup: Option<Instant>,
     last_queried: usize,
     last_announced: usize,

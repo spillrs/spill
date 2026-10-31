@@ -151,8 +151,7 @@ spill set ID 'file_priorities=[]'      # back to all files
 - `file_priorities` needs one entry per file in `files` order, including
   padding files, which must be `"skip"`. File selection needs metadata, so wait
   for a magnet to resolve first.
-- `dht` and `pex` cannot be enabled on private torrents. `dht` cannot be enabled
-  when the daemon listens on an IPv6 address.
+- `dht` and `pex` cannot be enabled on private torrents.
 
 ## Exit codes
 

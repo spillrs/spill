@@ -7,7 +7,7 @@ use spill::{
         torrent::{Destination, RunPolicy, TorrentOptions, TorrentPhase, TorrentSource},
     },
     protocol::{
-        dht::{NodeId, krpc::NodeV4},
+        dht::{Contact, NodeId},
         magnet::Magnet,
     },
 };
@@ -168,13 +168,13 @@ async fn invalid_dht_capabilities_are_rejected_before_binding() {
             vec!["invalid".to_owned()],
             None,
         ),
-        ("[::1]:0".parse().unwrap(), Vec::new(), None),
+        ("[ff02::1]:0".parse().unwrap(), Vec::new(), None),
         (
             listener.local_addr().unwrap(),
             Vec::new(),
             Some(SavedState {
                 id: NodeId([0; 20]),
-                nodes: vec![NodeV4 {
+                nodes: vec![Contact {
                     id: NodeId([1; 20]),
                     address: "224.0.0.1:6881".parse().unwrap(),
                 }],

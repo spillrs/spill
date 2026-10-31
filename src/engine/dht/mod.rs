@@ -1,4 +1,4 @@
-//! Process-owned IPv4 BEP 5 node. One socket/task, bounded state and explicit consent.
+//! Session-owned BEP 5/32 node. One socket/task, bounded state and explicit consent.
 //! Only source/transaction-matched replies verify contacts; routers never enter routing.
 mod bootstrap;
 mod lookup;
@@ -14,8 +14,8 @@ use crate::protocol::{
     bencode::{self, Node as BNode, Value},
     compact,
     dht::{
-        NodeId,
-        krpc::{Body, Kind, Message, NodeV4, Query as WireQuery},
+        Contact, NodeId,
+        krpc::{Body, Kind, Message, NodeV4, NodeV6, Query as WireQuery, Want},
     },
 };
 use routing::{K, Routing};
@@ -23,7 +23,7 @@ use state::{Peers, Rate, Tokens};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
-    net::{SocketAddr, SocketAddrV4},
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -37,7 +37,7 @@ pub(in crate::engine) const DATAGRAM: usize = 4096;
 const MAX_REPLY_NODES: usize = 128;
 const CODEC: bencode::Limits = bencode::Limits {
     max_input_len: DATAGRAM,
-    max_output_len: DATAGRAM,
+    max_output_len: 1024,
     max_string_len: DATAGRAM,
     max_nodes: 512,
     max_depth: 8,
@@ -58,31 +58,32 @@ pub(in crate::engine) struct Stats {
     pub dropped: u64,
 }
 pub(in crate::engine) enum Command {
-    BootstrapFinished(oneshot::Sender<()>),
-    RefreshTargets(oneshot::Sender<Vec<NodeId>>),
+    BootstrapFinished(bool, oneshot::Sender<()>),
+    RefreshTargets(bool, oneshot::Sender<Vec<NodeId>>),
     Snapshot(oneshot::Sender<SavedState>),
-    Routers(Vec<SocketAddrV4>, oneshot::Sender<()>),
+    Routers(bool, Vec<SocketAddr>, oneshot::Sender<()>),
     Request {
-        address: SocketAddrV4,
+        address: SocketAddr,
         query: Query,
         reply: oneshot::Sender<io::Result<Reply>>,
     },
-    Probe(SocketAddrV4),
-    Closest(NodeId, oneshot::Sender<Vec<NodeV4>>),
+    Probe(SocketAddr),
+    Closest(bool, NodeId, oneshot::Sender<Vec<Contact>>),
     Peers(
         crate::protocol::identity::InfoHashV1,
-        oneshot::Sender<Vec<SocketAddrV4>>,
+        bool,
+        oneshot::Sender<Vec<SocketAddr>>,
     ),
-    Stats(oneshot::Sender<Stats>),
+    Stats(bool, oneshot::Sender<Stats>),
 }
 struct Pending {
-    address: SocketAddrV4,
+    address: SocketAddr,
     query: Query,
     deadline: Instant,
     reply: Option<oneshot::Sender<io::Result<Reply>>>,
 }
-/// Caller owns the task lifetime and must join `run` on shutdown. Dropping `run`
-/// closes all pending callers; no child tasks are spawned.
+/// Caller owns the task lifetime and must join `run_with_state` on shutdown.
+/// Dropping it closes all pending callers; no child tasks are spawned.
 pub(in crate::engine) struct Node {
     allow_local_network: bool,
     socket: Arc<UdpSocket>,
@@ -90,16 +91,16 @@ pub(in crate::engine) struct Node {
     id: NodeId,
     limits: Limits,
     commands: mpsc::Receiver<Command>,
-    routing: Routing,
+    routing: [Routing; 2],
     tokens: Tokens,
     peers: Peers,
     rate: Rate,
     pending: HashMap<[u8; 8], Pending>,
     answered: u64,
     dropped: u64,
-    routers: HashSet<SocketAddrV4>,
-    hints: Vec<SocketAddrV4>,
-    bootstrapped: bool,
+    routers: HashSet<SocketAddr>,
+    hints: Vec<SocketAddr>,
+    bootstrapped: [bool; 2],
     bootstrap: Option<std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send>>>,
 }
 
@@ -114,10 +115,8 @@ impl Node {
         saved: Option<SavedState>,
         routers: Vec<String>,
     ) -> io::Result<(Self, Handle)> {
-        let SocketAddr::V4(address) = socket.local_addr()? else {
-            unreachable!("IPv4 session")
-        };
-        let limits = crate::engine::dht::Limits::DEFAULT;
+        let address = socket.local_addr()?;
+        let limits = Limits::DEFAULT;
         let id = if let Some(saved) = &saved {
             saved.id
         } else {
@@ -130,21 +129,34 @@ impl Node {
             allow_local_network,
             commands: sender,
             address,
+            ipv6: address.is_ipv6(),
             id,
-            lookups: std::sync::Arc::new(Semaphore::new(limits.max_lookups)),
+            lookups: Arc::new(Semaphore::new(limits.max_lookups)),
             lookup_queries: limits.max_lookup_queries,
             max_peers: crate::engine::profile::MAX_QUEUED,
         };
         let numeric_routers = routers
             .iter()
-            .filter_map(|s| s.parse::<SocketAddrV4>().ok())
+            .filter_map(|s| s.parse::<SocketAddr>().ok())
             .collect();
-        let bootstrap = Some(Box::pin(bootstrap::run(
-            handle.clone(),
-            saved.unwrap_or(SavedState { id, nodes: vec![] }),
-            routers,
-            allow_local_network,
-        ))
+        let bootstrap_handle = handle.clone();
+        let bootstrap = Some(Box::pin(async move {
+            let saved = saved.unwrap_or(SavedState { id, nodes: vec![] });
+            let run = |ipv6| {
+                let mut handle = bootstrap_handle.clone();
+                handle.ipv6 = ipv6;
+                let saved = saved.clone();
+                let routers = routers.clone();
+                async move {
+                    if handle.supports(ipv6) {
+                        bootstrap::run(handle, saved, routers, allow_local_network).await?;
+                    }
+                    Ok::<(), io::Error>(())
+                }
+            };
+            tokio::try_join!(run(false), run(true))?;
+            Ok(())
+        })
             as std::pin::Pin<
                 Box<dyn std::future::Future<Output = io::Result<()>> + Send>,
             >);
@@ -156,7 +168,7 @@ impl Node {
                 id,
                 limits,
                 commands,
-                routing: Routing::new(id, limits.max_buckets),
+                routing: std::array::from_fn(|_| Routing::new(id, limits.max_buckets)),
                 tokens,
                 peers: Peers::new(limits),
                 rate: Rate::new(limits, now),
@@ -165,17 +177,17 @@ impl Node {
                 dropped: 0,
                 routers: numeric_routers,
                 hints: Vec::new(),
-                bootstrapped: false,
+                bootstrapped: [false; 2],
                 bootstrap,
             },
             handle,
         ))
     }
-    fn stats(&self) -> Stats {
+    fn stats(&self, ipv6: bool) -> Stats {
         let (torrents, peers) = self.peers.counts();
         Stats {
-            routing_nodes: self.routing.len(),
-            good_nodes: self.routing.good(Instant::now()),
+            routing_nodes: self.routing[usize::from(ipv6)].len(),
+            good_nodes: self.routing[usize::from(ipv6)].good(Instant::now()),
             pending: self.pending.len(),
             torrents,
             peers,
@@ -185,7 +197,9 @@ impl Node {
         }
     }
     fn snapshot(&self) -> SavedState {
-        let stats = self.stats();
+        let mut stats = self.stats(false);
+        stats.routing_nodes += self.routing[1].len();
+        stats.good_nodes += self.routing[1].good(Instant::now());
         tracing::info!(
             routing_nodes = stats.routing_nodes,
             good_nodes = stats.good_nodes,
@@ -199,7 +213,11 @@ impl Node {
         );
         SavedState {
             id: self.id,
-            nodes: self.routing.saved(Instant::now()),
+            nodes: self
+                .routing
+                .iter()
+                .flat_map(|r| r.saved(Instant::now()))
+                .collect(),
         }
     }
     pub(in crate::engine) async fn run_with_state(
@@ -225,50 +243,50 @@ impl Node {
                     if now >= maintenance {
                         self.peers.expire(now);
                         self.rate.expire(now);
-                        for node in self.routing.questionable(now).into_iter().take(16) {
-                            self.probe(node.address).await?;
-                        }
+                        let stale: Vec<_> = self.routing.iter().flat_map(|r| r.questionable(now).into_iter().take(8)).collect();
+                        for node in stale { self.probe(node.address).await?; }
                         maintenance = now + Duration::from_secs(60);
                     }
                 }
                 command = self.commands.recv(), if !self.commands.is_closed() || !self.commands.is_empty() => {
                     match command {
-                        Some(Command::RefreshTargets(reply)) => {
-                            let _ = reply.send(self.routing.refresh_targets(Instant::now())?);
+                        Some(Command::RefreshTargets(ipv6, reply)) => {
+                            let _ = reply.send(self.routing[usize::from(ipv6)].refresh_targets(Instant::now())?);
                         }
-                        Some(Command::BootstrapFinished(reply)) => {
-                            self.bootstrapped = true;
-                            for address in std::mem::take(&mut self.hints) { self.probe(address).await?; }
+                        Some(Command::BootstrapFinished(ipv6, reply)) => {
+                            self.bootstrapped[usize::from(ipv6)] = true;
+                            for address in std::mem::take(&mut self.hints) {
+                                if address.is_ipv6() == ipv6 { self.probe(address).await?; }
+                                else { self.hints.push(address); }
+                            }
                             let _ = reply.send(());
                         }
                         Some(Command::Snapshot(reply)) => { let _ = reply.send(self.snapshot()); }
-                        Some(Command::Routers(addresses, reply)) => {
-                            self.routers = addresses.into_iter().collect();
-                            self.routing.remove_addresses(&self.routers);
+                        Some(Command::Routers(ipv6, addresses, reply)) => {
+                            self.routers.retain(|a| a.is_ipv6() != ipv6);
+                            self.routers.extend(addresses);
+                            self.routing[usize::from(ipv6)].remove_addresses(&self.routers);
                             let _ = reply.send(());
                         }
-                        Some(Command::Stats(reply)) => { let _ = reply.send(self.stats()); }
-                        Some(Command::Closest(target, reply)) => {
+                        Some(Command::Stats(ipv6, reply)) => { let _ = reply.send(self.stats(ipv6)); }
+                        Some(Command::Closest(ipv6, target, reply)) => {
+                            let routing = &mut self.routing[usize::from(ipv6)];
                             let now = Instant::now();
-                            self.routing.touch(target, now);
-                            let _ = reply.send(self.routing.lookup_candidates(target, now));
+                            routing.touch(target, now);
+                            let _ = reply.send(routing.lookup_candidates(target, now));
                         }
-                        Some(Command::Peers(hash, reply)) => { let _ = reply.send(self.peers.get(hash.as_bytes(), Instant::now())); }
+                        Some(Command::Peers(hash, ipv6, reply)) => { let _ = reply.send(self.peers.get(hash.as_bytes(), ipv6, Instant::now())); }
                         Some(Command::Probe(address)) => {
-                            if self.bootstrapped { self.probe(address).await?; }
+                            if self.bootstrapped[usize::from(address.is_ipv6())] { self.probe(address).await?; }
                             else if self.hints.len() < self.limits.command_queue && !self.hints.contains(&address) { self.hints.push(address); }
-                        },
-                        Some(Command::Request { address, query, reply }) => {
-                            self.start(address, query, Some(reply)).await?;
                         }
+                        Some(Command::Request { address, query, reply }) => { self.start(address, query, Some(reply)).await?; }
                         None => {}
                     }
                 }
                 received = self.incoming.recv() => {
                     let (bytes, address) = received.expect("session UDP router");
-                    if let SocketAddr::V4(address) = address {
-                        self.receive(&bytes, address).await?;
-                    }
+                    self.receive(&bytes, address).await?;
                 }
             }
         }
@@ -281,7 +299,7 @@ impl Node {
             if now < p.deadline {
                 return true;
             }
-            self.routing.failed(p.address);
+            self.routing[usize::from(p.address.is_ipv6())].failed(p.address);
             if let Some(reply) = p.reply.take() {
                 let _ = reply.send(Err(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -291,12 +309,11 @@ impl Node {
             false
         });
     }
-    async fn probe(&mut self, address: SocketAddrV4) -> io::Result<()> {
+    async fn probe(&mut self, address: SocketAddr) -> io::Result<()> {
         if self.pending.values().any(|p| p.address == address)
-            // Reserve at least one transaction for foreground queries, even at tiny caps.
+            // Leave room for foreground queries.
             || self.pending.len() >= self.limits.max_pending.saturating_sub(1)
-            || self.pending.values().filter(|p| p.reply.is_none()).count()
-                >= (self.limits.max_pending / 4).clamp(1, 16)
+            || self.pending.values().filter(|p| p.reply.is_none()).count() >= (self.limits.max_pending / 4).clamp(1, 16)
         {
             return Ok(());
         }
@@ -304,7 +321,7 @@ impl Node {
     }
     async fn start(
         &mut self,
-        address: SocketAddrV4,
+        address: SocketAddr,
         query: Query,
         reply: Option<oneshot::Sender<io::Result<Reply>>>,
     ) -> io::Result<()> {
@@ -314,7 +331,7 @@ impl Node {
                 io::ErrorKind::InvalidInput,
                 "invalid DHT announce",
             ))
-        } else if !crate::engine::network::peer(address.into(), self.allow_local_network) {
+        } else if !crate::engine::network::peer(address, self.allow_local_network) {
             Some(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid DHT contact",
@@ -338,7 +355,17 @@ impl Node {
             transaction = entropy()?;
         }
         let packet = query
-            .encode(&transaction, self.id, CODEC, K, 100)
+            .encode(
+                &transaction,
+                self.id,
+                Some(Want {
+                    ipv4: address.is_ipv4(),
+                    ipv6: address.is_ipv6(),
+                }),
+                CODEC,
+                K,
+                100,
+            )
             .map_err(io::Error::other)?;
         match self.send(&packet, address).await {
             Ok(()) => {
@@ -360,59 +387,71 @@ impl Node {
         }
         Ok(())
     }
-    async fn send(&mut self, packet: &[u8], address: SocketAddrV4) -> io::Result<()> {
-        if !crate::engine::network::peer(address.into(), self.allow_local_network) {
+    async fn send(&mut self, packet: &[u8], address: SocketAddr) -> io::Result<()> {
+        if !crate::engine::network::peer(address, self.allow_local_network) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "DHT endpoint blocked by network policy",
             ));
         }
-        tokio::time::timeout(Duration::from_secs(1), self.socket.send_to(packet, address))
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "DHT send timed out"))??;
+        let destination = match address {
+            SocketAddr::V4(v4) if self.socket.local_addr()?.is_ipv6() => {
+                SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port())
+            }
+            address => address,
+        };
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            self.socket.send_to(packet, destination),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "DHT send timed out"))??;
         Ok(())
     }
-    async fn receive(&mut self, packet: &[u8], address: SocketAddrV4) -> io::Result<()> {
-        if !crate::engine::network::peer(address.into(), self.allow_local_network) {
+    async fn receive(&mut self, packet: &[u8], address: SocketAddr) -> io::Result<()> {
+        if !valid_address(address, false)
+            || !crate::engine::network::peer(address, self.allow_local_network)
+        {
             return Ok(());
         }
         let Ok(message) = Message::parse(packet, CODEC, MAX_REPLY_NODES, 100) else {
             self.dropped = self.dropped.saturating_add(1);
             return Ok(());
         };
+        let family = usize::from(address.is_ipv6());
         match message.kind() {
             Kind::Query { id, query } => {
                 let now = Instant::now();
-                if message.transaction_id().len() > 32 || !self.rate.query(*address.ip(), now) {
+                if message.transaction_id().len() > 32 || !self.rate.query(address.ip(), now) {
                     self.dropped = self.dropped.saturating_add(1);
                     return Ok(());
                 }
                 let packet = self.answer(message.transaction_id(), query, address, now)?;
                 if self.rate.reply(packet.len(), now) {
-                    // Remote socket errors must not terminate the process-wide node.
                     if self.send(&packet, address).await.is_ok() {
                         self.answered = self.answered.saturating_add(1);
                     }
                 } else {
                     self.dropped = self.dropped.saturating_add(1);
                 }
-                let node = NodeV4 { id, address };
+                let node = Contact { id, address };
                 let read_only = message
                     .document()
                     .get(b"ro")
                     .is_some_and(|ro| matches!(ro.value(), Value::Integer(value) if *value != 0));
                 if !read_only && !self.routers.contains(&address) {
-                    self.routing.heard(node, false, now);
-                }
-                if !read_only
-                    && !self.routers.contains(&address)
-                    && !self.routing.closest(id, now).contains(&node)
-                {
-                    self.probe(address).await?;
+                    self.routing[family].heard(node, false, now);
+                    if !self.routing[family].closest(id, now).contains(&node) {
+                        self.probe(address).await?;
+                    }
                 }
             }
             Kind::Response {
-                id, nodes, token, ..
+                id,
+                nodes,
+                nodes6,
+                token,
+                ..
             } => {
                 let Ok(transaction) = <[u8; 8]>::try_from(message.transaction_id()) else {
                     return Ok(());
@@ -423,11 +462,17 @@ impl Node {
                 if pending.address != address || Instant::now() >= pending.deadline {
                     return Ok(());
                 }
+                let has_nodes = if address.is_ipv6() {
+                    nodes6.is_some()
+                } else {
+                    nodes.is_some()
+                };
                 if nodes.is_some_and(|n| !n.remainder().is_empty())
-                    || matches!(pending.query, Query::FindNode(_)) && nodes.is_none()
+                    || nodes6.is_some_and(|n| !n.remainder().is_empty())
+                    || matches!(pending.query, Query::FindNode(_)) && !has_nodes
                     || token.is_some_and(|t| t.len() > 64)
                     || matches!(pending.query, Query::GetPeers(_))
-                        && nodes.is_none()
+                        && !has_nodes
                         && message.peers().is_none()
                 {
                     return Ok(());
@@ -437,36 +482,37 @@ impl Node {
                     .remove(&transaction)
                     .expect("matched transaction");
                 if !self.routers.contains(&address) {
-                    self.routing
-                        .heard(NodeV4 { id, address }, true, Instant::now());
+                    self.routing[family].heard(Contact { id, address }, true, Instant::now());
                 }
-                let nodes = nodes
-                    .map(|n| {
-                        n.iter()
-                            .filter(|n| {
-                                crate::engine::network::peer(
-                                    n.address.into(),
-                                    self.allow_local_network,
-                                )
-                            })
-                            .collect()
+                let nodes: Vec<_> = nodes
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|n| {
+                        n.iter().map(|n| Contact {
+                            id: n.id,
+                            address: n.address.into(),
+                        })
                     })
-                    .unwrap_or_default();
+                    .chain(nodes6.as_ref().into_iter().flat_map(|n| {
+                        n.iter().map(|n| Contact {
+                            id: n.id,
+                            address: n.address.into(),
+                        })
+                    }))
+                    .filter(|n| {
+                        n.address.is_ipv6() == address.is_ipv6()
+                            && valid_address(n.address, false)
+                            && crate::engine::network::peer(n.address, self.allow_local_network)
+                    })
+                    .collect();
                 if let Some(reply) = pending.reply.take() {
                     let peers = message
                         .peers()
                         .into_iter()
                         .flatten()
-                        .filter_map(|p| match p {
-                            SocketAddr::V4(p)
-                                if crate::engine::network::peer(
-                                    p.into(),
-                                    self.allow_local_network,
-                                ) =>
-                            {
-                                Some(p)
-                            }
-                            _ => None,
+                        .filter(|p| {
+                            valid_address(*p, false)
+                                && crate::engine::network::peer(*p, self.allow_local_network)
                         })
                         .collect();
                     let _ = reply.send(Ok(Reply {
@@ -501,50 +547,76 @@ impl Node {
         &mut self,
         transaction: &[u8],
         query: WireQuery<'_>,
-        source: SocketAddrV4,
+        source: SocketAddr,
         now: Instant,
     ) -> io::Result<Vec<u8>> {
         self.tokens.rotate(now)?;
         let mut fields = BTreeMap::from([(b"id".as_slice(), bytes(&self.id.0))]);
         let raw_nodes;
+        let raw_nodes6;
+        let mut node_bytes = 0;
         let token;
         let raw_peers;
-        let error = match query {
-            WireQuery::Ping => None,
-            WireQuery::FindNode { target, want } => {
-                raw_nodes = if want.is_none_or(|w| w.ipv4) {
-                    self.routing
-                        .closest(target, now)
-                        .iter()
-                        .flat_map(NodeV4::encode)
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![]
-                };
+        let target = match query {
+            WireQuery::FindNode { target, want } => Some((target, want)),
+            WireQuery::GetPeers { info_hash, want } => Some((NodeId(*info_hash.as_bytes()), want)),
+            _ => None,
+        };
+        if let Some((target, want)) = target {
+            let want = want.unwrap_or(Want {
+                ipv4: source.is_ipv4(),
+                ipv6: source.is_ipv6(),
+            });
+            if want.ipv4 {
+                raw_nodes = self.routing[0]
+                    .closest(target, now)
+                    .iter()
+                    .flat_map(|n| {
+                        let SocketAddr::V4(address) = n.address else {
+                            unreachable!("IPv4 routing table")
+                        };
+                        NodeV4 { id: n.id, address }.encode()
+                    })
+                    .collect::<Vec<_>>();
+                node_bytes += raw_nodes.len();
                 fields.insert(b"nodes", bytes(&raw_nodes));
-                None
             }
-            WireQuery::GetPeers { info_hash, want } => {
-                token = self.tokens.issue(*source.ip(), info_hash.as_bytes());
+            if want.ipv6 {
+                raw_nodes6 = self.routing[1]
+                    .closest(target, now)
+                    .iter()
+                    .flat_map(|n| {
+                        let SocketAddr::V6(address) = n.address else {
+                            unreachable!("IPv6 routing table")
+                        };
+                        NodeV6 { id: n.id, address }
+                            .encode()
+                            .expect("unscoped IPv6 contact")
+                    })
+                    .collect::<Vec<_>>();
+                node_bytes += raw_nodes6.len();
+                fields.insert(b"nodes6", bytes(&raw_nodes6));
+            }
+        }
+        let error = match query {
+            WireQuery::Ping | WireQuery::FindNode { .. } => None,
+            WireQuery::GetPeers { info_hash, .. } => {
+                token = self.tokens.issue(source.ip(), info_hash.as_bytes());
                 fields.insert(b"token", bytes(&token));
                 raw_peers = self
                     .peers
-                    .get(info_hash.as_bytes(), now)
+                    .get(info_hash.as_bytes(), source.is_ipv6(), now)
                     .into_iter()
-                    .map(compact::encode_v4)
+                    // Reserve the envelope, node keys, token and 32-byte transaction ID.
+                    .take((1024 - 128 - node_bytes) / if source.is_ipv6() { 21 } else { 8 })
+                    .map(|p| match p {
+                        SocketAddr::V4(p) => compact::encode_v4(p).to_vec(),
+                        SocketAddr::V6(p) => {
+                            compact::encode_v6(p).expect("unscoped IPv6 peer").to_vec()
+                        }
+                    })
                     .collect::<Vec<_>>();
-                if raw_peers.is_empty() {
-                    raw_nodes = if want.is_none_or(|w| w.ipv4) {
-                        self.routing
-                            .closest(NodeId(*info_hash.as_bytes()), now)
-                            .iter()
-                            .flat_map(NodeV4::encode)
-                            .collect::<Vec<_>>()
-                    } else {
-                        vec![]
-                    };
-                    fields.insert(b"nodes", bytes(&raw_nodes));
-                } else {
+                if !raw_peers.is_empty() {
                     fields.insert(
                         b"values",
                         BNode::new(Value::List(raw_peers.iter().map(|p| bytes(p)).collect())),
@@ -557,18 +629,12 @@ impl Node {
                 port,
                 token,
             } => {
-                if !self.tokens.valid(token, *source.ip(), info_hash.as_bytes()) {
+                let peer = SocketAddr::new(source.ip(), port.unwrap_or(source.port()));
+                if !self.tokens.valid(token, source.ip(), info_hash.as_bytes()) {
                     Some((203, b"invalid token".as_slice()))
-                } else if !crate::engine::network::peer(
-                    SocketAddrV4::new(*source.ip(), port.unwrap_or(source.port())).into(),
-                    self.allow_local_network,
-                ) {
+                } else if !crate::engine::network::peer(peer, self.allow_local_network) {
                     Some((203, b"peer endpoint blocked by network policy".as_slice()))
-                } else if !self.peers.put(
-                    *info_hash.as_bytes(),
-                    SocketAddrV4::new(*source.ip(), port.unwrap_or(source.port())),
-                    now,
-                ) {
+                } else if !self.peers.put(*info_hash.as_bytes(), peer, now) {
                     Some((202, b"peer store full or invalid port".as_slice()))
                 } else {
                     None
@@ -581,16 +647,27 @@ impl Node {
         } else {
             Body::Response(BNode::new(Value::Dictionary(fields)))
         };
-        Message::new(transaction, body, None, K, 100)
+        Message::new(transaction, body, None, K * 2, 100)
             .and_then(|m| m.encode(CODEC))
             .map_err(io::Error::other)
     }
 }
-pub(in crate::engine) fn valid_address(address: SocketAddrV4, bind: bool) -> bool {
-    let ip = address.ip();
-    !ip.is_multicast()
-        && !ip.is_broadcast()
-        && (bind || !ip.is_unspecified() && address.port() != 0)
+pub(in crate::engine) fn valid_address(address: SocketAddr, bind: bool) -> bool {
+    match address {
+        SocketAddr::V4(a) => {
+            !a.ip().is_multicast()
+                && !a.ip().is_broadcast()
+                && (bind || !a.ip().is_unspecified() && a.port() != 0)
+        }
+        SocketAddr::V6(a) => {
+            !a.ip().is_multicast()
+                && a.ip().to_ipv4_mapped().is_none()
+                && !a.ip().is_unicast_link_local()
+                && a.scope_id() == 0
+                && a.flowinfo() == 0
+                && (bind || !a.ip().is_unspecified() && a.port() != 0)
+        }
+    }
 }
 fn bytes(value: &[u8]) -> BNode<'_> {
     BNode::new(Value::Bytes(value))

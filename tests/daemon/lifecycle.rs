@@ -63,7 +63,7 @@ async fn resuming_a_queued_torrent_does_not_preempt_a_running_download() {
 }
 
 #[tokio::test]
-async fn ipv6_restart_keeps_torrents_running_when_lazy_dht_fails() {
+async fn ipv6_restart_keeps_dht_enabled_for_saved_torrents() {
     let root = Temp::new();
     std::fs::create_dir_all(root.0.join("downloads")).unwrap();
     std::fs::write(root.0.join("downloads/x"), b"abc").unwrap();
@@ -74,8 +74,7 @@ async fn ipv6_restart_keeps_torrents_running_when_lazy_dht_fails() {
     let config = root.0.join("config.toml");
     let contents = std::fs::read_to_string(&config)
         .unwrap()
-        .replace("127.0.0.1:0", "[::1]:0")
-        .replace("dht=true", "dht=false");
+        .replace("127.0.0.1:0", "[::1]:0");
     std::fs::write(&config, contents).unwrap();
     let log = root.0.join("stderr");
     daemon.child = tokio::process::Command::new(BIN)
@@ -114,7 +113,7 @@ async fn ipv6_restart_keeps_torrents_running_when_lazy_dht_fails() {
             .unwrap()
             .matches("DHT disabled:")
             .count(),
-        1
+        0
     );
 }
 
@@ -131,7 +130,7 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_old_catalogs() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     let resume: Vec<u8> = db
         .query_row("SELECT resume FROM torrents", [], |r| r.get(0))

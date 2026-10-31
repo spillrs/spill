@@ -1,6 +1,10 @@
 use super::*;
 
 impl Handle {
+    pub(super) fn supports(&self, ipv6: bool) -> bool {
+        self.address.is_ipv6() == ipv6
+            || self.address.is_ipv6() && self.address.ip().is_unspecified()
+    }
     pub(in crate::engine) async fn snapshot(&self) -> io::Result<SavedState> {
         let (reply, result) = oneshot::channel();
         self.commands
@@ -12,22 +16,25 @@ impl Handle {
     pub(super) async fn bootstrap_finished(&self) -> io::Result<()> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(Command::BootstrapFinished(reply))
+            .send(Command::BootstrapFinished(self.ipv6, reply))
             .await
             .map_err(|_| stopped())?;
         result.await.map_err(|_| stopped())
     }
-    pub(super) async fn set_routers(&self, addresses: Vec<SocketAddrV4>) -> io::Result<()> {
+    pub(super) async fn set_routers(&self, addresses: Vec<SocketAddr>) -> io::Result<()> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(Command::Routers(addresses, reply))
+            .send(Command::Routers(self.ipv6, addresses, reply))
             .await
             .map_err(|_| stopped())?;
         result.await.map_err(|_| stopped())
     }
     /// Bounded best-effort verification for peer-wire PORT hints, after initial bootstrap.
-    pub(in crate::engine) fn try_ping(&self, address: SocketAddrV4) -> io::Result<()> {
-        if !crate::engine::network::peer(address.into(), self.allow_local_network) {
+    pub(in crate::engine) fn try_ping(&self, address: SocketAddr) -> io::Result<()> {
+        if !self.supports(address.is_ipv6())
+            || !valid_address(address, false)
+            || !crate::engine::network::peer(address, self.allow_local_network)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid DHT contact",
@@ -37,10 +44,10 @@ impl Handle {
             .try_send(Command::Probe(address))
             .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DHT command queue unavailable"))
     }
-    pub(super) async fn closest(&self, target: NodeId) -> io::Result<Vec<NodeV4>> {
+    pub(super) async fn closest(&self, target: NodeId) -> io::Result<Vec<Contact>> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(Command::Closest(target, reply))
+            .send(Command::Closest(self.ipv6, target, reply))
             .await
             .map_err(|_| stopped())?;
         result.await.map_err(|_| stopped())
@@ -48,15 +55,15 @@ impl Handle {
     pub(super) async fn local_peers(
         &self,
         hash: crate::protocol::identity::InfoHashV1,
-    ) -> io::Result<Vec<SocketAddrV4>> {
+    ) -> io::Result<Vec<SocketAddr>> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(Command::Peers(hash, reply))
+            .send(Command::Peers(hash, self.ipv6, reply))
             .await
             .map_err(|_| stopped())?;
         result.await.map_err(|_| stopped())
     }
-    pub(in crate::engine) fn local_addr(&self) -> SocketAddrV4 {
+    pub(in crate::engine) fn local_addr(&self) -> SocketAddr {
         self.address
     }
     pub(in crate::engine) fn id(&self) -> NodeId {
@@ -65,7 +72,7 @@ impl Handle {
     pub(super) async fn refresh_targets(&self) -> io::Result<Vec<NodeId>> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(Command::RefreshTargets(reply))
+            .send(Command::RefreshTargets(self.ipv6, reply))
             .await
             .map_err(|_| stopped())?;
         result.await.map_err(|_| stopped())
@@ -73,7 +80,7 @@ impl Handle {
     // Local transaction pressure is not evidence that a remote node failed.
     pub(super) async fn request_wait(
         &self,
-        address: SocketAddrV4,
+        address: SocketAddr,
         query: Query,
     ) -> io::Result<Reply> {
         loop {
@@ -87,7 +94,7 @@ impl Handle {
     }
     pub(in crate::engine) async fn request(
         &self,
-        address: SocketAddrV4,
+        address: SocketAddr,
         query: Query,
     ) -> io::Result<Reply> {
         if matches!(&query, Query::AnnouncePeer { port, token, .. } if *port == 0 || token.len() > 64)
@@ -111,7 +118,7 @@ impl Handle {
     pub(in crate::engine) async fn stats(&self) -> io::Result<Stats> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(Command::Stats(reply))
+            .send(Command::Stats(self.ipv6, reply))
             .await
             .map_err(|_| stopped())?;
         result.await.map_err(|_| stopped())

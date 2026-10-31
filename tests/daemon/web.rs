@@ -111,7 +111,6 @@ async fn web_add_applies_defaults_and_paused_policy_before_starting_on_ipv6() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(defaults["dht_available"], false);
     assert_eq!(defaults["settings"]["dht"], false);
     assert_eq!(defaults["settings"]["pex"], true);
     assert_eq!(defaults["settings"]["upload_limit"], 321);
@@ -124,7 +123,6 @@ async fn web_add_applies_defaults_and_paused_policy_before_starting_on_ipv6() {
         .unwrap();
     let bytes = metainfo(Some(&source.url));
     for settings in [
-        json!({"dht":true}),
         json!({"unknown":false}),
         json!({"seed_ratio":-1}),
         json!({"file_priorities":["normal","skip"]}),
@@ -152,7 +150,7 @@ async fn web_add_applies_defaults_and_paused_policy_before_starting_on_ipv6() {
         );
         assert!(!root.0.join("downloads").exists());
     }
-    let settings = json!({"trackers":false,"dht":false,"pex":false,"web_seeds":false}).to_string();
+    let settings = json!({"trackers":false,"dht":true,"pex":false,"web_seeds":false}).to_string();
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("paused", "true")
         .append_pair("settings", &settings)
@@ -171,6 +169,7 @@ async fn web_add_applies_defaults_and_paused_policy_before_starting_on_ipv6() {
     let id = added["data"]["id"].as_str().unwrap();
     let row = daemon.state(id, "paused").await;
     assert_eq!(row["settings"]["web_seeds"], false);
+    assert_eq!(row["settings"]["dht"], true);
     assert_eq!(row["settings"]["pex"], false);
     assert_eq!(row["settings"]["upload_limit"], 321);
     assert!(!root.0.join("downloads/x").exists());

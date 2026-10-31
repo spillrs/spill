@@ -35,7 +35,7 @@ Downloads default to `~/Downloads` on both platforms. If you override
 | `write_queue_bytes` | `16777216` (16 MiB) | Received data waiting to be written, per torrent, 16 KiB–1 GiB. |
 | `active_downloads` | `4` | How many torrents may download at once. |
 | `active_seeds` | `16` | How many complete torrents may seed at once. |
-| `dht_bootstrap` | four public routers | `host:port` routers used to join the DHT, at most 16. `[]` disables bootstrapping from routers (saved DHT nodes are still used); it does not disable the DHT. |
+| `dht_bootstrap` | four public routers | `host:port` or `[IPv6]:port` routers used to join the DHT, at most 16. Names resolve separately for each enabled address family. `[]` disables bootstrapping from routers (saved DHT nodes are still used); it does not disable the DHT. |
 
 `active_downloads` and `active_seeds` are separate slot pools. Each is at most
 64, their sum must be between 1 and 64. Torrents beyond the limits wait as
@@ -75,7 +75,7 @@ interface.
 | `seed_time` | `0` | Pause after this many seconds of active seeding. Paused time and downtime do not count. `0` disables the rule. |
 | `file_priorities` | `[]` | `[]` downloads every file. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in the order `spill files` shows. Only meaningful per torrent. |
 | `trackers` | `true` | Announce to the torrent's trackers. |
-| `dht` | `true` | Use the DHT. Requires an IPv4 `listen` address. Always off for private torrents. |
+| `dht` | `true` | Use the DHT over the address families supported by `listen`. Always off for private torrents. |
 | `pex` | `true` | Exchange peers with connected peers. Always off for private torrents. |
 | `web_seeds` | `true` | Download from the torrent's HTTP web seeds. |
 
@@ -109,7 +109,7 @@ allow_local_network = true
 peers = 100
 
 [defaults]
-dht = false              # the DHT needs an IPv4 listen address
+dht = true               # separate IPv4 and IPv6 routing tables
 ```
 
 The annotated files `deploy/spill.toml` and `deploy/spill-user.toml` are

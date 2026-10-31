@@ -186,7 +186,6 @@ async fn serve(
                 match result {
                     Ok(crate::engine::dht::DiscoveryEvent::Peers(peers)) => {
                         if let Some(queue) = &mut network.contacts {
-                            let peers: Vec<_> = peers.into_iter().map(std::net::SocketAddr::V4).collect();
                             let _ = queue.add_dht(options.metainfo.info_hash(), &peers);
                         }
                     }
@@ -195,8 +194,7 @@ async fn serve(
                         // Include peers produced in the lookup's final poll. The
                         // contact queue deduplicates earlier streamed results.
                         if let Some(queue) = &mut network.contacts {
-                            let peers: Vec<_> = found.peers.into_iter().map(std::net::SocketAddr::V4).collect();
-                            let _ = queue.add_dht(options.metainfo.info_hash(), &peers);
+                            let _ = queue.add_dht(options.metainfo.info_hash(), &found.peers);
                         }
                     }
                     Err(error) => warn!(kind = ?error.kind(), "dht_lookup_failed"),

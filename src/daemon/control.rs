@@ -250,7 +250,7 @@ impl Control {
                     }
                     _ => unreachable!("add source validated before dispatch"),
                 };
-                validate_settings(&row, &row.settings, supervisor.config.listen)?;
+                validate_settings(&row, &row.settings)?;
                 if supervisor.db.row(&id)?.is_some() {
                     return Err(Error::Invalid("torrent already exists".into()));
                 }
@@ -275,7 +275,7 @@ impl Control {
             Request::Set { id, values } => {
                 let row = find(&supervisor.db, &id)?;
                 let settings = patch_settings(&row.settings, values)?;
-                validate_settings(&row, &settings, supervisor.config.listen)?;
+                validate_settings(&row, &settings)?;
                 supervisor.stop(&row.id).await?;
                 supervisor.db.settings(&row.id, &settings)?;
                 supervisor.reconcile().await?;
@@ -334,19 +334,12 @@ fn patch_settings(base: &Settings, values: Map<String, Value>) -> Result<Setting
     settings.as_object_mut().unwrap().extend(values);
     Ok(serde_json::from_value(settings)?)
 }
-fn validate_settings(
-    row: &Row,
-    settings: &Settings,
-    listen: std::net::SocketAddr,
-) -> Result<(), Error> {
+fn validate_settings(row: &Row, settings: &Settings) -> Result<(), Error> {
     settings.validate()?;
     if row.parsed.as_ref().is_some_and(|meta| meta.is_private()) && (settings.dht || settings.pex) {
         return Err(Error::Invalid(
             "DHT and PEX are disabled for private torrents".into(),
         ));
-    }
-    if settings.dht && !listen.is_ipv4() {
-        return Err(Error::Invalid("DHT requires an IPv4 listen address".into()));
     }
     if !settings.file_priorities.is_empty() {
         let _ = row

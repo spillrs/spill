@@ -112,8 +112,8 @@ impl Catalog {
                     retry_count INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0,
                     CHECK(metainfo IS NOT NULL OR magnet IS NOT NULL));
                 CREATE TABLE dht (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node_id BLOB NOT NULL, nodes BLOB NOT NULL);
-                PRAGMA user_version=5; COMMIT;")?;
-        } else if version != 5 {
+                PRAGMA user_version=6; COMMIT;")?;
+        } else if version != 6 {
             return Err(Error::Version(version));
         }
         c.prepare("SELECT settings, resume, uploaded, seed_seconds, complete, created_files, retry_at FROM torrents LIMIT 0")?;
@@ -408,35 +408,34 @@ impl Catalog {
             })
             .optional()?;
         Ok(saved.and_then(|(id, nodes)| {
-            if nodes.len() % 26 != 0
-                || nodes.len() > spill::engine::session::dht::MAX_SAVED_NODES * 26
+            let nodes: Vec<([u8; 20], std::net::SocketAddr)> =
+                serde_json::from_slice(&nodes).ok()?;
+            let cap = spill::engine::session::dht::MAX_SAVED_NODES;
+            if nodes.iter().filter(|(_, a)| a.is_ipv4()).count() > cap
+                || nodes.iter().filter(|(_, a)| a.is_ipv6()).count() > cap
             {
                 return None;
             }
             Some(spill::engine::session::dht::SavedState {
                 id: spill::protocol::dht::NodeId(id.try_into().ok()?),
                 nodes: nodes
-                    .as_chunks::<26>()
-                    .0
-                    .iter()
-                    .map(|n| spill::protocol::dht::krpc::NodeV4 {
-                        id: spill::protocol::dht::NodeId(n[..20].try_into().unwrap()),
-                        address: std::net::SocketAddrV4::new(
-                            std::net::Ipv4Addr::new(n[20], n[21], n[22], n[23]),
-                            u16::from_be_bytes([n[24], n[25]]),
-                        ),
+                    .into_iter()
+                    .map(|(id, address)| spill::protocol::dht::Contact {
+                        id: spill::protocol::dht::NodeId(id),
+                        address,
                     })
                     .collect(),
             })
         }))
     }
     pub fn save_dht(&self, state: spill::engine::session::dht::SavedState) -> Result<()> {
-        let nodes: Vec<u8> = state
-            .nodes
-            .iter()
-            .take(spill::engine::session::dht::MAX_SAVED_NODES)
-            .flat_map(spill::protocol::dht::krpc::NodeV4::encode)
-            .collect();
+        let nodes = serde_json::to_vec(
+            &state
+                .nodes
+                .iter()
+                .map(|n| (n.id.0, n.address))
+                .collect::<Vec<_>>(),
+        )?;
         self.0.lock().unwrap().connection.execute("INSERT INTO dht VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET node_id=excluded.node_id,nodes=excluded.nodes WHERE node_id IS NOT excluded.node_id OR nodes IS NOT excluded.nodes", params![state.id.0.as_slice(),nodes])?;
         Ok(())
     }

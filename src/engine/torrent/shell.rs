@@ -411,9 +411,7 @@ impl Shell {
     }
     pub(in crate::engine) fn drain_dht(&mut self, node: &crate::engine::session::dht::Handle) {
         for addr in self.dht_hints.drain(..) {
-            if let std::net::SocketAddr::V4(addr) = addr {
-                let _ = node.try_ping(addr);
-            }
+            let _ = node.try_ping(addr);
         }
     }
     pub(in crate::engine) fn settings(

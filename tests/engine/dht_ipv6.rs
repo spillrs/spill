@@ -86,7 +86,7 @@ async fn rpc(
     let mut arguments: BTreeMap<_, _> = fields.into_iter().collect();
     arguments.insert(b"id", bytes(&[11; 20]));
     let wire = Message::new(
-        b"test",
+        &[b't'; 32],
         Body::ReadOnlyQuery {
             method,
             arguments: Node::new(Value::Dictionary(arguments)),
@@ -136,10 +136,11 @@ async fn contacts(session: &Session, count: usize) -> SavedState {
 async fn remote(
     listen: &str,
     peer: Option<SocketAddr>,
+    id: NodeId,
 ) -> (Contact, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let socket = UdpSocket::bind(listen).await.unwrap();
     let contact = Contact {
-        id: NodeId([9; 20]),
+        id,
         address: socket.local_addr().unwrap(),
     };
     let announced = Arc::new(AtomicUsize::new(0));
@@ -157,8 +158,11 @@ async fn remote(
             match query {
                 Query::FindNode { want, .. } | Query::GetPeers { want, .. } => {
                     let want = want.expect("explicit outbound family");
-                    assert_eq!(want.ipv6, contact.address.is_ipv6());
-                    assert_eq!(want.ipv4, contact.address.is_ipv4());
+                    assert!(if contact.address.is_ipv6() {
+                        want.ipv6
+                    } else {
+                        want.ipv4
+                    });
                     fields.insert(
                         if contact.address.is_ipv6() {
                             b"nodes6"
@@ -207,8 +211,24 @@ async fn remote(
 #[tokio::test]
 async fn ipv6_announcements_tokens_family_defaults_and_reply_budget() {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let (session, _root, _handle) = start_node("[::1]:0", None, Vec::new()).await;
-        let destination = session.local_addr();
+        let mut seeds = Vec::new();
+        let mut tasks = Vec::new();
+        for listen in ["127.0.0.1:0", "[::1]:0"] {
+            for id in 1..=8 {
+                let (contact, _, task) = remote(listen, None, NodeId([id; 20])).await;
+                seeds.push(contact);
+                tasks.push(task);
+            }
+        }
+        let saved = SavedState {
+            id: NodeId([254; 20]),
+            nodes: seeds,
+        };
+        let (session, _root, _handle) = start_node("[::]:0", Some(saved), Vec::new()).await;
+        contacts(&session, 16).await;
+        let destination = format!("[::1]:{}", session.local_addr().port())
+            .parse()
+            .unwrap();
         let client = UdpSocket::bind("[::1]:0").await.unwrap();
         let wire = rpc(
             &client,
@@ -260,19 +280,26 @@ async fn ipv6_announcements_tokens_family_defaults_and_reply_budget() {
             b"get_peers",
             vec![
                 (b"info_hash", bytes(&hash)),
-                (b"want", Node::new(Value::List(vec![bytes(b"n4")]))),
+                (
+                    b"want",
+                    Node::new(Value::List(vec![bytes(b"n4"), bytes(b"n6")])),
+                ),
             ],
         )
         .await;
         let message = response(&wire);
         let peers: Vec<_> = message.peers().unwrap().collect();
-        assert_eq!(peers.len(), 40);
+        assert_eq!(peers.len(), 18);
+        assert!(
+            wire.len() + 21 > 1024,
+            "another compact IPv6 peer must not fit"
+        );
         assert!(peers.iter().all(SocketAddr::is_ipv6));
         assert!(matches!(
             message.kind(),
             Kind::Response {
                 nodes: Some(_),
-                nodes6: None,
+                nodes6: Some(_),
                 ..
             }
         ));
@@ -291,7 +318,12 @@ async fn ipv6_announcements_tokens_family_defaults_and_reply_budget() {
             response(&wire).kind(),
             Kind::Error { code: 203, .. }
         ));
+        let wire = rpc(&client, destination, b"ping", Vec::new()).await;
+        assert!(matches!(response(&wire).kind(), Kind::Response { .. }));
         session.shutdown().await.unwrap();
+        for task in tasks {
+            task.abort();
+        }
     })
     .await
     .expect("IPv6 DHT serving");
@@ -300,8 +332,8 @@ async fn ipv6_announcements_tokens_family_defaults_and_reply_budget() {
 #[tokio::test]
 async fn dual_stack_routing_is_separate_and_saved_contacts_are_reverified() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let (v4, _, task4) = remote("127.0.0.1:0", None).await;
-        let (v6, _, task6) = remote("[::1]:0", None).await;
+        let (v4, _, task4) = remote("127.0.0.1:0", None, NodeId([9; 20])).await;
+        let (v6, _, task6) = remote("[::1]:0", None, NodeId([9; 20])).await;
         assert_eq!(v4.id, v6.id);
         let saved = SavedState {
             id: NodeId([7; 20]),
@@ -467,7 +499,8 @@ async fn ipv6_router_bootstrap_discovers_download_and_magnet_peers() {
         options.settings = settings(false);
         seed.admit(options).unwrap().wait_complete().await.unwrap();
         // Routers are seeds only; the referred contact enters the routing table.
-        let (referral, announced, referral_task) = remote("[::1]:0", Some(seed.local_addr())).await;
+        let (referral, announced, referral_task) =
+            remote("[::1]:0", Some(seed.local_addr()), NodeId([9; 20])).await;
         let router = UdpSocket::bind("[::1]:0").await.unwrap();
         let router_address = router.local_addr().unwrap();
         let router_task = tokio::spawn(async move {
@@ -546,4 +579,226 @@ async fn ipv6_router_bootstrap_discovers_download_and_magnet_peers() {
     })
     .await
     .expect("IPv6 DHT-only transfers");
+}
+
+#[tokio::test]
+async fn cross_family_referrals_cannot_reserve_ids_ahead_of_verified_contacts() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for source_ipv6 in [false, true] {
+            let bridge = UdpSocket::bind(if source_ipv6 {
+                "[::1]:0"
+            } else {
+                "127.0.0.1:0"
+            })
+            .await
+            .unwrap();
+            let target = UdpSocket::bind(if source_ipv6 {
+                "127.0.0.1:0"
+            } else {
+                "[::1]:0"
+            })
+            .await
+            .unwrap();
+            let contact = Contact {
+                id: NodeId([9; 20]),
+                address: target.local_addr().unwrap(),
+            };
+            let seed = Contact {
+                id: NodeId([8; 20]),
+                address: bridge.local_addr().unwrap(),
+            };
+            let task = tokio::spawn(async move {
+                let mut buffer = [0; 4096];
+                loop {
+                    let (length, source) = bridge.recv_from(&mut buffer).await.unwrap();
+                    let request = response(&buffer[..length]);
+                    let Kind::Query { query, .. } = request.kind() else {
+                        panic!("bridge request")
+                    };
+                    match query {
+                        Query::FindNode { want, .. } => {
+                            let want = want.unwrap();
+                            assert!(want.ipv4 && want.ipv6);
+                        }
+                        Query::GetPeers { want, .. } => {
+                            let want = want.unwrap();
+                            assert_eq!(want.ipv6, source_ipv6);
+                            assert_eq!(want.ipv4, !source_ipv6);
+                        }
+                        _ => {}
+                    }
+                    let (nodes, nodes6) = match contact.address {
+                        SocketAddr::V4(address) => (
+                            spill::protocol::dht::krpc::NodeV4 {
+                                id: contact.id,
+                                address,
+                            }
+                            .encode()
+                            .to_vec(),
+                            Vec::new(),
+                        ),
+                        SocketAddr::V6(address) => (
+                            Vec::new(),
+                            spill::protocol::dht::krpc::NodeV6 {
+                                id: contact.id,
+                                address,
+                            }
+                            .encode()
+                            .unwrap()
+                            .to_vec(),
+                        ),
+                    };
+                    let wire = Message::new(
+                        request.transaction_id(),
+                        Body::Response(dict([
+                            (b"id".as_slice(), bytes(&seed.id.0)),
+                            (b"nodes", bytes(&nodes)),
+                            (b"nodes6", bytes(&nodes6)),
+                        ])),
+                        None,
+                        16,
+                        100,
+                    )
+                    .unwrap()
+                    .encode(Default::default())
+                    .unwrap();
+                    bridge.send_to(&wire, source).await.unwrap();
+                }
+            });
+            let saved = SavedState {
+                id: NodeId([7; 20]),
+                nodes: vec![seed],
+            };
+            let (session, _root, _warm) = start_node("[::]:0", Some(saved), Vec::new()).await;
+            let saved = contacts(&session, 1).await;
+            assert_eq!(saved.nodes, vec![seed]);
+            let mut buffer = [0; 4096];
+            let (length, _) = target.recv_from(&mut buffer).await.unwrap();
+            let request = response(&buffer[..length]);
+            assert!(matches!(
+                request.kind(),
+                Kind::Query {
+                    query: Query::Ping,
+                    ..
+                }
+            ));
+            assert!(
+                !session
+                    .dht_state()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .nodes
+                    .contains(&contact)
+            );
+            // The referral falsely pairs a real ID with this silent endpoint.
+            // A genuine node at a different endpoint must still be admitted.
+            let real = UdpSocket::bind(if source_ipv6 {
+                "127.0.0.1:0"
+            } else {
+                "[::1]:0"
+            })
+            .await
+            .unwrap();
+            let genuine = Contact {
+                id: contact.id,
+                address: real.local_addr().unwrap(),
+            };
+            let destination = SocketAddr::new(genuine.address.ip(), session.local_addr().port());
+            let wire = Message::new(
+                b"real",
+                Body::Query {
+                    method: b"ping",
+                    arguments: dict([(b"id".as_slice(), bytes(&genuine.id.0))]),
+                },
+                None,
+                16,
+                100,
+            )
+            .unwrap()
+            .encode(Default::default())
+            .unwrap();
+            real.send_to(&wire, destination).await.unwrap();
+            let mut buffer = [0; 4096];
+            loop {
+                let (length, source) = real.recv_from(&mut buffer).await.unwrap();
+                let request = response(&buffer[..length]);
+                if matches!(
+                    request.kind(),
+                    Kind::Query {
+                        query: Query::Ping,
+                        ..
+                    }
+                ) {
+                    let wire = Message::new(
+                        request.transaction_id(),
+                        Body::Response(dict([(b"id".as_slice(), bytes(&genuine.id.0))])),
+                        None,
+                        16,
+                        100,
+                    )
+                    .unwrap()
+                    .encode(Default::default())
+                    .unwrap();
+                    real.send_to(&wire, source).await.unwrap();
+                    break;
+                }
+            }
+            let saved = contacts(&session, 2).await;
+            assert!(saved.nodes.contains(&genuine));
+            assert!(!saved.nodes.contains(&contact));
+            session.shutdown().await.unwrap();
+            task.abort();
+        }
+    })
+    .await
+    .expect("cross-family DHT verification");
+}
+
+#[tokio::test]
+async fn unreachable_bootstrap_backs_off_instead_of_retrying_every_thirty_seconds() {
+    let router = UdpSocket::bind("[::1]:0").await.unwrap();
+    let (session, _root, _warm) = start_node(
+        "[::1]:0",
+        None,
+        vec![router.local_addr().unwrap().to_string()],
+    )
+    .await;
+    let mut buffer = [0; 4096];
+    tokio::time::timeout(Duration::from_secs(2), router.recv_from(&mut buffer))
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::pause();
+    async fn advance(seconds: u64) {
+        tokio::time::advance(Duration::from_secs(seconds)).await;
+        // Drain runnable node, bootstrap and discovery futures without advancing time.
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+    }
+    advance(6).await; // first transaction times out; next attempt is due in 60s
+    advance(30).await;
+    assert_eq!(
+        router.try_recv_from(&mut buffer).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    advance(30).await;
+    router
+        .try_recv_from(&mut buffer)
+        .expect("second bootstrap round");
+    advance(6).await; // second timeout doubles the retry delay to 120s
+    for _ in 0..3 {
+        advance(30).await;
+        assert_eq!(
+            router.try_recv_from(&mut buffer).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+    advance(30).await;
+    router
+        .try_recv_from(&mut buffer)
+        .expect("third bootstrap round");
+    tokio::time::resume();
+    session.shutdown().await.unwrap();
 }

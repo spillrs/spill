@@ -186,6 +186,21 @@ fn owned_dht_requests_roundtrip() {
             assert_eq!(message.encode(Limits::default()).unwrap(), wire);
         }
     }
+    assert!(
+        OwnedQuery::FindNode(NodeId([3; 20]))
+            .encode(
+                b"tx",
+                NodeId([1; 20]),
+                Some(Want {
+                    ipv4: false,
+                    ipv6: false
+                }),
+                Limits::default(),
+                8,
+                100
+            )
+            .is_err()
+    );
 }
 
 #[test]

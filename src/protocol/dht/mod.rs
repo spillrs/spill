@@ -72,6 +72,9 @@ impl OwnedQuery {
         if matches!(self, Self::FindNode(_) | Self::GetPeers(_))
             && let Some(want) = want
         {
+            if !want.ipv4 && !want.ipv6 {
+                return Err(krpc::Error::InvalidField("want"));
+            }
             let mut families = Vec::new();
             if want.ipv4 {
                 families.push(bytes(b"n4"));

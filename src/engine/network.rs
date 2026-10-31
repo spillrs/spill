@@ -45,6 +45,13 @@ pub(in crate::engine) async fn resolve_dht(
     ipv6: bool,
     allow_local_network: bool,
 ) -> Option<SocketAddr> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        let address = SocketAddr::new(ip, port);
+        return (address.is_ipv6() == ipv6
+            && super::dht::valid_address(address, false)
+            && peer(address, allow_local_network))
+        .then_some(address);
+    }
     tokio::time::timeout(
         crate::engine::profile::DNS_TIMEOUT,
         tokio::net::lookup_host((host, port)),

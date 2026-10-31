@@ -12,6 +12,8 @@ use tokio::{
 #[derive(Clone)]
 pub(in crate::engine) struct Transport {
     pub(in crate::engine) socket: Arc<UdpSocket>,
+    pub(in crate::engine) address: SocketAddr,
+    pub(in crate::engine) families: [bool; 2],
     pub(super) routes: Arc<Mutex<Routes>>,
     pub(super) utp: Option<Arc<Mutex<super::utp::Mux>>>,
 }
@@ -49,16 +51,21 @@ impl Transport {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
+        let dual_stack = address.is_ipv6() && address.ip().is_unspecified();
         if address.is_ipv6() {
-            socket.set_only_v6(!address.ip().is_unspecified())?;
+            socket.set_only_v6(!dual_stack)?;
         }
+        let families = [address.is_ipv4() || dual_stack, address.is_ipv6()];
         // The default kernel buffer can be smaller than one uTP receive window
         // once per-datagram kernel overhead is included.
         socket.set_recv_buffer_size(2 * 1024 * 1024)?;
         socket.set_nonblocking(true)?;
         socket.bind(&address.into())?;
+        let socket = Arc::new(UdpSocket::from_std(socket.into())?);
         Ok(Self {
-            socket: Arc::new(UdpSocket::from_std(socket.into())?),
+            address: socket.local_addr()?,
+            families,
+            socket,
             routes: Arc::default(),
             utp: None,
         })

@@ -118,7 +118,11 @@ permit DHT only when their `NetworkOptions::dht` explicitly supplies capability.
 IPv6-only listeners use IPv6 DHT contacts; dual-stack listeners use both families.
 On multihomed IPv6 hosts, prefer a specific stable global `listen` address so
 outgoing DHT queries keep the same source address.
-Router names are resolved separately for each enabled family. Numeric IPv6 routers
+Dual-stack bootstrap and refresh queries request both IPv4 and IPv6 referrals;
+normal peer lookups request their transport's family. Contacts learned across
+families are verified over their own transport before being used or saved.
+Router names are resolved separately for each enabled family. Unresponsive
+bootstrap attempts back off up to 15 minutes, independently for each family. Numeric IPv6 routers
 use bracketed addresses, for example `"[2001:db8::1]:6881"` (replace this
 example with a reachable router). Link-local and scoped DHT endpoints are not
 supported. Outgoing DHT datagrams are limited to 1024 bytes, with at most 40

@@ -24,7 +24,7 @@ pub(in crate::engine) struct Handle {
     pub(in crate::engine) allow_local_network: bool,
     pub(in crate::engine) commands: mpsc::Sender<crate::engine::dht::Command>,
     pub(in crate::engine) address: SocketAddr,
-    pub(in crate::engine) ipv6: bool,
+    pub(in crate::engine) families: [bool; 2],
     pub(in crate::engine) id: NodeId,
     pub(in crate::engine) lookups: Arc<Semaphore>,
     pub(in crate::engine) lookup_queries: usize,
@@ -85,13 +85,23 @@ impl DhtOptions {
             ));
         }
         validate_routers(&self.routers)?;
-        if self.saved.as_ref().is_some_and(|s| {
-            s.nodes.iter().filter(|n| n.address.is_ipv4()).count() > MAX_SAVED_NODES
-                || s.nodes.iter().filter(|n| n.address.is_ipv6()).count() > MAX_SAVED_NODES
-                || s.nodes
-                    .iter()
-                    .any(|n| !crate::engine::dht::valid_address(n.address, false))
-        }) {
+        if let Some(saved) = &self.saved {
+            saved.validate()?;
+        }
+        Ok(())
+    }
+}
+impl SavedState {
+    /// Validate persisted contacts without DNS or network access. Invalid caches
+    /// can be discarded without affecting torrent state.
+    pub fn validate(&self) -> io::Result<()> {
+        if self.nodes.iter().filter(|n| n.address.is_ipv4()).count() > MAX_SAVED_NODES
+            || self.nodes.iter().filter(|n| n.address.is_ipv6()).count() > MAX_SAVED_NODES
+            || self
+                .nodes
+                .iter()
+                .any(|n| !crate::engine::dht::valid_address(n.address, false))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid saved DHT state",
@@ -173,7 +183,7 @@ impl Dht {
                 let registry = registry.upgrade().ok_or(io::ErrorKind::Interrupted)?;
                 let (sender, incoming) = mpsc::channel(256);
                 let (node, handle) = Node::with_state(
-                    udp.socket.clone(),
+                    udp.clone(),
                     incoming,
                     allow_local_network,
                     options.saved,

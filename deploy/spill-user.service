@@ -6,10 +6,6 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/spill serve --config %h/.config/spill/spill.toml
-StateDirectory=spill
-StateDirectoryMode=0700
-RuntimeDirectory=spill
-RuntimeDirectoryMode=0700
 UMask=0077
 Restart=on-failure
 RestartSec=10

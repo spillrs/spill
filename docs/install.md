@@ -178,6 +178,8 @@ journalctl --user -u spill -f
 ```
 
 Edit `~/.config/spill/spill.toml` first: paths in the file must be absolute.
+The user unit lets spill create its configured state directory and socket,
+without separate systemd-managed state or runtime directories.
 To keep the daemon running after you log out, enable lingering with
 `loginctl enable-linger $USER`.
 

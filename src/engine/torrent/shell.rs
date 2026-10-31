@@ -218,8 +218,13 @@ impl Shell {
         if let Some(event) = self.events.pop_front() {
             return Ok(Some(event));
         }
-        if self.writer.as_ref().is_some_and(|w| !w.healthy()) {
-            return Err(io::Error::other("storage writer failed"));
+        if let Some(writer) = &mut self.writer
+            && !writer.healthy()
+        {
+            return Err(writer
+                .shutdown()
+                .await
+                .expect_err("active storage writer cannot exit successfully"));
         }
         let storage_work = self.writer.as_ref().is_some_and(|w| w.has_job());
         let full = self.writer.as_ref().is_some_and(|w| w.capacity() == 0);

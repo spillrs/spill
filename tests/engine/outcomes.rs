@@ -14,6 +14,100 @@ use std::{
 };
 
 #[tokio::test]
+async fn completion_checkpoint_failures_preserve_the_writer_error() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for panic in [false, true] {
+            let root = Temp::new();
+            std::fs::write(root.0.join("x"), b"abc").unwrap();
+            let meta = Profile::default()
+                .parse_owned(&seed_metainfo("x", b"abc", None))
+                .unwrap();
+            let session = Session::bind(
+                NetworkOptions {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                    ..Default::default()
+                },
+                Limits::default(),
+            )
+            .await
+            .unwrap();
+            let (entered, entering) = tokio::sync::oneshot::channel();
+            let entered = Mutex::new(Some(entered));
+            let (release, waiting) = std::sync::mpsc::channel();
+            let waiting = Mutex::new(waiting);
+            let mut options = TorrentOptions::new(
+                TorrentSource::Metainfo(meta.clone()),
+                Destination::Adopt(root.0.clone()),
+            );
+            options.run = RunPolicy::UntilComplete;
+            options.persistence.checkpoint = Some(Box::new(move |_| {
+                entered.lock().unwrap().take().unwrap().send(()).unwrap();
+                waiting
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("checkpoint callback blocked the async runtime");
+                if panic {
+                    panic!("completion checkpoint panic");
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "completion checkpoint denied",
+                ))
+            }));
+            let handle = session.admit(options).unwrap();
+            entering.await.unwrap();
+            assert!(!handle.snapshot().progress.completed);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), handle.outcome())
+                    .await
+                    .is_err()
+            );
+            assert!(!handle.is_finished());
+            release.send(()).unwrap();
+
+            let outcome = handle.outcome().await;
+            assert_eq!(outcome.termination, TorrentExit::Failed);
+            assert!(!outcome.wanted_complete && outcome.full_complete && outcome.cleanup_complete);
+            let expected_kind = if panic {
+                io::ErrorKind::Other
+            } else {
+                io::ErrorKind::PermissionDenied
+            };
+            let expected_message = if panic {
+                "completion checkpoint panic"
+            } else {
+                "completion checkpoint denied"
+            };
+            for error in [
+                outcome.error.as_ref().unwrap().as_ref(),
+                &handle.join().await.unwrap_err(),
+                &handle.wait_complete().await.unwrap_err(),
+            ] {
+                assert_eq!(error.kind(), expected_kind);
+                assert!(error.to_string().contains(expected_message), "{error}");
+            }
+            assert!(session.torrent(handle.info_hash()).is_none());
+            let mut replacement = TorrentOptions::new(
+                TorrentSource::Metainfo(meta),
+                Destination::Recover {
+                    root: root.0.clone(),
+                    state: handle.recovery().unwrap(),
+                },
+            );
+            replacement.run = RunPolicy::UntilComplete;
+            let replacement = session.admit(replacement).unwrap();
+            replacement.join().await.unwrap();
+            replacement.wait_complete().await.unwrap();
+            session.shutdown().await.unwrap();
+            assert_eq!(std::fs::read(root.0.join("x")).unwrap(), b"abc");
+        }
+    })
+    .await
+    .expect("completion checkpoint errors survive execution cleanup");
+}
+
+#[tokio::test]
 async fn completion_survives_later_checkpoint_failure_and_removal() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let root = Temp::new();

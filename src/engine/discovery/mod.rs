@@ -776,6 +776,7 @@ impl Discovery {
         } else {
             Ok(())
         };
+        self.dials = None;
         announces.and(dials)
     }
 }

@@ -3,14 +3,72 @@ use spill::engine::{
     profile::Profile,
     session::{Limits, NetworkOptions, Session},
     settings::TorrentSettings,
-    torrent::{Destination, TorrentOptions, TorrentPhase, TorrentSource},
+    torrent::{Destination, RunPolicy, TorrentOptions, TorrentPhase, TorrentSource},
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::oneshot,
 };
+
+#[tokio::test]
+async fn retained_torrent_handles_release_session_ports_after_shutdown() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for utp in [false, true] {
+            for run in [RunPolicy::Persistent, RunPolicy::UntilComplete] {
+                let root = Temp::new();
+                std::fs::write(root.0.join("x"), b"abc").unwrap();
+                let meta = Profile::default()
+                    .parse_owned(&seed_metainfo("x", b"abc", None))
+                    .unwrap();
+                let session = Session::bind(
+                    NetworkOptions {
+                        listen: "127.0.0.1:0".parse().unwrap(),
+                        utp,
+                        ..Default::default()
+                    },
+                    Limits::default(),
+                )
+                .await
+                .unwrap();
+                let address = session.local_addr();
+                let mut options = TorrentOptions::new(
+                    TorrentSource::Metainfo(meta),
+                    Destination::Adopt(root.0.clone()),
+                );
+                options.run = run;
+                let handle = session.admit(options).unwrap();
+                handle.wait_complete().await.unwrap();
+                if run == RunPolicy::Persistent {
+                    handle.stop().await.unwrap();
+                } else {
+                    handle.join().await.unwrap();
+                }
+                let outcome = handle.outcome().await;
+                assert!(outcome.wanted_complete && outcome.cleanup_complete);
+                session.shutdown().await.unwrap();
+                drop(session);
+
+                let replacement = Session::bind(
+                    NetworkOptions {
+                        listen: address,
+                        utp,
+                        ..Default::default()
+                    },
+                    Limits::default(),
+                )
+                .await
+                .expect("a retained finished torrent handle must not keep session ports bound");
+                assert!(Arc::ptr_eq(&outcome, &handle.outcome().await));
+                assert!(handle.recovery().is_some());
+                replacement.shutdown().await.unwrap();
+            }
+        }
+    })
+    .await
+    .expect("session port reuse with retained torrent outcomes");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clones_retain_execution_and_cancelled_shutdown_remains_joinable() {

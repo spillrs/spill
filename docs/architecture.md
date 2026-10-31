@@ -125,7 +125,9 @@ sessions permit DHT only with `NetworkOptions::dht = Some(DhtOptions { ... })`.
 for initialization and failure behaviour.
 Session handles are cloneable: dropping one clone does not stop transfers.
 Dropping the last requests stop; await `shutdown()` to prove cleanup finished.
-Cancelled shutdown waits remain joinable through another handle.
+Cancelled shutdown waits remain joinable through another handle. After joined
+shutdown, dropping all session clones releases the listening port even if finished
+torrent handles are retained.
 `admit(TorrentOptions::new(source, destination))` returns a `TorrentHandle`
 synchronously after validation and reservation. Sources are metainfo or parsed
 magnets; the engine resolves metadata and prepares the destination. No catalog
@@ -142,6 +144,7 @@ Finished executions retire automatically; old handles cannot affect replacements
 
 Transfer handles retain outcomes after retirement: `wait_complete()` waits for wanted
 content, while `outcome()` reports termination, errors and whether cleanup finished.
+Storage and checkpoint failures preserve their underlying error kind and cause.
 `changed()` yields latest-value observations and returns false after the final
 report is consumed, without requiring a separate join waiter.
 A clean incomplete stop is not a successful download. A failed execution can still

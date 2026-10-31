@@ -53,7 +53,7 @@ pub(in crate::engine) fn handshake(
     fields.insert(
         b"v",
         Node::new(Value::Bytes(
-            concat!("Spill/", env!("CARGO_PKG_VERSION")).as_bytes(),
+            crate::engine::identity::CLIENT_NAME.as_bytes(),
         )),
     );
     fields.insert(

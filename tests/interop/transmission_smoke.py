@@ -761,7 +761,7 @@ def main():
                 "runtime": torrent_status(socket_path, local_id)}
         result["peer_clients"] = sorted(transmission.clients)
         if not args.download_only:
-            assert any(name.startswith("Spill/") for name in transmission.clients), result["peer_clients"]
+            assert any(name.startswith("spill/") for name in transmission.clients), result["peer_clients"]
         if args.restart_check:
             # Recovery checks must not fetch missing data from the source.
             control(socket_path, "set", id=local_id, values={source: False for source in ("trackers", "dht", "pex", "web_seeds")})

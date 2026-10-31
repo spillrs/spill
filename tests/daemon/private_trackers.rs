@@ -47,7 +47,14 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
                 }
                 headers.push_str(&line);
             }
-            assert!(headers.to_ascii_lowercase().contains("user-agent: spill/"));
+            assert_eq!(
+                headers.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("user-agent")
+                        .then_some(value.trim())
+                }),
+                Some(concat!("spill/", env!("CARGO_PKG_VERSION")))
+            );
             let drop_reply =
                 query.get("event").is_some_and(|event| event == "completed") && fail_completion;
             sent.send(query).unwrap();
@@ -146,6 +153,12 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
             if frame.starts_with(&[20, 0]) {
                 let hello =
                     spill::protocol::bencode::decode(&frame[2..], Default::default()).unwrap();
+                assert_eq!(
+                    hello.get(b"v").unwrap().value(),
+                    &spill::protocol::bencode::Value::Bytes(
+                        concat!("spill/", env!("CARGO_PKG_VERSION")).as_bytes()
+                    )
+                );
                 assert!(
                     hello
                         .get(b"m")

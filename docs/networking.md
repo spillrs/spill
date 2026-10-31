@@ -141,7 +141,7 @@ connections are accepted from any address.
   uploaded to at once per torrent.
 - spill derives its peer ID prefix from its package version: `-sP` followed by
   base-36 major, minor and patch digits, a reserved `0`, and `-`.
-  Extension handshakes and HTTP requests identify as `Spill/VERSION`; this
+  Extension handshakes and HTTP requests identify as `spill/VERSION`; this
   case-sensitive wire identifier is not the prose brand casing.
 - If the same peer connects twice (for example, both sides dialed each other),
   one connection is dropped.

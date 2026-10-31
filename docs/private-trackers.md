@@ -45,7 +45,7 @@ Both appear in `spill get` and on the web page.
 
 Most private trackers only accept whitelisted clients. spill identifies itself
 with a version-derived `-sP…-` peer ID prefix and the wire identifier
-`Spill/VERSION`; it never impersonates another client. See
+`spill/VERSION`; it never impersonates another client. See
 [Peer connections](networking.md#peer-connections) for the prefix format.
 Until a tracker whitelists spill, its announces may be rejected. Check your
 tracker's rules before using spill there.

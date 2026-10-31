@@ -1,5 +1,7 @@
-//! Runtime peer identity generation; metainfo identity remains in protocol.
+//! Runtime client identity; metainfo identity remains in protocol.
 use std::io;
+
+pub(in crate::engine) const CLIENT_NAME: &str = concat!("spill/", env!("CARGO_PKG_VERSION"));
 
 /// Generate a fresh 20-byte peer ID from OS entropy and the single client prefix.
 /// This is not authentication or a persistent tracker/accounting lifetime.

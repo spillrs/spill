@@ -439,7 +439,7 @@ impl reqwest::dns::Resolve for Resolver {
 }
 pub(in crate::engine) fn http_client(allow_local_network: bool) -> io::Result<reqwest::Client> {
     crate::http::client()
-        .user_agent(concat!("Spill/", env!("CARGO_PKG_VERSION")))
+        .user_agent(crate::engine::identity::CLIENT_NAME)
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .pool_idle_timeout(Duration::from_secs(90))

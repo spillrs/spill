@@ -262,7 +262,7 @@ impl Seed {
             .connect_timeout(crate::engine::profile::CONNECT_TIMEOUT)
             .timeout(crate::engine::profile::REQUEST_TIMEOUT)
             .pool_max_idle_per_host(1)
-            .user_agent(concat!("Spill/", env!("CARGO_PKG_VERSION")))
+            .user_agent(crate::engine::identity::CLIENT_NAME)
             .resolve_to_addrs(host, &addresses)
             .build()
             .map_err(transport)?;

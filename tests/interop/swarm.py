@@ -249,7 +249,7 @@ def main():
         if args.leecher == "spill":
             if args.transport == "utp":
                 assert all(member["utp_seen"] for member in members), "uTP was not observed for every leecher"
-            assert any(client.startswith("Spill/") for client in clients), clients
+            assert any(client.startswith("spill/") for client in clients), clients
             for member in members:
                 control(member["socket"], "shutdown")
         for process in processes:

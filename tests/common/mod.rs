@@ -213,6 +213,14 @@ impl WebSeed {
                     bytes.push(stream.read_u8().await.unwrap());
                 }
                 let request = String::from_utf8(bytes).unwrap();
+                assert_eq!(
+                    request.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("user-agent")
+                            .then_some(value.trim())
+                    }),
+                    Some(concat!("spill/", env!("CARGO_PKG_VERSION")))
+                );
                 let path = request.split_whitespace().nth(1).unwrap();
                 let range = request
                     .lines()

@@ -98,6 +98,9 @@ spill's [filesystem name sanitization](torrents.md#adding-torrents) can make tho
 paths differ from the original source paths. Source symlinks are followed during
 creation, but are not adopted as payload paths when seeding.
 
+Without `--json`, `get ID` prints the complete torrent details as formatted JSON;
+`set ID ...` prints the resulting settings as `key=value` lines.
+
 ## Accounting in JSON
 
 `get`, `list` and `status` expose the same per-torrent accounting fields:

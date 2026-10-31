@@ -33,6 +33,33 @@ async fn client_commands_are_top_level_without_a_ctl_alias() {
     daemon.state(id, "seeding").await;
 
     assert_eq!(client(&daemon, &["get", id]).await["verified_bytes"], 3);
+    let details = Command::new(BIN)
+        .arg("--socket")
+        .arg(&daemon.socket)
+        .args(["get", id])
+        .output()
+        .await
+        .unwrap();
+    assert!(details.status.success());
+    let details: Value = serde_json::from_slice(&details.stdout).unwrap();
+    assert_eq!(details["id"], id);
+    assert_eq!(details["state"], "seeding");
+    assert_eq!(details["verified_bytes"], 3);
+    assert!(details["settings"].is_object());
+    assert!(details["transfer"].is_object());
+    let settings = Command::new(BIN)
+        .arg("--socket")
+        .arg(&daemon.socket)
+        .args(["set", id, "upload_limit=123"])
+        .output()
+        .await
+        .unwrap();
+    assert!(settings.status.success());
+    assert!(
+        String::from_utf8(settings.stdout)
+            .unwrap()
+            .contains("upload_limit=123")
+    );
     assert_eq!(
         client(&daemon, &["files", id]).await["files"][0]["path"],
         "x"

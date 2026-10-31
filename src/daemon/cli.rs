@@ -209,10 +209,10 @@ fn text(data: &Value) {
                 clean(file["path"].as_str().unwrap_or(""))
             );
         }
-    } else if let Some(settings) = data.get("settings").and_then(Value::as_object).or_else(|| {
-        data.as_object()
-            .filter(|m| m.contains_key("download_limit"))
-    }) {
+    } else if let Some(settings) = data
+        .as_object()
+        .filter(|m| m.contains_key("download_limit"))
+    {
         for (key, value) in settings {
             println!("{key}={value}");
         }

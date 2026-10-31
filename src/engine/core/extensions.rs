@@ -61,7 +61,7 @@ pub(in crate::engine) fn handshake(
         Node::new(Value::Integer(
             // BEP 10 reqq limits requests the remote may send to us, not our
             // own download pipeline. Advertising 32 throttles external leechers.
-            crate::engine::profile::MAX_UPLOAD_REQUESTS.min(u32::MAX as usize) as i64,
+            crate::engine::profile::MAX_UPLOAD_REQUESTS as i64,
         )),
     );
     if let Some(size) = size {
@@ -140,7 +140,7 @@ impl Extensions {
             let message = metadata::Message::parse(
                 payload,
                 limits(),
-                crate::engine::profile::MAX_META.min(u32::MAX as usize) as u32,
+                crate::engine::profile::MAX_META as u32,
             )
             .map_err(invalid)?;
             if let metadata::Kind::Request { piece } = message.kind()
@@ -150,20 +150,17 @@ impl Extensions {
                     return Err(invalid("metadata request queue exhausted"));
                 }
                 let size = meta.info_bytes().len() as u32;
-                let kind = if metadata::piece_range(
-                    piece,
-                    size,
-                    crate::engine::profile::MAX_META.min(u32::MAX as usize) as u32,
-                )
-                .is_ok()
-                {
-                    metadata::Kind::Data {
-                        piece,
-                        total_size: size,
-                    }
-                } else {
-                    metadata::Kind::Reject { piece }
-                };
+                let kind =
+                    if metadata::piece_range(piece, size, crate::engine::profile::MAX_META as u32)
+                        .is_ok()
+                    {
+                        metadata::Kind::Data {
+                            piece,
+                            total_size: size,
+                        }
+                    } else {
+                        metadata::Kind::Reject { piece }
+                    };
                 self.pending.push_back(kind);
             }
         }
@@ -179,7 +176,7 @@ impl Extensions {
         let Some(&kind) = self.pending.front() else {
             return Ok(None);
         };
-        let cap = crate::engine::profile::MAX_META.min(u32::MAX as usize) as u32;
+        let cap = crate::engine::profile::MAX_META as u32;
         let payload = if let metadata::Kind::Data { piece, total_size } = kind {
             let range = metadata::piece_range(piece, total_size, cap).map_err(invalid)?;
             &meta.info_bytes()[range.start as usize..range.end as usize]

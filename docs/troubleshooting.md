@@ -87,7 +87,7 @@ error if it repeats.
 ## Nobody can connect to me
 
 Allow the `listen` port for TCP and UDP in your host firewall. Run
-`spill health` (or expand **Health** in the web interface): `port_mapping`
+`spill health`: `port_mapping`
 shows `enabled`, `protocol` (`nat-pmp` or `upnp`), `external_ip`,
 `external_tcp_port`, `external_udp_port`, `last_error` and `next_renewal`
 (a Unix timestamp in seconds, null when no renewal is scheduled). The top-level

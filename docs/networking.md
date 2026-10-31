@@ -60,7 +60,7 @@ router returns error 725 (only permanent leases supported), spill retries with
 lease 0 and reasserts the mapping hourly. Failed attempts retry after 60 seconds,
 doubling up to 30 minutes. Clean shutdown tries to remove mappings with a
 two-second timeout.
-Failures are logged and exposed in `spill health` and the web Health panel;
+Failures are logged and exposed in `spill health`;
 they never fail a torrent or stop the daemon.
 
 Gateway requests and SSDP multicast deliberately bypass `allow_local_network`:

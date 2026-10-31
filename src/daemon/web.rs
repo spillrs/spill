@@ -141,9 +141,8 @@ pub async fn serve(
     control: Control,
     mut stop: watch::Receiver<bool>,
 ) -> io::Result<()> {
-    use std::io::Read;
     let mut entropy = [0; 32];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut entropy)?;
+    getrandom::fill(&mut entropy).map_err(io::Error::other)?;
     let token = entropy.iter().map(|b| format!("{b:02x}")).collect();
     let address: SocketAddr = listener.local_addr()?;
     let app = App {

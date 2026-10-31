@@ -66,15 +66,10 @@ impl Supervisor {
             utp: config.utp,
             allow_local_network: config.allow_local_network,
             port_mapping: mapping,
-            dht: if config.listen.is_ipv4() {
-                Some(spill::engine::session::DhtOptions {
-                    saved: db.load_dht().map_err(io_error)?,
-                    routers: config.dht_bootstrap.clone(),
-                })
-            } else {
-                eprintln!("DHT disabled: DHT requires an IPv4 session listener");
-                None
-            },
+            dht: Some(spill::engine::session::DhtOptions {
+                saved: db.load_dht().map_err(io_error)?,
+                routers: config.dht_bootstrap.clone(),
+            }),
         };
         let session = Session::bind(network, limits).await?;
         Ok(Self {

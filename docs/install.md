@@ -219,6 +219,6 @@ Before 1.0, spill does not migrate old catalogs. If an upgrade reports
 download directory: re-adding a torrent whose complete files are already there
 verifies and seeds them without downloading again.
 
-v0.6 requires catalog version 5; older catalogs require a
-fresh state directory. Re-adding files does not recover their previous traffic
+This checkout requires catalog version 6 to store IPv4 and IPv6 DHT contacts;
+older catalogs require a fresh state directory. Re-adding files does not recover their previous traffic
 totals or timestamps.

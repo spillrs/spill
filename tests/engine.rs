@@ -9,6 +9,8 @@ mod completion;
 mod create;
 #[path = "engine/dht.rs"]
 mod dht;
+#[path = "engine/dht_ipv6.rs"]
+mod dht_ipv6;
 #[path = "engine/lifecycle.rs"]
 mod lifecycle;
 #[path = "engine/outcomes.rs"]

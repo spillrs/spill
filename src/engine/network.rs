@@ -39,11 +39,12 @@ pub(in crate::engine) fn eligible(address: SocketAddr) -> bool {
         }
 }
 
-pub(in crate::engine) async fn resolve_v4(
+pub(in crate::engine) async fn resolve_dht(
     host: &str,
     port: u16,
+    ipv6: bool,
     allow_local_network: bool,
-) -> Option<std::net::SocketAddrV4> {
+) -> Option<SocketAddr> {
     tokio::time::timeout(
         crate::engine::profile::DNS_TIMEOUT,
         tokio::net::lookup_host((host, port)),
@@ -51,8 +52,7 @@ pub(in crate::engine) async fn resolve_v4(
     .await
     .ok()?
     .ok()?
-    .find_map(|a| match a {
-        SocketAddr::V4(a) if peer(a.into(), allow_local_network) => Some(a),
-        _ => None,
+    .find(|a| {
+        a.is_ipv6() == ipv6 && super::dht::valid_address(*a, false) && peer(*a, allow_local_network)
     })
 }

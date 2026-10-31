@@ -1,10 +1,10 @@
 //! Bounded saved-contact/router bootstrap; routers are lookup seeds, never routing entries.
-use super::{Handle, NodeId, NodeV4, Query, SavedState, lookup::Requests};
+use super::{Contact, Handle, NodeId, Query, SavedState, lookup::Requests};
 use crate::engine::session::dht::endpoint;
 use std::{
     collections::{HashMap, HashSet},
     io,
-    net::SocketAddrV4,
+    net::SocketAddr,
     time::Duration,
 };
 
@@ -29,7 +29,12 @@ pub(super) async fn run(
             // Populate the densely split neighborhood around our own ID first.
             let target = handle.id();
             let seeds = if first {
-                saved.nodes.clone()
+                saved
+                    .nodes
+                    .iter()
+                    .filter(|n| n.address.is_ipv6() == handle.ipv6)
+                    .copied()
+                    .collect()
             } else {
                 handle.closest(target).await?
             };
@@ -45,9 +50,13 @@ pub(super) async fn run(
                     let mut addresses = Vec::new();
                     for router in &routers {
                         let (host, port) = endpoint(router).expect("validated DHT router");
-                        if let Some(address) =
-                            crate::engine::network::resolve_v4(host, port, allow_local_network)
-                                .await
+                        if let Some(address) = crate::engine::network::resolve_dht(
+                            host,
+                            port,
+                            handle.ipv6,
+                            allow_local_network,
+                        )
+                        .await
                             && !addresses.contains(&address)
                         {
                             addresses.push(address);
@@ -103,8 +112,8 @@ pub(super) async fn run(
 async fn walk(
     handle: &Handle,
     target: NodeId,
-    seeds: Vec<NodeV4>,
-    routers: Vec<SocketAddrV4>,
+    seeds: Vec<Contact>,
+    routers: Vec<SocketAddr>,
 ) -> io::Result<()> {
     // Known contacts are distance-ordered. Query explicit router seeds first,
     // separately, so candidate truncation cannot silently discard them.

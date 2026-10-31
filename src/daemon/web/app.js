@@ -261,7 +261,6 @@ $('#add-button').onclick = () => {
   for (const [id,key] of [['allow-trackers','trackers'],['allow-dht','dht'],['allow-pex','pex'],['allow-web','web_seeds']]) {
     $('#'+id).checked = addDefaults.settings[key];
   }
-  $('#allow-dht').disabled = !addDefaults.dht_available;
   $('#add-dialog').showModal();
 };
 $('#cancel-add').onclick = () => $('#add-dialog').close();

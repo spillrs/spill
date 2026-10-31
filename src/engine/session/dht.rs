@@ -1,10 +1,10 @@
 //! Session-owned lazy initialization and node; both remain joinable after cancellation.
 use super::{DhtOptions, Registry, Session, udp};
 use crate::engine::dht::Node;
-use crate::protocol::dht::{NodeId, krpc::NodeV4};
+use crate::protocol::dht::{Contact, NodeId};
 use std::{
     io,
-    net::{SocketAddr, SocketAddrV4},
+    net::SocketAddr,
     sync::{Arc, Mutex, Weak},
 };
 use tokio::{
@@ -12,18 +12,19 @@ use tokio::{
     task::JoinHandle,
 };
 
-/// Persist at most 300 IPv4 contacts, retaining only currently good nodes.
+/// Persist at most 300 contacts per address family, retaining only good nodes.
 pub const MAX_SAVED_NODES: usize = 300;
 #[derive(Clone, Debug)]
 pub struct SavedState {
     pub id: NodeId,
-    pub nodes: Vec<NodeV4>,
+    pub nodes: Vec<Contact>,
 }
 #[derive(Clone, Debug)]
 pub(in crate::engine) struct Handle {
     pub(in crate::engine) allow_local_network: bool,
     pub(in crate::engine) commands: mpsc::Sender<crate::engine::dht::Command>,
-    pub(in crate::engine) address: SocketAddrV4,
+    pub(in crate::engine) address: SocketAddr,
+    pub(in crate::engine) ipv6: bool,
     pub(in crate::engine) id: NodeId,
     pub(in crate::engine) lookups: Arc<Semaphore>,
     pub(in crate::engine) lookup_queries: usize,
@@ -52,6 +53,16 @@ pub fn validate_routers(routers: &[String]) -> io::Result<()> {
 }
 pub(in crate::engine) fn endpoint(value: &str) -> io::Result<(&str, u16)> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "DHT router requires host:port");
+    if let Ok(address) = value.parse::<SocketAddr>() {
+        if !crate::engine::dht::valid_address(address, false) {
+            return Err(invalid());
+        }
+        let (host, _) = value.rsplit_once(':').expect("socket address port");
+        return Ok((
+            host.trim_start_matches('[').trim_end_matches(']'),
+            address.port(),
+        ));
+    }
     let (host, port) = value.rsplit_once(':').ok_or_else(invalid)?;
     let port = port.parse::<u16>().map_err(|_| invalid())?;
     if host.is_empty()
@@ -60,9 +71,6 @@ pub(in crate::engine) fn endpoint(value: &str) -> io::Result<(&str, u16)> {
         || !host
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-        || host
-            .parse::<std::net::Ipv4Addr>()
-            .is_ok_and(|ip| !crate::engine::dht::valid_address(SocketAddrV4::new(ip, port), false))
     {
         return Err(invalid());
     }
@@ -70,13 +78,7 @@ pub(in crate::engine) fn endpoint(value: &str) -> io::Result<(&str, u16)> {
 }
 impl DhtOptions {
     pub(super) fn validate(&self, listen: SocketAddr) -> io::Result<()> {
-        let SocketAddr::V4(address) = listen else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "DHT requires an IPv4 session listener",
-            ));
-        };
-        if !crate::engine::dht::valid_address(address, true) {
+        if !crate::engine::dht::valid_address(listen, true) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid DHT bind address",
@@ -84,7 +86,8 @@ impl DhtOptions {
         }
         validate_routers(&self.routers)?;
         if self.saved.as_ref().is_some_and(|s| {
-            s.nodes.len() > MAX_SAVED_NODES
+            s.nodes.iter().filter(|n| n.address.is_ipv4()).count() > MAX_SAVED_NODES
+                || s.nodes.iter().filter(|n| n.address.is_ipv6()).count() > MAX_SAVED_NODES
                 || s.nodes
                     .iter()
                     .any(|n| !crate::engine::dht::valid_address(n.address, false))

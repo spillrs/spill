@@ -41,7 +41,6 @@ async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Re
         let supervisor = app.control.0.lock().await;
         serde_json::json!({
             "settings": supervisor.config.defaults,
-            "dht_available": supervisor.config.listen.is_ipv4(),
         })
     };
     let mut response = Html(

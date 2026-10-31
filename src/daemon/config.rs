@@ -106,7 +106,6 @@ impl Config {
             || config.active_seeds > 64
             || config.active_downloads + config.active_seeds == 0
             || config.active_downloads + config.active_seeds > 64
-            || (config.defaults.dht && !config.listen.is_ipv4())
             || config.web_listen.is_some_and(|a| !a.ip().is_loopback())
             || !config.state_dir.is_absolute()
             || !config.download_dir.is_absolute()

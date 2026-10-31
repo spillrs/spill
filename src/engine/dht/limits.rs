@@ -24,7 +24,7 @@ impl Limits {
         command_queue: 64,
         max_torrents: 2000,
         max_peers_per_torrent: 500,
-        max_peers_reply: 100,
+        max_peers_reply: 40,
         max_rate_sources: 512,
         queries_per_second: 5,
         response_bytes_per_second: 8000,

@@ -11,6 +11,8 @@ mod cli;
 mod config;
 #[path = "daemon/create.rs"]
 mod create;
+#[path = "daemon/dht_ipv6.rs"]
+mod dht_ipv6;
 #[path = "daemon/discovery.rs"]
 mod discovery;
 #[path = "daemon/lifecycle.rs"]

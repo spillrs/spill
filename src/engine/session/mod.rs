@@ -52,7 +52,7 @@ pub struct NetworkOptions {
     pub allow_local_network: bool,
     /// Opt into IPv4 NAT-PMP/UPnP mapping.
     pub port_mapping: Option<port_map::Gateway>,
-    /// Opt into the IPv4 DHT with supplied routers and optional saved state.
+    /// Opt into DHT on the listener's address families, with supplied routers and optional saved state.
     pub dht: Option<DhtOptions>,
 }
 impl Default for NetworkOptions {

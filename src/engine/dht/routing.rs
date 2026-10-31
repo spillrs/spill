@@ -1,5 +1,5 @@
 //! BEP 5 k=8 prefix buckets. Only our bucket splits; unverified contacts are not served.
-use crate::protocol::dht::{NodeId, krpc::NodeV4};
+use crate::protocol::dht::{Contact, NodeId};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -12,13 +12,13 @@ pub(super) enum State {
     Questionable,
     Bad,
 }
-struct Contact {
-    node: NodeV4,
+struct Entry {
+    node: Contact,
     reply: Option<Instant>,
     query: Instant,
     failures: u8,
 }
-impl Contact {
+impl Entry {
     fn state(&self, now: Instant) -> State {
         if self.failures >= 2 {
             State::Bad
@@ -36,7 +36,7 @@ impl Contact {
 struct Bucket {
     prefix: NodeId,
     depth: usize,
-    contacts: Vec<Contact>,
+    contacts: Vec<Entry>,
     touched: Instant,
 }
 pub(super) struct Routing {
@@ -99,7 +99,7 @@ impl Routing {
         }
         Ok(targets)
     }
-    pub(in crate::engine) fn heard(&mut self, node: NodeV4, replied: bool, now: Instant) {
+    pub(in crate::engine) fn heard(&mut self, node: Contact, replied: bool, now: Instant) {
         if node.id == self.own || node.address.port() == 0 {
             return;
         }
@@ -145,7 +145,7 @@ impl Routing {
             let bucket = &mut self.buckets[index];
             bucket.contacts.retain(|c| c.state(now) != State::Bad);
             if bucket.contacts.len() < K {
-                bucket.contacts.push(Contact {
+                bucket.contacts.push(Entry {
                     node,
                     reply: replied.then_some(now),
                     query: now,
@@ -181,7 +181,7 @@ impl Routing {
             self.buckets.push(sibling);
         }
     }
-    pub(in crate::engine) fn failed(&mut self, address: std::net::SocketAddrV4) {
+    pub(in crate::engine) fn failed(&mut self, address: std::net::SocketAddr) {
         if let Some(c) = self
             .buckets
             .iter_mut()
@@ -191,7 +191,7 @@ impl Routing {
             c.failures = c.failures.saturating_add(1);
         }
     }
-    pub(in crate::engine) fn closest(&self, target: NodeId, now: Instant) -> Vec<NodeV4> {
+    pub(in crate::engine) fn closest(&self, target: NodeId, now: Instant) -> Vec<Contact> {
         let mut contacts: Vec<_> = self
             .buckets
             .iter()
@@ -205,7 +205,11 @@ impl Routing {
     }
     /// A lookup itself verifies liveness; previously verified questionable
     /// contacts remain usable at the 15-minute re-announce boundary.
-    pub(in crate::engine) fn lookup_candidates(&self, target: NodeId, now: Instant) -> Vec<NodeV4> {
+    pub(in crate::engine) fn lookup_candidates(
+        &self,
+        target: NodeId,
+        now: Instant,
+    ) -> Vec<Contact> {
         let mut contacts: Vec<_> = self
             .buckets
             .iter()
@@ -217,7 +221,7 @@ impl Routing {
         contacts.truncate(super::MAX_SAVED_NODES);
         contacts
     }
-    pub(in crate::engine) fn questionable(&self, now: Instant) -> Vec<NodeV4> {
+    pub(in crate::engine) fn questionable(&self, now: Instant) -> Vec<Contact> {
         let mut contacts: Vec<_> = self
             .buckets
             .iter()
@@ -230,7 +234,7 @@ impl Routing {
     }
     pub(in crate::engine) fn remove_addresses(
         &mut self,
-        addresses: &std::collections::HashSet<std::net::SocketAddrV4>,
+        addresses: &std::collections::HashSet<std::net::SocketAddr>,
     ) {
         for bucket in &mut self.buckets {
             bucket
@@ -238,7 +242,7 @@ impl Routing {
                 .retain(|c| !addresses.contains(&c.node.address));
         }
     }
-    pub(in crate::engine) fn saved(&self, now: Instant) -> Vec<NodeV4> {
+    pub(in crate::engine) fn saved(&self, now: Instant) -> Vec<Contact> {
         self.buckets
             .iter()
             .flat_map(|b| &b.contacts)

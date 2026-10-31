@@ -30,6 +30,14 @@ async fn invalid_configuration_is_rejected_before_runtime_start() {
         ("port_mapping_gateway=\"::1\"\n", "IPv4"),
         ("[defaults]\nseed_ratio=-1.0\n", "seed_ratio"),
         ("dht_bootstrap=[\"missing-port\"]\n", "invalid DHT routers"),
+        (
+            "dht_bootstrap=[\"[ff02::1]:6881\"]\n",
+            "invalid DHT routers",
+        ),
+        (
+            "dht_bootstrap=[\"[fe80::1%2]:6881\"]\n",
+            "invalid DHT routers",
+        ),
         ("peers=0\n", "invalid torrent resource limits"),
         ("cache_bytes=0\n", "invalid torrent resource limits"),
         ("write_queue_bytes=0\n", "invalid torrent resource limits"),

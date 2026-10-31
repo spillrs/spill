@@ -21,7 +21,7 @@ then open <http://127.0.0.1:8080> locally.
 - Adding a `.torrent` file, magnet link, or HTTP(S) torrent URL, with an optional
   output directory. Paste URLs into the same field as magnet links. The add
   dialog initializes Trackers, DHT, PEX and Web seeds from daemon defaults;
-  DHT is unavailable with an IPv6 listener. These policies and “Start immediately”
+  these policies and “Start immediately”
   are applied in the add request, before any discovery or payload transfer.
   Private metainfo always disables DHT and PEX.
 - Pause, resume, recheck, reannounce and remove (optionally deleting payload).

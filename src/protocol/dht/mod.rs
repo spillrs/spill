@@ -7,8 +7,14 @@ pub mod krpc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub [u8; 20]);
 
-use krpc::NodeV4;
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
+
+/// A DHT contact; IPv4 and IPv6 contacts belong to separate routing tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Contact {
+    pub id: NodeId,
+    pub address: SocketAddr,
+}
 #[derive(Clone, Debug)]
 pub enum OwnedQuery {
     Ping,
@@ -23,9 +29,9 @@ pub enum OwnedQuery {
 #[derive(Debug)]
 pub struct OwnedReply {
     pub id: NodeId,
-    pub nodes: Vec<NodeV4>,
+    pub nodes: Vec<Contact>,
     pub token: Option<Vec<u8>>,
-    pub peers: Vec<SocketAddrV4>,
+    pub peers: Vec<SocketAddr>,
 }
 
 impl OwnedQuery {
@@ -34,6 +40,7 @@ impl OwnedQuery {
         &self,
         transaction: &[u8],
         id: NodeId,
+        want: Option<krpc::Want>,
         limits: crate::protocol::bencode::Limits,
         max_nodes: usize,
         max_peers: usize,
@@ -62,6 +69,18 @@ impl OwnedQuery {
                 b"announce_peer"
             }
         };
+        if matches!(self, Self::FindNode(_) | Self::GetPeers(_))
+            && let Some(want) = want
+        {
+            let mut families = Vec::new();
+            if want.ipv4 {
+                families.push(bytes(b"n4"));
+            }
+            if want.ipv6 {
+                families.push(bytes(b"n6"));
+            }
+            arguments.insert(b"want", BNode::new(Value::List(families)));
+        }
         Message::new(
             transaction,
             Body::ReadOnlyQuery {

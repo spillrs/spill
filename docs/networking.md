@@ -72,7 +72,7 @@ See [Troubleshooting](troubleshooting.md#nobody-can-connect-to-me) if mapping fa
 | Source | What it is | Setting |
 |---|---|---|
 | Trackers | HTTP, HTTPS and UDP trackers listed in the torrent or magnet. | `trackers` |
-| DHT | The distributed hash table (BEP 5), IPv4 only. | `dht` |
+| DHT | The distributed hash table (BEP 5/32), over IPv4 and IPv6. | `dht` |
 | PEX | Peer lists exchanged with connected peers (BEP 11). | `pex` |
 | Web seeds | Plain HTTP(S) servers holding the files (BEP 19). | `web_seeds` |
 
@@ -100,8 +100,9 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
 
 ### DHT
 
-The DHT needs an IPv4 `listen` address. Its routing table is saved in the
-catalog and reused on the next start; `dht_bootstrap` lists the routers used to
+The DHT uses the address families supported by `listen`, with separate IPv4
+and IPv6 routing tables sharing one node ID. Good contacts are saved in the
+catalog and reverified on the next start; `dht_bootstrap` lists the routers used to
 join when no saved nodes answer. It starts lazily for public transfers using DHT
 or magnet metadata resolution, never for private torrents or metainfo-only
 rechecks. Router outages remain ordinary discovery failures and are retried.
@@ -114,8 +115,14 @@ The library's one-shot `download()` permits DHT with `default_routers()`:
 therefore perform router DNS lookups and UDP discovery. Reusable library sessions
 permit DHT only when their `NetworkOptions::dht` explicitly supplies capability.
 
-After switching `listen` to IPv6, spill logs that DHT is unavailable and continues
-with other discovery sources. Saved per-torrent DHT settings are preserved.
+IPv6-only listeners use IPv6 DHT contacts; dual-stack listeners use both families.
+On multihomed IPv6 hosts, prefer a specific stable global `listen` address so
+outgoing DHT queries keep the same source address.
+Router names are resolved separately for each enabled family. Numeric IPv6 routers
+use bracketed addresses, for example `"[2001:db8::1]:6881"` (replace this
+example with a reachable router). Link-local and scoped DHT endpoints are not
+supported. Outgoing DHT datagrams are limited to 1024 bytes, with at most 40
+peers per reply. Query rate limits group IPv6 sources by /64.
 
 ## Local addresses
 
@@ -129,8 +136,8 @@ connections are accepted from any address.
 ## IPv4 and IPv6
 
 - `listen = "0.0.0.0:6881"` (default): IPv4 only.
-- `listen = "[::]:6881"`: IPv6 and IPv4 for peers and UDP trackers. The DHT is
-  unavailable, because it needs an IPv4 listen address.
+- `listen = "[::]:6881"`: IPv6 and IPv4 for peers, UDP trackers and the DHT.
+- A specific IPv6 `listen` address: IPv6-only incoming peers, UDP trackers and DHT.
 - Peers from trackers and PEX can be IPv4 or IPv6; spill connects to whichever
   your host can reach.
 - IPv6 UDP trackers need an IPv6 or dual-stack `listen`.

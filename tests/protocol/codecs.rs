@@ -139,7 +139,10 @@ fn block_and_bitfield_layout_boundaries() {
 
 #[test]
 fn owned_dht_requests_roundtrip() {
-    use spill::protocol::dht::{NodeId, OwnedQuery, krpc::Message};
+    use spill::protocol::dht::{
+        NodeId, OwnedQuery,
+        krpc::{Kind, Message, Query, Want},
+    };
     let hash = InfoHashV1::from_bytes([2; 20]);
     for query in [
         OwnedQuery::Ping,
@@ -151,13 +154,37 @@ fn owned_dht_requests_roundtrip() {
             token: vec![4],
         },
     ] {
-        let wire = query
-            .encode(b"tx", NodeId([1; 20]), Limits::default(), 8, 100)
-            .unwrap();
-        let message = Message::parse(&wire, Limits::default(), 8, 100).unwrap();
-        assert_eq!(message.transaction_id(), b"tx");
-        assert!(message.document().get(b"ro").is_some());
-        assert_eq!(message.encode(Limits::default()).unwrap(), wire);
+        for want in [
+            None,
+            Some(Want {
+                ipv4: true,
+                ipv6: false,
+            }),
+            Some(Want {
+                ipv4: false,
+                ipv6: true,
+            }),
+            Some(Want {
+                ipv4: true,
+                ipv6: true,
+            }),
+        ] {
+            let wire = query
+                .encode(b"tx", NodeId([1; 20]), want, Limits::default(), 8, 100)
+                .unwrap();
+            let message = Message::parse(&wire, Limits::default(), 8, 100).unwrap();
+            assert_eq!(message.transaction_id(), b"tx");
+            assert!(message.document().get(b"ro").is_some());
+            match message.kind() {
+                Kind::Query {
+                    query:
+                        Query::FindNode { want: actual, .. } | Query::GetPeers { want: actual, .. },
+                    ..
+                } => assert_eq!(actual, want),
+                _ => assert!(message.document().get(b"a").unwrap().get(b"want").is_none()),
+            }
+            assert_eq!(message.encode(Limits::default()).unwrap(), wire);
+        }
     }
 }
 

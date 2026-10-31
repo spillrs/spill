@@ -142,7 +142,7 @@ impl Network {
                         let _ = contacts.add_tracker(&peers);
                     }
                     result=&mut lookup=>{result?;return Err(invalid("metadata lookup ended"));}
-                    Some(address)=incoming.recv()=>{let _=contacts.add_dht(magnet.info_hash(),&[SocketAddr::V4(address)]);}
+                    Some(address)=incoming.recv()=>{let _=contacts.add_dht(magnet.info_hash(),&[address]);}
                     event=dials.next(),if dials.has_work()=>{
                         if let Some(event)=event? {
                             contacts.dial_completed(event.address,event.result.is_ok(),event.utp_failed);

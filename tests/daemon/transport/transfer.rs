@@ -37,6 +37,7 @@ async fn utp_transfer(chaos: bool, dual_stack: bool, strip_sack: bool) {
         let mut leech = None;
         let mut count = 0;
         let mut data = [0usize; 2];
+        let mut highest: [Option<u16>; 2] = [None; 2];
         let mut held = None;
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         loop {
@@ -58,8 +59,15 @@ async fn utp_transfer(chaos: bool, dual_stack: bool, strip_sack: bool) {
                         continue;
                     }
                     count += 1;
-                    if n >= 20 && bytes[0] == 1 {
-                        let direction = usize::from(source == seed_address);
+                    // Burst loss takes consecutive new sequence numbers. Counting
+                    // retransmissions too would turn a burst at the tail of a batch
+                    // into a half-minute outage of one packet under RTO backoff.
+                    let seq = decoded.header.seq_nr;
+                    let direction = usize::from(source == seed_address);
+                    if n >= 20 && bytes[0] == 1
+                        && highest[direction].is_none_or(|h| spill::protocol::utp::seq_less(h, seq))
+                    {
+                        highest[direction] = Some(seq);
                         data[direction] += 1;
                         if (100..110).contains(&(data[direction] % 2048)) { continue; }
                     }

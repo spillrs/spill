@@ -67,12 +67,17 @@ async fn utp_tracker_gated(
 }
 
 async fn transport_daemon(root: &std::path::Path, utp: bool) -> Daemon {
-    transport_daemon_at(root, utp, "127.0.0.1:0").await
+    transport_daemon_at(root, utp, "127.0.0.1:0", 262144).await
 }
 
-async fn transport_daemon_at(root: &std::path::Path, utp: bool, listen: &str) -> Daemon {
+async fn transport_daemon_at(
+    root: &std::path::Path,
+    utp: bool,
+    listen: &str,
+    upload_limit: u64,
+) -> Daemon {
     std::fs::write(root.join("config.toml"), format!(
-        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"{listen}\"\nallow_local_network=true\nport_mapping=false\nutp={utp}\npeers=4\nwrite_queue_bytes=16384\ndht_bootstrap=[]\n[defaults]\ndht=false\npex=false\nweb_seeds=false\ntrackers=true\nupload_limit=262144\n",
+        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"{listen}\"\nallow_local_network=true\nport_mapping=false\nutp={utp}\npeers=4\nwrite_queue_bytes=16384\ndht_bootstrap=[]\n[defaults]\ndht=false\npex=false\nweb_seeds=false\ntrackers=true\nupload_limit={upload_limit}\n",
         root.join("state"), root.join("downloads"), root.join("control.sock"),
     )).unwrap();
     Daemon::start_config(root).await

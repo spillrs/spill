@@ -5,22 +5,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 #[tokio::test]
-async fn add_download_seed() {
-    let root = Temp::new();
-    let source = WebSeed::new().await;
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
-    let id = daemon.add(&metainfo(Some(&source.url)), None).await;
-    let row = daemon.state(&id, "seeding").await;
-    assert_eq!(row["verified_bytes"], 3);
-    assert!(row["transfer"]["trackers"].is_array());
-    assert!(row["transfer"]["download_bytes_per_second"].is_number());
-    assert!(row["transfer"]["upload_bytes_per_second"].is_number());
-    assert_eq!(std::fs::read(root.0.join("downloads/x")).unwrap(), b"abc");
-    assert_eq!(source.hits.load(Ordering::Relaxed), 1);
-    daemon.stop().await;
-}
-
-#[tokio::test]
 async fn resuming_a_queued_torrent_does_not_preempt_a_running_download() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let root = Temp::new();
@@ -124,7 +108,13 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_old_catalogs() {
     let bytes = metainfo(Some(&source.url));
     let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
     let id = daemon.add(&bytes, None).await;
-    daemon.state(&id, "seeding").await;
+    let row = daemon.state(&id, "seeding").await;
+    assert_eq!(row["verified_bytes"], 3);
+    assert!(row["transfer"]["trackers"].is_array());
+    assert!(row["transfer"]["download_bytes_per_second"].is_number());
+    assert!(row["transfer"]["upload_bytes_per_second"].is_number());
+    assert_eq!(std::fs::read(root.0.join("downloads/x")).unwrap(), b"abc");
+    assert_eq!(source.hits.load(Ordering::Relaxed), 1);
     daemon.stop().await;
     let db = rusqlite::Connection::open(root.0.join("state/catalog.sqlite")).unwrap();
     assert_eq!(

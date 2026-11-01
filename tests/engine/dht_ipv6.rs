@@ -259,7 +259,8 @@ async fn ipv6_announcements_tokens_family_defaults_and_reply_budget() {
             } => token.to_vec(),
             _ => panic!("token"),
         };
-        for port in 10000..10045 {
+        // One more peer than fits in a 1024-byte reply.
+        for port in 10000..10019 {
             let wire = rpc(
                 &client,
                 destination,

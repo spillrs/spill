@@ -50,7 +50,20 @@ async fn accounting_survives_restart_without_counting_existing_data() {
         .await
         .unwrap();
         // Let the ready, completed owner accumulate an idle seeding interval too.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let seeded = daemon.call(json!({"op":"get","id":id})).await["seed_seconds"]
+            .as_f64()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while daemon.call(json!({"op":"get","id":id})).await["seed_seconds"]
+                .as_f64()
+                .unwrap()
+                <= seeded
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("seeding time accumulates");
         daemon.call(json!({"op":"pause","id":id})).await;
         let saved = daemon.state(&id, "paused").await;
         assert_eq!(

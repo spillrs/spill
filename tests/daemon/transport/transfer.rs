@@ -1,4 +1,4 @@
-use super::{transport_daemon_at, utp_tracker, wait_transport};
+use super::{transport_daemon_at, utp_tracker};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
@@ -16,7 +16,9 @@ async fn utp_transfer(chaos: bool, dual_stack: bool, strip_sack: bool) {
     std::fs::create_dir_all(seed_root.0.join("downloads")).unwrap();
     std::fs::write(seed_root.0.join("downloads/x"), &payload).unwrap();
     let listen = if dual_stack { "[::]:0" } else { "127.0.0.1:0" };
-    let mut seed = transport_daemon_at(&seed_root.0, true, listen).await;
+    // Only one scenario paces uTP writes through the upload throttle.
+    let upload_limit = if strip_sack { 262144 } else { 0 };
+    let mut seed = transport_daemon_at(&seed_root.0, true, listen, upload_limit).await;
     let mut seed_address: std::net::SocketAddr = seed.call(json!({"op":"health"})).await["listen"]
         .as_str()
         .unwrap()
@@ -27,6 +29,9 @@ async fn utp_transfer(chaos: bool, dual_stack: bool, strip_sack: bool) {
     let contact = relay.local_addr().unwrap();
     let tiny_piece_headers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed_headers = tiny_piece_headers.clone();
+    // The relay is UDP only, so payload it carries proves the transfer used uTP.
+    let relayed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let relayed_bytes = relayed.clone();
     let relay_task = tokio::spawn(async move {
         let mut bytes = [0; 65536];
         let mut leech = None;
@@ -44,6 +49,9 @@ async fn utp_transfer(chaos: bool, dual_stack: bool, strip_sack: bool) {
                     let decoded = spill::protocol::utp::Packet::decode(&bytes[..n]).unwrap();
                     if source == seed_address && decoded.payload.len() == 13 && decoded.payload[4] == 7 {
                         observed_headers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if source == seed_address {
+                        relayed_bytes.fetch_add(decoded.payload.len(), std::sync::atomic::Ordering::Relaxed);
                     }
                     if !chaos {
                         relay.send_to(&bytes[..n], destination).await.unwrap();
@@ -75,9 +83,8 @@ async fn utp_transfer(chaos: bool, dual_stack: bool, strip_sack: bool) {
     let meta = seed_metainfo("x", &payload, Some(&url));
     let id = seed.add(&seed_metainfo("x", &payload, None), None).await;
     seed.state(&id, "seeding").await;
-    let mut leech = transport_daemon_at(&leech_root.0, true, listen).await;
+    let mut leech = transport_daemon_at(&leech_root.0, true, listen, upload_limit).await;
     leech.add(&meta, None).await;
-    wait_transport(&leech, &id, "utp").await;
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             let row = leech.call(json!({"op":"get","id":id})).await;
@@ -95,27 +102,30 @@ async fn utp_transfer(chaos: bool, dual_stack: bool, strip_sack: bool) {
         sha1::Sha1::digest(&downloaded),
         sha1::Sha1::digest(&payload)
     );
+    assert!(relayed.load(std::sync::atomic::Ordering::Relaxed) >= payload.len());
     assert_eq!(
         tiny_piece_headers.load(std::sync::atomic::Ordering::Relaxed),
         0,
         "vectored piece headers must be coalesced with their payload"
     );
     if chaos {
-        let row = seed.call(json!({"op":"get","id":id})).await;
-        assert!(
-            row["transfer"]["utp_retransmits"].as_u64().unwrap() > 0,
-            "{row}"
-        );
+        let mut row = json!(null);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                row = seed.call(json!({"op":"get","id":id})).await;
+                if row["transfer"]["utp_retransmits"].as_u64().unwrap() > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("seed retransmitted lost uTP data: {row}"));
     }
     leech.stop().await;
     seed.stop().await;
     tracker.abort();
     relay_task.abort();
-}
-
-#[tokio::test]
-async fn utp_transfer_between_two_daemons() {
-    utp_transfer(false, false, false).await;
 }
 
 #[tokio::test]

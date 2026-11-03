@@ -1,4 +1,4 @@
-use crate::common::{Daemon, peer_frame, raw_peer};
+use crate::common::{Daemon, DaemonConfig, peer_frame, raw_peer};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
@@ -80,7 +80,15 @@ async fn tracker_dials_do_not_duplicate_an_inbound_peer_identity() {
             .v1()
             .unwrap()
             .as_bytes();
-        let mut daemon = Daemon::start(&root.0, "trackers=true\nweb_seeds=false", None).await;
+        let mut daemon = Daemon::start(
+            &root.0,
+            DaemonConfig {
+                trackers: true,
+                web_seeds: false,
+                ..Default::default()
+            },
+        )
+        .await;
         let id = daemon.add(&bytes, None).await;
         daemon.state(&id, "downloading").await;
         let address = daemon.call(json!({"op":"health"})).await["listen"]
@@ -186,7 +194,14 @@ async fn inbound_handshake_bursts_fill_available_peer_slots() {
         .v1()
         .unwrap()
         .as_bytes();
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "seeding").await;
     let address = daemon.call(json!({"op":"health"})).await["listen"]

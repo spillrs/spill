@@ -1,4 +1,4 @@
-use crate::common::{Daemon, WebSeed, metainfo};
+use crate::common::{Daemon, DaemonConfig, WebSeed, metainfo};
 use crate::payload::Temp;
 use std::sync::atomic::Ordering;
 
@@ -15,7 +15,7 @@ async fn corrupt_piece_is_retried_from_another_web_seed() {
     }
     bytes.push(b'e');
     bytes.extend_from_slice(&metainfo(None)[1..]);
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let id = daemon.add(&bytes, None).await;
     let row = daemon.state(&id, "seeding").await;
     assert_eq!(row["verified_bytes"], 3);

@@ -1,4 +1,4 @@
-use crate::common::{BIN, Daemon, WebSeed, metainfo};
+use crate::common::{BIN, Daemon, DaemonConfig, WebSeed, metainfo};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use std::sync::atomic::Ordering;
@@ -21,7 +21,7 @@ async fn resuming_a_queued_torrent_does_not_preempt_a_running_download() {
         gate.notified().await;
         stream.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 0-2/3\r\nConnection: close\r\n\r\nabc").await.unwrap();
     });
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let a = daemon.add(&seed_metainfo("a", b"abc", None), None).await;
     daemon.state(&a, "downloading").await;
     daemon.call(json!({"op":"pause", "id":a})).await;
@@ -51,20 +51,22 @@ async fn ipv6_restart_keeps_dht_enabled_for_saved_torrents() {
     let root = Temp::new();
     std::fs::create_dir_all(root.0.join("downloads")).unwrap();
     std::fs::write(root.0.join("downloads/x"), b"abc").unwrap();
-    let mut daemon = Daemon::start(&root.0, "dht=true\nweb_seeds=false", None).await;
+    let mut config = DaemonConfig {
+        dht: true,
+        web_seeds: false,
+        ..Default::default()
+    };
+    let mut daemon = Daemon::start(&root.0, config.clone()).await;
     let id = daemon.add(&seed_metainfo("x", b"abc", None), None).await;
     daemon.state(&id, "seeding").await;
     daemon.stop().await;
-    let config = root.0.join("config.toml");
-    let contents = std::fs::read_to_string(&config)
-        .unwrap()
-        .replace("127.0.0.1:0", "[::1]:0");
-    std::fs::write(&config, contents).unwrap();
+    config.listen = "[::1]:0".parse().unwrap();
+    config.write(&root.0);
     let log = root.0.join("stderr");
     daemon.child = tokio::process::Command::new(BIN)
         .arg("serve")
         .arg("--config")
-        .arg(config)
+        .arg(root.0.join("config.toml"))
         .stderr(std::fs::File::create(&log).unwrap())
         .kill_on_drop(true)
         .spawn()
@@ -114,7 +116,7 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
     drop(db);
     let source = WebSeed::new().await;
     let bytes = metainfo(Some(&source.url));
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let id = daemon.add(&bytes, None).await;
     let row = daemon.state(&id, "seeding").await;
     assert_eq!(row["verified_bytes"], 3);
@@ -134,7 +136,7 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
         .query_row("SELECT resume FROM torrents", [], |r| r.get(0))
         .unwrap();
     assert!(!resume.is_empty());
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     daemon.state(&id, "seeding").await;
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
@@ -163,7 +165,7 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
         std::fs::metadata(&payload).unwrap().modified().unwrap(),
         modified
     );
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     daemon.state(&id, "seeding").await;
     assert_eq!(source.hits.load(Ordering::Relaxed), 2);
     assert_eq!(std::fs::read(root.0.join("downloads/x")).unwrap(), b"abc");
@@ -198,7 +200,7 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
 async fn pause_resume_remove_keep_and_delete_payload() {
     let root = Temp::new();
     let source = WebSeed::new().await;
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let bytes = metainfo(Some(&source.url));
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "seeding").await;
@@ -226,7 +228,14 @@ async fn pause_resume_remove_keep_and_delete_payload() {
 async fn get_set_settings_take_effect_and_cli_uses_the_same_schema() {
     let root = Temp::new();
     let source = WebSeed::new().await;
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon.add(&metainfo(Some(&source.url)), None).await;
     daemon.state(&id, "downloading").await;
     assert_eq!(source.hits.load(Ordering::Relaxed), 0);

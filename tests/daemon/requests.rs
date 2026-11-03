@@ -1,4 +1,4 @@
-use crate::common::{Daemon, peer_frame, raw_peer};
+use crate::common::{Daemon, DaemonConfig, peer_frame, raw_peer};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
@@ -22,7 +22,14 @@ async fn overlapping_uploads_in_opposite_orders_do_not_deadlock() {
     let root = Temp::new();
     std::fs::create_dir_all(root.0.join("downloads")).unwrap();
     std::fs::write(root.0.join("downloads/x"), &payload).unwrap();
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "seeding").await;
     let address = daemon.call(json!({"op":"health"})).await["listen"]
@@ -181,7 +188,14 @@ async fn endgame_requests_progress_while_other_duplicates_are_stalled() {
         .unwrap()
         .as_bytes();
     let root = Temp::new();
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "downloading").await;
     let address = daemon.call(json!({"op":"health"})).await["listen"]

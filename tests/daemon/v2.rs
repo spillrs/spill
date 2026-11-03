@@ -1,5 +1,5 @@
 use crate::{
-    common::{BIN, Daemon, http, peer_frame, raw_peer},
+    common::{BIN, Daemon, DaemonConfig, http, peer_frame, raw_peer},
     payload::Temp,
 };
 use base64::{Engine, prelude::BASE64_STANDARD};
@@ -152,8 +152,16 @@ async fn metainfo_downloads_resume_recheck_seed_and_remove_through_full_hash_ali
                 }
             });
             let root = Temp::new();
-            let mut daemon =
-                Daemon::start(&root.0, "trackers=true\ndht=true\nweb_seeds=false", None).await;
+            let mut daemon = Daemon::start(
+                &root.0,
+                DaemonConfig {
+                    trackers: true,
+                    dht: true,
+                    web_seeds: false,
+                    ..Default::default()
+                },
+            )
+            .await;
             let id = daemon.add(meta.source_bytes(), None).await;
             assert_eq!(id, identity.to_string());
             let listen = daemon.call(json!({"op":"health"})).await["listen"]
@@ -332,7 +340,15 @@ async fn cli_http_and_catalog_preserve_stable_ids_and_both_hybrid_aliases() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let web = listener.local_addr().unwrap();
         drop(listener);
-        let mut daemon = Daemon::start(&root.0, "web_seeds=false", Some(web)).await;
+        let mut daemon = Daemon::start(
+            &root.0,
+            DaemonConfig {
+                web_seeds: false,
+                web_listen: Some(web),
+                ..Default::default()
+            },
+        )
+        .await;
         let index = http(web, "GET", "/", None, b"").await;
         let token = index
             .split("const token='")

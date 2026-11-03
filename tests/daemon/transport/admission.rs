@@ -1,5 +1,5 @@
 use super::{transport_daemon, utp_tracker_gated, wait_transport};
-use crate::common::{Daemon, raw_peer};
+use crate::common::{Daemon, DaemonConfig, raw_peer};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use std::time::Duration;
@@ -100,11 +100,19 @@ async fn utp_mux_capacity_is_reclaimed_and_does_not_poison_contacts() {
         .unwrap();
     let gate = std::sync::Arc::new(tokio::sync::Notify::new());
     let (url, tracker) = utp_tracker_gated(target.local_addr().unwrap(), Some(gate.clone())).await;
-    std::fs::write(root.0.join("config.toml"), format!(
-        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"127.0.0.1:0\"\nallow_local_network=true\nport_mapping=false\nutp=true\npeers=1\nactive_downloads=1\nactive_seeds=1\ndht_bootstrap=[]\n[defaults]\ndht=false\npex=false\nweb_seeds=false\ntrackers=true\n",
-        root.0.join("state"), root.0.join("downloads"), root.0.join("control.sock"),
-    )).unwrap();
-    let mut daemon = Daemon::start_config(&root.0).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            utp: Some(true),
+            peers: Some(1),
+            cache_bytes: None,
+            write_queue_bytes: None,
+            web_seeds: false,
+            trackers: true,
+            ..Default::default()
+        },
+    )
+    .await;
     let meta = seed_metainfo("x", b"abc", Some(&url));
     let id = daemon.add(&meta, None).await;
     daemon.state(&id, "downloading").await;

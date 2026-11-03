@@ -1,4 +1,4 @@
-use crate::common::{Daemon, WebSeed, multifile_metainfo};
+use crate::common::{Daemon, DaemonConfig, WebSeed, multifile_metainfo};
 use crate::payload::Temp;
 use serde_json::json;
 
@@ -15,7 +15,7 @@ async fn padding_is_synthesized_across_pieces_and_never_materialized() {
             ("b", b"WXYZ", false),
         ],
     );
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let id = daemon.add(&bytes, None).await;
     let row = daemon.state(&id, "seeding").await;
     assert_eq!(row["verified_bytes"], 9);
@@ -57,7 +57,14 @@ async fn file_selection_fetches_boundary_bytes_but_not_skipped_pieces() {
             ("c", b"ijkl", false),
         ],
     );
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "downloading").await;
     daemon

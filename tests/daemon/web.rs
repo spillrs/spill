@@ -1,4 +1,4 @@
-use crate::common::{Daemon, WebSeed, http, metainfo};
+use crate::common::{Daemon, DaemonConfig, WebSeed, http, metainfo};
 use crate::payload::Temp;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use serde_json::json;
@@ -11,7 +11,14 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", Some(address)).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_listen: Some(address),
+            ..Default::default()
+        },
+    )
+    .await;
     let index = http(address, "GET", "/", None, b"").await;
     assert!(index.starts_with("HTTP/1.1 200"));
     assert!(index.contains("Selected torrent details"));
@@ -96,10 +103,22 @@ async fn web_add_applies_defaults_and_paused_policy_before_starting_on_ipv6() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
-    std::fs::write(root.0.join("config.toml"), format!(
-        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"[::1]:0\"\nweb_listen=\"{address}\"\nport_mapping=false\nallow_local_network=true\ndht_bootstrap=[]\n[defaults]\ntrackers=false\ndht=false\npex=true\nweb_seeds=true\nupload_limit=321\n",
-        root.0.join("state"), root.0.join("downloads"), root.0.join("control.sock"))).unwrap();
-    let mut daemon = Daemon::start_config(&root.0).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            listen: "[::1]:0".parse().unwrap(),
+            web_listen: Some(address),
+            pex: true,
+            upload_limit: 321,
+            active_downloads: 4,
+            active_seeds: 16,
+            peers: None,
+            cache_bytes: None,
+            write_queue_bytes: None,
+            ..Default::default()
+        },
+    )
+    .await;
     let index = http(address, "GET", "/", None, b"").await;
     let defaults: serde_json::Value = serde_json::from_str(
         index

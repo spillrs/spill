@@ -1,15 +1,25 @@
-use crate::common::{Daemon, WebSeed, metainfo, peer_frame, raw_peer};
+use crate::common::{Daemon, DaemonConfig, WebSeed, metainfo, peer_frame, raw_peer};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 async fn mapping_daemon(root: &std::path::Path, gateway: &str, enabled: bool) -> Daemon {
-    std::fs::write(root.join("config.toml"), format!(
-        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"127.0.0.1:0\"\nallow_local_network=true\nport_mapping={enabled}\nport_mapping_gateway=\"{gateway}\"\ndht_bootstrap=[]\n[defaults]\ndht=false\npex=false\nweb_seeds=true\n",
-        root.join("state"), root.join("downloads"), root.join("control.sock"),
-    )).unwrap();
-    Daemon::start_config(root).await
+    Daemon::start(
+        root,
+        DaemonConfig {
+            port_mapping: enabled,
+            port_mapping_gateway: Some(gateway.to_owned()),
+            trackers: true,
+            peers: None,
+            cache_bytes: None,
+            write_queue_bytes: None,
+            active_downloads: 4,
+            active_seeds: 16,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 #[tokio::test]

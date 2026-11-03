@@ -1,5 +1,5 @@
 use super::transport::{utp_tracker, wait_transport};
-use crate::common::{Daemon, WebSeed, metainfo};
+use crate::common::{Daemon, DaemonConfig, WebSeed, metainfo};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
@@ -21,11 +21,22 @@ async fn discovery_accepts_new_contacts_after_4096_known_addresses() {
         bytes.extend_from_slice(payload);
         bytes
     };
-    std::fs::write(root.0.join("config.toml"), format!(
-        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"127.0.0.1:0\"\nallow_local_network=true\nport_mapping=false\nutp=true\npeers=33\ndht_bootstrap=[]\n[defaults]\ndht=false\npex=true\nweb_seeds=false\ntrackers=true\n",
-        root.0.join("state"), root.0.join("downloads"), root.0.join("control.sock"),
-    )).unwrap();
-    let mut daemon = Daemon::start_config(&root.0).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            utp: Some(true),
+            peers: Some(33),
+            cache_bytes: None,
+            write_queue_bytes: None,
+            active_downloads: 4,
+            active_seeds: 16,
+            pex: true,
+            web_seeds: false,
+            trackers: true,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon
         .add(&seed_metainfo("x", b"abc", Some(&url)), None)
         .await;
@@ -146,11 +157,13 @@ async fn session_network_policy_controls_trackers_and_web_seeds() {
         let mut bytes = format!("d8:announce{}:{}8:url-list{}:{}4:infod6:lengthi3e4:name1:x12:piece lengthi4e6:pieces20:", announce.len(), announce, source.url.len(), source.url).into_bytes();
         bytes.extend_from_slice(&sha1::Sha1::digest(b"abc"));
         bytes.extend_from_slice(b"ee");
-        let mut daemon = Daemon::start_with_policy(
+        let mut daemon = Daemon::start(
             &root.0,
-            "trackers=true\nweb_seeds=true",
-            None,
-            allow_local_network,
+            DaemonConfig {
+                trackers: true,
+                allow_local_network,
+                ..Default::default()
+            },
         )
         .await;
         let id = daemon.add(&bytes, None).await;
@@ -268,7 +281,14 @@ async fn magnet_resolves_metadata_then_downloads_and_seeds() {
         }
     });
     let root = Temp::new();
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let magnet = format!("magnet:?xt=urn:btih:{hash}&tr=udp://{tracker}/announce");
     let id = daemon
         .call(json!({"op":"add","metainfo":null,"magnet":magnet,"output_dir":null}))

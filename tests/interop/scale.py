@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=300, help="seconds per completion/restart stage")
     parser.add_argument("--piece-length", type=int, default=len(CHUNK), help="piece bytes for multi-torrent (multiple of 256 KiB, up to 16 MiB)")
     parser.add_argument("--dead-udp-tracker", action="store_true", help="include a local UDP tracker that receives requests but never replies")
+    parser.set_defaults(host="127.0.0.1")
     args = parser.parse_args()
     if not 1 <= args.files <= 100_000 or args.soak_seconds < 0 or args.timeout <= 0:
         parser.error("invalid file count, soak duration or timeout")
@@ -128,12 +129,13 @@ def main():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     socket_path, config = root / "control.sock", root / "spill.toml"
-    write_config(config, state=root / "state", destination=root / "downloads",
-                 control_socket=socket_path, host="127.0.0.1", trackers=args.dead_udp_tracker, web_seeds=True)
-    config.write_text(config.read_text().replace("active_downloads = 1", f"active_downloads = {downloads}")
-                      .replace("active_seeds = 1", f"active_seeds = {seeds}")
-                      .replace("download_limit = 0", f"download_limit = {limit}")
-                      .replace("[defaults]", "peers = 4\ncache_bytes = 262144\nwrite_queue_bytes = 1048576\n\n[defaults]"))
+    config_options = dict(state=root / "state", destination=root / "downloads",
+                          control_socket=socket_path, host=args.host,
+                          trackers=args.dead_udp_tracker, web_seeds=True,
+                          active_downloads=downloads, active_seeds=seeds,
+                          download_limit=limit, peers=4, cache_bytes=262144,
+                          write_queue_bytes=1048576)
+    write_config(config, **config_options)
     files, processes = [], []
     engine = Engine(args, root, config, files, processes)
     started = time.monotonic()
@@ -187,7 +189,7 @@ def main():
                 resume, complete = db.execute("SELECT resume,complete FROM torrents WHERE id=?", (torrent_id,)).fetchone()
             return (resume, complete) if complete and resume else None
         resume, complete = wait_for("complete checkpoint", saved, args.timeout)
-        fingerprint_bytes = int.from_bytes(resume[32:36], "little")
+        fingerprint_bytes = int.from_bytes(resume[44:48], "little")
         assert fingerprint_bytes == args.files * 40, fingerprint_bytes
         return {"resume_bytes": len(resume), "fingerprint_bytes": fingerprint_bytes, "complete": bool(complete)}
 
@@ -243,7 +245,8 @@ def main():
             control(socket_path, "set", id=ids[0], values={"web_seeds": False})
         shutdown()
         downloads = 0
-        config.write_text(config.read_text().replace(f"active_downloads = {result['active_downloads']}", "active_downloads = 0"))
+        config_options["active_downloads"] = downloads
+        write_config(config, **config_options)
         restart_started = time.monotonic()
         engine.start()
         wait_for_control(engine, socket_path)

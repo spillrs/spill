@@ -21,39 +21,99 @@ pub struct Daemon {
     pub child: Child,
     pub socket: PathBuf,
 }
-impl Daemon {
-    pub async fn start(root: &Path, defaults: &str, web: Option<std::net::SocketAddr>) -> Self {
-        Self::start_with_policy(root, defaults, web, true).await
-    }
-    pub async fn start_with_policy(
-        root: &Path,
-        defaults: &str,
-        web: Option<std::net::SocketAddr>,
-        allow_local_network: bool,
-    ) -> Self {
-        Self::start_with_caps(root, defaults, web, allow_local_network, 1, 1).await
-    }
-    pub async fn start_with_caps(
-        root: &Path,
-        defaults: &str,
-        web: Option<std::net::SocketAddr>,
-        allow_local_network: bool,
-        active_downloads: usize,
-        active_seeds: usize,
-    ) -> Self {
-        let socket = root.join("control.sock");
-        let config = root.join("config.toml");
-        let defaults = format!("trackers=false\ndht=false\npex=false\n{defaults}");
-        let mut settings = std::collections::BTreeMap::new();
-        for line in defaults.lines() {
-            let (key, value) = line.split_once('=').unwrap();
-            settings.insert(key, value);
+#[derive(Clone)]
+pub(crate) struct DaemonConfig {
+    pub(crate) listen: std::net::SocketAddr,
+    pub(crate) web_listen: Option<std::net::SocketAddr>,
+    pub(crate) allow_local_network: bool,
+    pub(crate) port_mapping: bool,
+    pub(crate) port_mapping_gateway: Option<String>,
+    pub(crate) utp: Option<bool>,
+    pub(crate) peers: Option<usize>,
+    pub(crate) cache_bytes: Option<usize>,
+    pub(crate) write_queue_bytes: Option<usize>,
+    pub(crate) active_downloads: usize,
+    pub(crate) active_seeds: usize,
+    pub(crate) trackers: bool,
+    pub(crate) dht: bool,
+    pub(crate) pex: bool,
+    pub(crate) web_seeds: bool,
+    pub(crate) upload_limit: u64,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            web_listen: None,
+            allow_local_network: true,
+            port_mapping: false,
+            port_mapping_gateway: None,
+            utp: None,
+            peers: Some(4),
+            cache_bytes: Some(65536),
+            write_queue_bytes: Some(32768),
+            active_downloads: 1,
+            active_seeds: 1,
+            trackers: false,
+            dht: false,
+            pex: false,
+            web_seeds: true,
+            upload_limit: 0,
         }
-        let defaults = settings
-            .into_iter()
-            .map(|(key, value)| format!("{key}={value}\n"))
-            .collect::<String>();
-        std::fs::write(&config,format!("state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"127.0.0.1:0\"\nport_mapping=false\nallow_local_network={allow_local_network}\npeers=4\ncache_bytes=65536\nwrite_queue_bytes=32768\nactive_downloads={active_downloads}\nactive_seeds={active_seeds}\ndht_bootstrap=[]\n{}\n[defaults]\n{defaults}\n",root.join("state"),root.join("downloads"),socket,web.map(|a|format!("web_listen=\"{a}\"\n")).unwrap_or_default())).unwrap();
+    }
+}
+
+impl DaemonConfig {
+    pub(crate) fn write(&self, root: &Path) {
+        let sections = [
+            (
+                "",
+                json!({
+                    "state_dir": root.join("state"),
+                    "download_dir": root.join("downloads"),
+                    "control_socket": root.join("control.sock"),
+                    "listen": self.listen,
+                    "web_listen": self.web_listen,
+                    "allow_local_network": self.allow_local_network,
+                    "port_mapping": self.port_mapping,
+                    "port_mapping_gateway": self.port_mapping_gateway,
+                    "utp": self.utp,
+                    "peers": self.peers,
+                    "cache_bytes": self.cache_bytes,
+                    "write_queue_bytes": self.write_queue_bytes,
+                    "active_downloads": self.active_downloads,
+                    "active_seeds": self.active_seeds,
+                    "dht_bootstrap": [],
+                }),
+            ),
+            (
+                "\n[defaults]\n",
+                json!({
+                    "trackers": self.trackers,
+                    "dht": self.dht,
+                    "pex": self.pex,
+                    "web_seeds": self.web_seeds,
+                    "upload_limit": self.upload_limit,
+                }),
+            ),
+        ];
+        let mut text = String::new();
+        for (header, values) in sections {
+            text.push_str(header);
+            for (key, value) in values.as_object().unwrap() {
+                if !value.is_null() {
+                    text.push_str(&format!("{key} = {value}\n"));
+                }
+            }
+        }
+        std::fs::write(root.join("config.toml"), text).unwrap();
+    }
+}
+
+impl Daemon {
+    pub async fn start(root: &Path, config: DaemonConfig) -> Self {
+        config.write(root);
         Self::start_config(root).await
     }
     pub async fn start_config(root: &Path) -> Self {

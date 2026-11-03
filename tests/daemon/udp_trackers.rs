@@ -1,4 +1,4 @@
-use crate::common::Daemon;
+use crate::common::{Daemon, DaemonConfig};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use sha1::Digest;
@@ -12,7 +12,16 @@ async fn dht_and_udp_tracker_share_the_listen_port() {
     std::fs::write(root.0.join("downloads/x"), b"abc").unwrap();
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let url = format!("udp://{}/announce", socket.local_addr().unwrap());
-    let mut daemon = Daemon::start(&root.0, "trackers=true\ndht=true\nweb_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            trackers: true,
+            dht: true,
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let address: std::net::SocketAddr = daemon.call(json!({"op":"health"})).await["listen"]
         .as_str()
         .unwrap()
@@ -100,11 +109,22 @@ async fn dual_stack_listener_announces_to_an_ipv4_udp_tracker() {
     let root = Temp::new();
     std::fs::create_dir_all(root.0.join("downloads")).unwrap();
     std::fs::write(root.0.join("downloads/x"), b"abc").unwrap();
-    std::fs::write(root.0.join("config.toml"), format!(
-        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"[::]:0\"\nport_mapping=false\nallow_local_network=true\n[defaults]\ndht=false\ntrackers=true\nweb_seeds=false\n",
-        root.0.join("state"), root.0.join("downloads"), root.0.join("control.sock")
-    )).unwrap();
-    let mut daemon = Daemon::start_config(&root.0).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            listen: "[::]:0".parse().unwrap(),
+            trackers: true,
+            pex: true,
+            web_seeds: false,
+            active_downloads: 4,
+            active_seeds: 16,
+            peers: None,
+            cache_bytes: None,
+            write_queue_bytes: None,
+            ..Default::default()
+        },
+    )
+    .await;
     let address: std::net::SocketAddr = daemon.call(json!({"op":"health"})).await["listen"]
         .as_str()
         .unwrap()
@@ -231,8 +251,17 @@ async fn udp_trackers_are_independent_and_retry_lost_packets() {
     let (fast_sent, mut fast_events) = tokio::sync::mpsc::unbounded_channel();
     let slow_task = tokio::spawn(tracker(slow, true, slow_sent));
     let fast_task = tokio::spawn(tracker(fast, false, fast_sent));
-    let mut daemon =
-        Daemon::start_with_caps(&root.0, "trackers=true\nweb_seeds=false", None, true, 2, 2).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            trackers: true,
+            web_seeds: false,
+            active_downloads: 2,
+            active_seeds: 2,
+            ..Default::default()
+        },
+    )
+    .await;
     std::fs::write(root.0.join("downloads/x"), b"abc").unwrap();
     std::fs::write(root.0.join("downloads/y"), b"abc").unwrap();
     let slow_id = daemon
@@ -308,7 +337,15 @@ async fn udp_tracker_failure_text_reaches_status_in_both_exchanges() {
         .into_bytes();
         bytes.extend_from_slice(&sha1::Sha1::digest(b"abc"));
         bytes.extend_from_slice(b"7:privatei1eee");
-        let mut daemon = Daemon::start(&root.0, "trackers=true\nweb_seeds=false", None).await;
+        let mut daemon = Daemon::start(
+            &root.0,
+            DaemonConfig {
+                trackers: true,
+                web_seeds: false,
+                ..Default::default()
+            },
+        )
+        .await;
         let id = daemon.add(&bytes, None).await;
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {

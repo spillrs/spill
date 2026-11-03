@@ -1,4 +1,4 @@
-use crate::common::{BIN, Daemon, http, metainfo};
+use crate::common::{BIN, Daemon, DaemonConfig, http, metainfo};
 use crate::payload::Temp;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use serde_json::{Value, json};
@@ -86,7 +86,7 @@ impl Source {
 async fn cli_fetches_redirected_url_and_restart_uses_saved_metainfo() {
     let root = Temp::new();
     let source = Source::new().await;
-    let mut daemon = Daemon::start(&root.0, "", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let output = root.0.join("url output");
     std::fs::create_dir(&output).unwrap();
     std::fs::write(output.join("x"), b"abc").unwrap();
@@ -142,7 +142,7 @@ async fn cli_fetches_redirected_url_and_restart_uses_saved_metainfo() {
 async fn url_failures_leave_catalog_empty_and_do_not_expose_query_secrets() {
     let root = Temp::new();
     let source = Source::new().await;
-    let mut daemon = Daemon::start(&root.0, "", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     for path in [
         "/missing?key=secret",
         "/invalid",
@@ -200,7 +200,16 @@ async fn web_url_add_requires_auth_and_applies_private_torrent_policy() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
-    let mut daemon = Daemon::start(&root.0, "dht=true\npex=true", Some(address)).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            dht: true,
+            pex: true,
+            web_listen: Some(address),
+            ..Default::default()
+        },
+    )
+    .await;
     let index = http(address, "GET", "/", None, b"").await;
     assert!(index.contains("Magnet link or torrent URL"));
     let token = index
@@ -234,7 +243,7 @@ async fn web_url_add_requires_auth_and_applies_private_torrent_policy() {
 #[tokio::test]
 async fn url_body_deadline_applies_even_while_data_keeps_arriving() {
     let root = Temp::new();
-    let mut daemon = Daemon::start(&root.0, "", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!(
         "http://{}/download?key=secret",
@@ -290,7 +299,7 @@ async fn url_body_deadline_applies_even_while_data_keeps_arriving() {
 #[tokio::test]
 async fn slow_url_fetch_does_not_block_control_and_is_cancelled_on_shutdown() {
     let root = Temp::new();
-    let mut daemon = Daemon::start(&root.0, "", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/slow", listener.local_addr().unwrap());
     let client = Command::new(BIN)

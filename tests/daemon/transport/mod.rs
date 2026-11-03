@@ -3,7 +3,7 @@ mod fallback;
 mod flow_control;
 mod shutdown;
 mod transfer;
-use crate::common::Daemon;
+use crate::common::{Daemon, DaemonConfig};
 use serde_json::json;
 use std::time::Duration;
 
@@ -76,11 +76,22 @@ async fn transport_daemon_at(
     listen: &str,
     upload_limit: u64,
 ) -> Daemon {
-    std::fs::write(root.join("config.toml"), format!(
-        "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"{listen}\"\nallow_local_network=true\nport_mapping=false\nutp={utp}\npeers=4\nwrite_queue_bytes=16384\ndht_bootstrap=[]\n[defaults]\ndht=false\npex=false\nweb_seeds=false\ntrackers=true\nupload_limit={upload_limit}\n",
-        root.join("state"), root.join("downloads"), root.join("control.sock"),
-    )).unwrap();
-    Daemon::start_config(root).await
+    Daemon::start(
+        root,
+        DaemonConfig {
+            listen: listen.parse().unwrap(),
+            utp: Some(utp),
+            cache_bytes: None,
+            write_queue_bytes: Some(16384),
+            active_downloads: 4,
+            active_seeds: 16,
+            web_seeds: false,
+            trackers: true,
+            upload_limit,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 pub(super) async fn wait_transport(daemon: &Daemon, id: &str, transport: &str) {

@@ -1,4 +1,4 @@
-use crate::common::{Daemon, WebSeed};
+use crate::common::{Daemon, DaemonConfig, WebSeed};
 use crate::payload::Temp;
 use serde_json::json;
 use sha1::Digest;
@@ -85,8 +85,12 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
     bytes.extend_from_slice(b"7:privatei1eee");
     let mut daemon = Daemon::start(
         &root.0,
-        "web_seeds=true\ntrackers=true\ndht=true\npex=true",
-        None,
+        DaemonConfig {
+            trackers: true,
+            dht: true,
+            pex: true,
+            ..Default::default()
+        },
     )
     .await;
     let id = daemon.add(&bytes, None).await;
@@ -223,7 +227,7 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
     assert_eq!(stopped["event"], "stopped");
     assert_eq!(stopped["trackerid"], "tag");
     assert_eq!(stopped["uploaded"], "3");
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     daemon.state(&id, "seeding").await;
     let restarted = tokio::time::timeout(Duration::from_secs(5), requests.recv())
         .await
@@ -261,7 +265,7 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
     daemon.stop().await;
     assert_eq!(requests.recv().await.unwrap()["event"], "stopped");
     // Acknowledged completion must not be replayed by another fresh session.
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     daemon.state(&id, "seeding").await;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), requests.recv())
@@ -326,7 +330,15 @@ async fn adopted_private_seed_never_announces_completed() {
     .into_bytes();
     bytes.extend_from_slice(&sha1::Sha1::digest(b"abc"));
     bytes.extend_from_slice(b"7:privatei1eee");
-    let mut daemon = Daemon::start(&root.0, "trackers=true\nweb_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            trackers: true,
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon.add(&bytes, None).await;
     for attempt in 0..2 {
         let row = daemon.state(&id, "seeding").await;
@@ -403,7 +415,15 @@ async fn private_tracker_failure_and_warning_reach_status() {
     .into_bytes();
     bytes.extend_from_slice(&sha1::Sha1::digest(b"abc"));
     bytes.extend_from_slice(b"7:privatei1eee");
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false\ntrackers=true", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            trackers: true,
+            ..Default::default()
+        },
+    )
+    .await;
     let id = daemon.add(&bytes, None).await;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {

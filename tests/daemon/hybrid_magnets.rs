@@ -1,4 +1,8 @@
-use crate::{common::Daemon, metadata_peer, payload::Temp};
+use crate::{
+    common::{Daemon, DaemonConfig},
+    metadata_peer,
+    payload::Temp,
+};
 use serde_json::json;
 use sha1::{Digest, Sha1};
 use spill::{
@@ -85,7 +89,15 @@ async fn magnets_keep_primary_ids_learn_aliases_and_recover_authenticated_layers
                 },
             ));
             let root = Temp::new();
-            let mut daemon = Daemon::start(&root.0, "trackers=true\nweb_seeds=false", None).await;
+            let mut daemon = Daemon::start(
+                &root.0,
+                DaemonConfig {
+                    trackers: true,
+                    web_seeds: false,
+                    ..Default::default()
+                },
+            )
+            .await;
             let topic = if v2_topic {
                 format!("btmh:1220{}", meta.info_hash().v2().unwrap())
             } else {
@@ -236,7 +248,15 @@ async fn private_v2_magnets_fail_before_layers_or_payload_and_retain_failure() {
         let (url, tracker) = metadata_peer::tracker(&[listener.local_addr().unwrap()]).await;
         let source = tokio::spawn(metadata_peer::serve_full(listener, meta.clone(), 4));
         let root = Temp::new();
-        let mut daemon = Daemon::start(&root.0, "trackers=true\nweb_seeds=false", None).await;
+        let mut daemon = Daemon::start(
+            &root.0,
+            DaemonConfig {
+                trackers: true,
+                web_seeds: false,
+                ..Default::default()
+            },
+        )
+        .await;
         let id = meta.info_hash().to_string();
         daemon
             .call(json!({"op":"add", "magnet":format!("magnet:?xt=urn:btmh:1220{id}&tr={url}")}))
@@ -277,7 +297,7 @@ async fn learned_catalog_alias_collision_fails_without_publishing_metadata() {
         let (url, tracker) = metadata_peer::tracker(&[listener.local_addr().unwrap()]).await;
         let source = tokio::spawn(metadata_peer::serve_full(listener, meta.clone(), 0));
         let root = Temp::new();
-        let mut daemon = Daemon::start(&root.0, "trackers=true\nweb_seeds=false", None).await;
+        let mut daemon = Daemon::start(&root.0, DaemonConfig { trackers: true, web_seeds: false, ..Default::default() }).await;
         let v2 = meta.info_hash().v2().unwrap().to_string();
         let v1 = meta.info_hash().v1().unwrap().to_string();
         daemon.call(json!({"op":"add", "magnet":format!("magnet:?xt=urn:btmh:1220{v2}"), "paused":true})).await;

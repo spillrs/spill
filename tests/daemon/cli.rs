@@ -1,4 +1,4 @@
-use crate::common::{BIN, Daemon, WebSeed, metainfo};
+use crate::common::{BIN, Daemon, DaemonConfig, WebSeed, metainfo};
 use crate::payload::Temp;
 use serde_json::Value;
 use std::time::Duration;
@@ -25,7 +25,7 @@ async fn client_commands_are_top_level_without_a_ctl_alias() {
 
     let root = Temp::new();
     let source = WebSeed::new().await;
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     {
         use serde_json::json;
         let output = root.0.join("unsupported");

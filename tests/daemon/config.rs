@@ -1,6 +1,6 @@
-#[cfg(target_os = "macos")]
-use crate::common::multifile_metainfo;
 use crate::common::{BIN, Daemon};
+#[cfg(target_os = "macos")]
+use crate::common::{DaemonConfig, multifile_metainfo};
 use crate::payload::{Temp, seed_metainfo};
 use std::time::Duration;
 
@@ -8,44 +8,54 @@ use std::time::Duration;
 async fn invalid_configuration_is_rejected_before_runtime_start() {
     let root = Temp::new();
     let config = root.0.join("invalid.toml");
+    let base = format!(
+        r#"state_dir = {}
+download_dir = {}
+control_socket = {}
+listen = "127.0.0.1:0"
+"#,
+        serde_json::json!(root.0.join("state")),
+        serde_json::json!(root.0.join("downloads")),
+        serde_json::json!(root.0.join("control.sock")),
+    );
     for (invalid, message) in [
-        ("active_downloads=0\nactive_seeds=0\n", "nonzero active cap"),
         (
-            "port_mapping_gateway=\"https://192.168.1.1/root.xml\"\n",
+            "active_downloads = 0\nactive_seeds = 0",
+            "nonzero active cap",
+        ),
+        (
+            r#"port_mapping_gateway = "https://192.168.1.1/root.xml""#,
             "http URL",
         ),
         (
-            "port_mapping_gateway=\"http://239.255.255.250/root.xml\"\n",
+            r#"port_mapping_gateway = "http://239.255.255.250/root.xml""#,
             "unicast host",
         ),
         (
-            "port_mapping_gateway=\"http://0.0.0.0/root.xml\"\n",
+            r#"port_mapping_gateway = "http://0.0.0.0/root.xml""#,
             "unicast host",
         ),
         (
-            "port_mapping_gateway=\"localhost\"\n",
+            r#"port_mapping_gateway = "localhost""#,
             "invalid socket address",
         ),
-        ("port_mapping_gateway=\"127.0.0.1:0\"\n", "nonzero port"),
-        ("port_mapping_gateway=\"::1\"\n", "IPv4"),
-        ("[defaults]\nseed_ratio=-1.0\n", "seed_ratio"),
-        ("dht_bootstrap=[\"missing-port\"]\n", "invalid DHT routers"),
+        (r#"port_mapping_gateway = "127.0.0.1:0""#, "nonzero port"),
+        (r#"port_mapping_gateway = "::1""#, "IPv4"),
+        ("[defaults]\nseed_ratio = -1.0", "seed_ratio"),
+        (r#"dht_bootstrap = ["missing-port"]"#, "invalid DHT routers"),
         (
-            "dht_bootstrap=[\"[ff02::1]:6881\"]\n",
+            r#"dht_bootstrap = ["[ff02::1]:6881"]"#,
             "invalid DHT routers",
         ),
         (
-            "dht_bootstrap=[\"[fe80::1%2]:6881\"]\n",
+            r#"dht_bootstrap = ["[fe80::1%2]:6881"]"#,
             "invalid DHT routers",
         ),
-        ("peers=0\n", "invalid torrent resource limits"),
-        ("cache_bytes=0\n", "invalid torrent resource limits"),
-        ("write_queue_bytes=0\n", "invalid torrent resource limits"),
+        ("peers = 0", "invalid torrent resource limits"),
+        ("cache_bytes = 0", "invalid torrent resource limits"),
+        ("write_queue_bytes = 0", "invalid torrent resource limits"),
     ] {
-        std::fs::write(&config, format!(
-            "state_dir={:?}\ndownload_dir={:?}\ncontrol_socket={:?}\nlisten=\"127.0.0.1:0\"\n{invalid}",
-            root.0.join("state"), root.0.join("downloads"), root.0.join("control.sock"),
-        )).unwrap();
+        std::fs::write(&config, format!("{base}{invalid}\n")).unwrap();
         let result = tokio::time::timeout(
             Duration::from_secs(3),
             tokio::process::Command::new(BIN)
@@ -58,9 +68,13 @@ async fn invalid_configuration_is_rejected_before_runtime_start() {
         .await
         .expect("invalid config must not start a runtime")
         .unwrap();
-        assert_eq!(result.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&result.stderr).contains(message));
-        assert!(!root.0.join("control.sock").exists());
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.code(), Some(1), "{invalid}: {stderr}");
+        assert!(
+            stderr.contains(message),
+            "{invalid}: expected {message:?}, got {stderr}"
+        );
+        assert!(!root.0.join("control.sock").exists(), "{invalid}");
     }
 }
 
@@ -129,7 +143,14 @@ async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
 #[tokio::test]
 async fn macos_raises_file_limit_for_many_payload_files() {
     let root = Temp::new();
-    let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
     daemon.stop().await;
     let child = tokio::process::Command::new("/bin/sh")
         .args([

@@ -1,4 +1,4 @@
-use crate::common::{Daemon, WebSeed, metainfo, peer_frame, raw_peer};
+use crate::common::{Daemon, DaemonConfig, WebSeed, metainfo, peer_frame, raw_peer};
 use crate::payload::{Temp, seed_metainfo};
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,7 +19,7 @@ async fn accounting_survives_restart_without_counting_existing_data() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "seeding").await;
 
@@ -86,7 +86,7 @@ async fn accounting_survives_restart_without_counting_existing_data() {
         assert!(before <= added && added <= download && download <= upload);
         assert!(added <= completed && completed <= upload);
         daemon.stop().await;
-        daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+        daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
         let restarted = daemon.state(&id, "paused").await;
         for field in [
             "downloaded_bytes",

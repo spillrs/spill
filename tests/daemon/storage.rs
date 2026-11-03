@@ -1,4 +1,4 @@
-use crate::common::{Daemon, WebSeed, metainfo, multifile_metainfo};
+use crate::common::{Daemon, DaemonConfig, WebSeed, metainfo, multifile_metainfo};
 use crate::payload::Temp;
 use serde_json::json;
 use std::sync::atomic::Ordering;
@@ -11,7 +11,7 @@ async fn temporary_destination_failure_retries_after_the_directory_is_restored()
         let root = Temp::new();
         let output = root.0.join("destination");
         std::fs::create_dir(&output).unwrap();
-        let mut daemon = Daemon::start(&root.0, "", None).await;
+        let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
         let added = daemon.call(json!({"op":"add", "metainfo":BASE64_STANDARD.encode(metainfo(None)), "output_dir":output, "paused":true})).await;
         let id = added["id"].as_str().unwrap();
         std::fs::remove_dir(&output).unwrap();
@@ -62,7 +62,7 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
         bytes.extend_from_slice(&Sha1::digest(piece));
     }
     bytes.extend_from_slice(b"ee");
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let id = daemon.add(&bytes, None).await;
     let row = daemon.state(&id, "seeding").await;
     assert_eq!(row["verified_bytes"], payload.len());
@@ -158,7 +158,7 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
     daemon.stop().await;
     assert_eq!(std::fs::read(root.0.join("downloads/x")).unwrap(), payload);
     let hits = source.hits.load(Ordering::Relaxed);
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     daemon.state(&id, "seeding").await;
     assert_eq!(source.hits.load(Ordering::Relaxed), hits);
     daemon.call(json!({"op":"pause","id":id})).await;
@@ -194,7 +194,7 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
 async fn recheck_completion_controls_download_and_seed_admission() {
     let root = Temp::new();
     let source = WebSeed::new().await;
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let id = daemon.add(&metainfo(Some(&source.url)), None).await;
     daemon.state(&id, "seeding").await;
     daemon
@@ -223,7 +223,15 @@ async fn recheck_completion_controls_download_and_seed_admission() {
     assert!(complete);
     daemon.stop().await;
 
-    let mut daemon = Daemon::start_with_caps(&root.0, "web_seeds=false", None, true, 0, 1).await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            active_downloads: 0,
+            ..Default::default()
+        },
+    )
+    .await;
     daemon.call(json!({"op":"resume","id":id})).await;
     daemon.state(&id, "seeding").await;
     daemon.stop().await;
@@ -235,7 +243,7 @@ async fn directory_conflicts_are_rejected_without_claiming_payload_paths() {
     let source = WebSeed::files(&[("/test/a", b"abc"), ("/test/b", b"def")], false).await;
     let bytes = multifile_metainfo(&source.url, &[("a", b"abc", false), ("b", b"def", false)]);
     for retry in [false, true] {
-        let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+        let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
         let conflict = root.0.join("downloads/test/b.part");
         std::fs::create_dir_all(&conflict).unwrap();
         let id = daemon.add(&bytes, None).await;
@@ -246,7 +254,7 @@ async fn directory_conflicts_are_rejected_without_claiming_payload_paths() {
         assert!(!root.0.join("downloads/test/a.part").exists());
         daemon.stop().await;
 
-        let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+        let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
         if retry {
             std::fs::remove_dir(&conflict).unwrap();
             daemon.call(json!({"op":"resume","id":id})).await;
@@ -279,7 +287,7 @@ async fn failed_add_does_not_claim_foreign_partial_files() {
     let root = Temp::new();
     let source = WebSeed::files(&[("/test/a", b"abc"), ("/test/b", b"def")], false).await;
     let bytes = multifile_metainfo(&source.url, &[("a", b"abc", false), ("b", b"def", false)]);
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let foreign = root.0.join("downloads/test/a.part");
     std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
     std::fs::write(&foreign, b"unrelated").unwrap();
@@ -305,7 +313,7 @@ async fn payload_removal_preserves_unrelated_files_and_removes_catalog_entry() {
     let root = Temp::new();
     let source = WebSeed::files(&[("/test/a", b"abc")], false).await;
     let bytes = multifile_metainfo(&source.url, &[("a", b"abc", false)]);
-    let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "seeding").await;
     let stray = root.0.join("downloads/test/keep");

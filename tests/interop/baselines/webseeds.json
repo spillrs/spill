@@ -1,0 +1,26 @@
+{
+  "scenario": "v2-hybrid-webseeds",
+  "status": "passed",
+  "source_revision": "d1725dd3903a92a169332658194ca28e831c51f6",
+  "source_dirty": true,
+  "modified_paths_at_run": [
+    "tests/interop/libtorrent_magnets.py",
+    "tests/interop/transmission_smoke.py"
+  ],
+  "libtorrent": "2.1.2.0",
+  "host": "192.168.1.227",
+  "runner_binary_sha256": "520a945c621265df1dada72d0caab723a0bbb4f32e3797c78e948970c7fe642d",
+  "harness_sha256": "d108e51aaa125d08484d006c5c59e13783121fbbc51282853adef104ed74f40c",
+  "command": "python3 tests/interop/libtorrent_webseeds.py --allow-network --host 192.168.1.227 --release",
+  "result": "target/interop/lt-webseeds-z8neyeiq/result.json",
+  "fixtures": ["v2.torrent", "v2-leaves.torrent", "hybrid.torrent", "libtorrent-hybrid.torrent"],
+  "modes": ["spill HTTP", "libtorrent HTTP", "peer-only from HTTP-fed seed", "mixed HTTP and peer"],
+  "checks_passed": 16,
+  "verified": [
+    "matching payload checksums, UTF-8 and space escaping, short tails and virtual padding exclusion",
+    "mixed generated payloads receive HTTP data and positive libtorrent peer uploads",
+    "HTTP percent-escape casing is accepted for both clients"
+  ],
+  "validation_scope": "Recorded tree only; final-tree validation is deferred until after merge.",
+  "tier3_run": false
+}

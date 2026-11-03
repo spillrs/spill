@@ -1,0 +1,24 @@
+{
+  "scenario": "hybrid-direct",
+  "status": "passed",
+  "source_revision": "d1725dd3903a92a169332658194ca28e831c51f6",
+  "source_dirty": true,
+  "libtorrent": "2.1.2.0",
+  "host": "192.168.1.227",
+  "runner_binary_sha256": "520a945c621265df1dada72d0caab723a0bbb4f32e3797c78e948970c7fe642d",
+  "harness_sha256": "6884a1e435ca3fb5dad115e7fa8ad0df709206eec578489c12e7694b9ae0645a",
+  "command": "python3 tests/interop/libtorrent_v2.py --allow-network --host 192.168.1.227 --release --artifacts target/interop/tier2-20261103-112529/libtorrent-direct",
+  "result": "target/interop/tier2-20261103-112529/libtorrent-direct/result.json",
+  "fixtures": ["hybrid.torrent", "libtorrent-hybrid.torrent"],
+  "wire_modes": ["v1", "v2"],
+  "transfer_checks": 4,
+  "proof_checks": 2,
+  "verified": [
+    "both directions in each wire mode with matching payload checksums",
+    "forwarded handshake keys and upgrade offers",
+    "independent hash-response comparisons for both fixtures",
+    "BEP 47 padding is served as zeros across short hybrid tails"
+  ],
+  "validation_scope": "Recorded tree only; final-tree validation is deferred until after merge.",
+  "tier3_run": false
+}

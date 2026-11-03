@@ -47,6 +47,10 @@ name = "spill"
 path = "src/daemon/main.rs"
 required-features = ["daemon"]
 
+[[example]]
+name = "interop-engine"
+path = "tests/interop/engine.rs"
+
 [[test]]
 name = "daemon"
 path = "tests/daemon.rs"

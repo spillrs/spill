@@ -1,0 +1,34 @@
+{
+  "scenario": "v2-direct",
+  "status": "passed",
+  "source_revision": "d1725dd3903a92a169332658194ca28e831c51f6",
+  "source_dirty": true,
+  "libtorrent": "2.1.2.0",
+  "host": "192.168.1.227",
+  "runner_binary_sha256": "520a945c621265df1dada72d0caab723a0bbb4f32e3797c78e948970c7fe642d",
+  "runner_source_sha256": "510a843c2f238b7578d7ea685bba188264a6c13411ba892b579e5881cbc2792b",
+  "harness_sha256": "6884a1e435ca3fb5dad115e7fa8ad0df709206eec578489c12e7694b9ae0645a",
+  "command": "python3 tests/interop/libtorrent_v2.py --allow-network --host 192.168.1.227 --release --artifacts target/interop/tier2-20261103-112529/libtorrent-direct",
+  "result": "target/interop/tier2-20261103-112529/libtorrent-direct/result.json",
+  "matrix_checks": 20,
+  "unsupported_checks": 1,
+  "verified": [
+    "non-empty transfers in both directions, including selective shared roots and 16 MiB pieces",
+    "byte-for-byte proof comparisons against libtorrent",
+    "queued proofs, unsolicited-piece disconnection and choked-peer budget isolation",
+    "changed payload produces hash rejects; an honest source repairs the download",
+    "partial SIGKILL/recovery, source-free completed restart, reverse seeding and offline recheck"
+  ],
+  "unsupported": "libtorrent rejects v2-empty.torrent with invalid length of torrent [libtorrent:9]",
+  "known_divergence": {
+    "client": "libtorrent 2.1.2.0",
+    "observation": "Without Fast, eight of nine requests remain unanswered after Choke",
+    "sources": [
+      "https://github.com/arvidn/libtorrent/blob/v2.1.2/src/bt_peer_connection.cpp#L389",
+      "https://github.com/arvidn/libtorrent/blob/v2.1.2/src/peer_connection.cpp#L3821",
+      "https://github.com/arvidn/libtorrent/blob/v2.1.2/src/peer_connection.cpp#L3304"
+    ]
+  },
+  "validation_scope": "Recorded tree only; final-tree validation is deferred until after merge.",
+  "tier3_run": false
+}

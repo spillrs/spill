@@ -1,0 +1,61 @@
+{
+  "scenario": "v2-hybrid-magnets",
+  "status": "passed-recorded-groups",
+  "libtorrent": "2.1.2.0",
+  "host": "192.168.1.227",
+  "topic_matrix": {
+    "source_revision": "d1725dd3903a92a169332658194ca28e831c51f6",
+    "source_dirty": true,
+    "modified_paths_at_run": [
+      "docs/v2.md",
+      "src/engine/core/mod.rs",
+      "src/engine/peer_io.rs",
+      "src/engine/peer_io/transport.rs",
+      "src/engine/session/mod.rs",
+      "src/engine/torrent/shell.rs",
+      "tests/engine/hybrid.rs",
+      "tests/interop/libtorrent_magnets.py",
+      "tests/interop/transmission_smoke.py"
+    ],
+    "daemon_binary_sha256": "0b81d6eaede157d98c13f29488009f7428c0b63f3798ec81c8e5ed1582f0bac9",
+    "harness_sha256": "e31d9c63643174169980e5a4176c02528af466d954ecea5acd47e4604cbc6a12",
+    "command": "python3 tests/interop/libtorrent_magnets.py --allow-network --host 192.168.1.227 --release --scenario magnets --artifacts target/interop/hfix-115404",
+    "result": "target/interop/hfix-115404/result.json",
+    "checks_passed": 8,
+    "v2_only": ["v2.torrent", "v2-leaves.torrent"],
+    "hybrid_fixtures": ["hybrid.torrent", "libtorrent-hybrid.torrent"],
+    "hybrid_topics": ["btih-only", "btmh-only", "dual"],
+    "verified": [
+      "both magnet directions with matching payload checksums",
+      "pending hybrids accept v2 replies to v1 payload handshakes without offering upgrades",
+      "hybrids download without hash requests, rebuild layers and serve authenticated proofs after restart",
+      "stable primary IDs, learned aliases and source-free restart"
+    ]
+  },
+  "acquisition_and_recovery_groups": {
+    "source_revision": "d1725dd3903a92a169332658194ca28e831c51f6",
+    "source_dirty": true,
+    "modified_paths_at_run": [
+      "tests/interop/libtorrent_magnets.py",
+      "tests/interop/transmission_smoke.py"
+    ],
+    "daemon_binary_sha256": "0b3664798f65771e1a97fa1b9158d46ac0a9fc1c83611c2689c9c926f8b3aa56",
+    "harness_sha256": "e31d9c63643174169980e5a4176c02528af466d954ecea5acd47e4604cbc6a12",
+    "command_template": "python3 tests/interop/libtorrent_magnets.py --allow-network --host 192.168.1.227 --release --scenario GROUP --artifacts target/interop/t2-m113847/GROUP",
+    "groups": [
+      {"scenario": "retry", "checks_passed": 4, "result": "target/interop/t2-m113847/retry/result.json"},
+      {"scenario": "acquisition", "checks_passed": 1, "result": "target/interop/t2-m113847/acquisition/result.json"},
+      {"scenario": "restart", "checks_passed": 2, "result": "target/interop/t2-m113847/restart/result.json"},
+      {"scenario": "layers", "checks_passed": 1, "result": "target/interop/t2-m113847/layers/result.json"}
+    ]
+  },
+  "compatibility_exception": {
+    "policy": "Spill requests at least two hashes but serves valid singletons for libtorrent",
+    "outbound_generation_source": "https://github.com/arvidn/libtorrent/blob/v2.1.2/src/hash_picker.cpp#L210-L214",
+    "response_size_source": "https://github.com/arvidn/libtorrent/blob/v2.1.2/src/bt_peer_connection.cpp#L1268-L1275",
+    "singleton_total_hashes": "proof_layers + 2",
+    "unchanged_limits": ["512-hash cap", "range/layer bounds", "upload grants", "response correlation", "full-root authentication"]
+  },
+  "validation_scope": "These groups were recorded on different working trees. The topic matrix includes the handshake fix; the other groups do not. Final-tree validation is deferred until after merge.",
+  "tier3_run": false
+}

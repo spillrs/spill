@@ -1,0 +1,50 @@
+{
+  "scenario": "torrent-creation",
+  "status": "recorded-with-compatibility-limitations",
+  "libtorrent": "2.1.2.0",
+  "transmission": "4.1.3 (838877323f)",
+  "host": "192.168.1.227",
+  "created_torrent_transfers": {
+    "source_revision": "f71b8e7a394b1f7eb60bb3be66f481c79999f426",
+    "daemon_binary_sha256": "1f6e555d8ccf52bf44bc9f3e0545344676d8e07ddbe58e12be3eef6a6dd79995",
+    "engine_binary_sha256": "45b16080e7eb56793e23e1555a5f3fcf66f503be7fd2ecc4a68b77747e338e33",
+    "runner_sha256": "7f1a9e0cdc170f484da903abf754edc850af55de32d3c1cd216ca76eef047b56",
+    "command": "python3 target/interop/tier2-f71b8e7-20261102T183837Z/creation-check.py --allow-network --host 192.168.1.227",
+    "result": "target/interop/tier2-f71b8e7-20261102T183837Z/creation/result.json",
+    "recorded_run_status": "failed",
+    "recorded_failure": "Transmission rejected the directory hybrid with repeated padding paths",
+    "completed_libtorrent_checks": 4,
+    "formats": ["v2", "hybrid"],
+    "shapes": ["directory", "single file"],
+    "verified": [
+      "full identities and stable IDs match libtorrent",
+      "both transfer directions have positive payload counters and matching checksums",
+      "directory payload includes component-order inversion, empty and short files, and repeated roots",
+      "single-file creation overrides the torrent name"
+    ]
+  },
+  "transmission_native_layout": {
+    "source_revision": "f71b8e7a394b1f7eb60bb3be66f481c79999f426",
+    "result": "target/interop/tier2-f71b8e7-20261102T183837Z/creation-transmission-native/result.json",
+    "checks_passed": ["single-file hybrid", "directory hybrid with distinct padding names"],
+    "checks_failed": ["directory hybrid with repeated padding names"],
+    "layout": "Zero-filled BEP 47 padding files are materialized for native v1 seed verification"
+  },
+  "padding_comparison": {
+    "source_revision": "d1725dd3903a92a169332658194ca28e831c51f6",
+    "daemon_binary_sha256": "0b3664798f65771e1a97fa1b9158d46ac0a9fc1c83611c2689c9c926f8b3aa56",
+    "harness_sha256": "ce6f2ea05ac01dee4fd9bb794735f3e4aeb01888d9b852c6f73c9ae6fed773e9",
+    "command": "python3 tests/interop/libtorrent_padding.py --allow-network --host 192.168.1.227 --release --artifacts target/interop/t2-113220/p",
+    "result": "target/interop/t2-113220/p/result.json",
+    "status": "confirmed",
+    "piece_length": 32768,
+    "file_lengths": [65659, 65659, 65659],
+    "spill_accepted_by_transmission": false,
+    "libtorrent_accepted_by_transmission": false,
+    "repeated_path_both": ".pad/32645",
+    "transmission_error_both": "duplicate path [.pad/32645] (22)",
+    "scope": "Confirms a shared Transmission compatibility limitation, not a successful transfer"
+  },
+  "validation_scope": "Recorded trees only; final-tree validation is deferred until after merge.",
+  "tier3_run": false
+}

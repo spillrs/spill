@@ -1,0 +1,32 @@
+{
+  "scenario": "discovery-and-daemon-lifecycle",
+  "status": "passed",
+  "source_revision": "d1725dd3903a92a169332658194ca28e831c51f6",
+  "source_dirty": true,
+  "modified_paths_at_run": [
+    "tests/interop/libtorrent_magnets.py",
+    "tests/interop/transmission_smoke.py"
+  ],
+  "libtorrent": "2.1.2.0",
+  "host": "192.168.1.227",
+  "daemon_binary_sha256": "0b3664798f65771e1a97fa1b9158d46ac0a9fc1c83611c2689c9c926f8b3aa56",
+  "harness_sha256": "bf04fe8eee45f74d87d8f7788d242ccdddda8022021021d5418048c690546b3f",
+  "shared_harness_sha256": "6884a1e435ca3fb5dad115e7fa8ad0df709206eec578489c12e7694b9ae0645a",
+  "control_helper_sha256": "d0839cde44f7dad0365a5aaaf3db780f106ceaf3fbc9adbfaa400449fc348b8a",
+  "command": "python3 tests/interop/libtorrent_discovery.py --allow-network --host 192.168.1.227 --release --artifacts target/interop/t2-113220/d",
+  "result": "target/interop/t2-113220/d/result.json",
+  "checks_passed": 18,
+  "discovery_checks": 15,
+  "discovery_methods": ["http", "udp", "dht"],
+  "fixtures": ["v2.torrent", "hybrid.torrent", "libtorrent-hybrid.torrent"],
+  "verified": [
+    "transfers in both directions with isolated hybrid swarm contacts",
+    "per-swarm tracker completion delivery survives restart",
+    "local libtorrent DHT lookup and announce keys",
+    "native bidirectional PEX reaches a raw legacy seed through an upgraded intermediary",
+    "aliases, duplicate add, pause, restart, resume, recheck and removal",
+    "partial SIGKILL/recovery for v2 and hybrid payloads, followed by source-free proof serving"
+  ],
+  "validation_scope": "Recorded tree only; final-tree validation is deferred until after merge.",
+  "tier3_run": false
+}

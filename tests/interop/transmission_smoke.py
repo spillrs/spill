@@ -293,10 +293,14 @@ def sha256_file(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def process_environment(root):
+def process_environment(root, host):
     temporary = root / "runtime-tmp"
     temporary.mkdir(mode=0o700, exist_ok=True)
-    return {**os.environ, "TMPDIR": str(temporary)}
+    # Transmission probes public IP services even with discovery disabled.
+    return {**os.environ, "TMPDIR": str(temporary),
+            "http_proxy": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9",
+            "all_proxy": "http://127.0.0.1:9",
+            "no_proxy": f"127.0.0.1,localhost,::1,{host}"}
 
 
 class Engine:
@@ -325,7 +329,7 @@ class Engine:
         log = (self.root / f"engine{index or ''}.log").open("w")
         self.files.append(log)
         command = command or [str(self.args.daemon.resolve()), "serve", "--config", str(self.config)]
-        self.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=process_environment(self.root))
+        self.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=process_environment(self.root, self.args.host))
         self.processes.append(self.process)
         self.pid = self.process.pid
         self.runs.append({"pid": self.pid, "peak_rss_kib": 0})
@@ -450,7 +454,7 @@ def download(binary, source, destination, root, host, *, run_seconds, stall_seco
     total_seconds = total_seconds if total_seconds is not None else run_seconds + 15
     with (root / "process.log").open("w") as log:
         process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                   env=process_environment(root))
+                                   env=process_environment(root, host))
         if processes is not None:
             processes.append(process)
         try:
@@ -460,7 +464,7 @@ def download(binary, source, destination, root, host, *, run_seconds, stall_seco
             added = subprocess.run([*client, "add", str(source), "--output", str(destination)],
                                    capture_output=True, text=True, check=True,
                                    timeout=max(0.001, run_seconds - (time.monotonic() - started)),
-                                   env=process_environment(root))
+                                   env=process_environment(root, host))
             torrent_id = json.loads(added.stdout)["id"]
             verified = 0
             seen_transports = set()
@@ -517,6 +521,7 @@ def main():
     parser.add_argument("--keep", action="store_true", help="retain generated payloads after success")
     parser.add_argument("--reference", action="store_true", help="also time Transmission -> Transmission; reports measurements without performance thresholds")
     parser.add_argument("--magnet", action="store_true", help="tracker-only magnet through daemon control; catalog restart/retry check")
+    parser.add_argument("--hybrid", action="store_true", help="use a single-file hybrid fixture; --magnet checks v1-only layer rebuilding")
     parser.add_argument("--http-tracker", action="store_true", help="use a local HTTP tracker instead of UDP")
     parser.add_argument("--private", action="store_true", help="private metainfo; requires --http-tracker and forbids --magnet")
     parser.add_argument("--restart-check", action="store_true", help="check completed-payload and mtime-touch recovery without source discovery")
@@ -533,6 +538,8 @@ def main():
         parser.error("--reference requires unlimited --rate-limit 0 for comparable runs")
     if args.private and (not args.http_tracker or args.magnet):
         parser.error("--private requires --http-tracker and cannot use --magnet")
+    if args.hybrid and (args.size == 0 or args.piece_length < 16384 or args.piece_length & (args.piece_length - 1)):
+        parser.error("--hybrid requires nonempty payload and power-of-two pieces of at least 16KiB")
     if args.kill_at is not None and not 0 < args.kill_at < 1:
         parser.error("--kill-at must be between zero and one")
     if args.release:
@@ -556,6 +563,7 @@ def main():
         path.mkdir(mode=0o700)
     # Generate and hash piece by piece: the harness must not buffer a GiB.
     pieces = []
+    v2_pieces = []
     pattern = bytes(range(256)) * 4096
     digest_state = hashlib.sha256()
     with (seed / "payload.bin").open("wb") as output:
@@ -565,6 +573,13 @@ def main():
             output.write(piece)
             digest_state.update(piece)
             pieces.append(hashlib.sha1(piece).digest())
+            if args.hybrid:
+                nodes = [hashlib.sha256(piece[i:i + 16384]).digest() for i in range(0, length, 16384)]
+                blocks = (min(args.size, args.piece_length) + 16383) // 16384
+                nodes += [bytes(32)] * ((1 << (blocks - 1).bit_length()) - len(nodes))
+                while len(nodes) > 1:
+                    nodes = [hashlib.sha256(nodes[i] + nodes[i + 1]).digest() for i in range(0, len(nodes), 2)]
+                v2_pieces.append(nodes[0])
     digest = digest_state.hexdigest()
     peer_port, rpc_port = free_port(args.host), free_port("127.0.0.1")
     tracker = (HttpTracker if args.http_tracker else Tracker)(args.host, peer_port)
@@ -572,9 +587,21 @@ def main():
             b"pieces": b"".join(pieces)}
     if args.private:
         info[b"private"] = 1
+    document = {b"announce": tracker.url.encode(), b"info": info}
+    if args.hybrid:
+        padding = bytes(32)
+        for _ in range((args.piece_length // 16384).bit_length() - 1):
+            padding = hashlib.sha256(padding + padding).digest()
+        nodes = v2_pieces + [padding] * ((1 << (len(v2_pieces) - 1).bit_length()) - len(v2_pieces))
+        while len(nodes) > 1:
+            nodes = [hashlib.sha256(nodes[i] + nodes[i + 1]).digest() for i in range(0, len(nodes), 2)]
+        root_hash = nodes[0]
+        info[b"meta version"] = 2
+        info[b"file tree"] = {b"payload.bin": {b"": {b"length": args.size, b"pieces root": root_hash}}}
+        document[b"piece layers"] = {root_hash: b"".join(v2_pieces)} if args.size > args.piece_length else {}
     info_hash = hashlib.sha1(bencode(info)).hexdigest()
     torrent = root / "fixture.torrent"
-    torrent.write_bytes(bencode({b"announce": tracker.url.encode(), b"info": info}))
+    torrent.write_bytes(bencode(document))
     (settings / "settings.json").write_text(json.dumps({
         "dht-enabled": False, "pex-enabled": False, "lpd-enabled": False,
         "port-forwarding-enabled": False, "utp-enabled": args.transport == "utp",
@@ -592,7 +619,7 @@ def main():
     files = []
     result = {"transmission": subprocess.check_output([transmission_bin, "--version"], text=True, stderr=subprocess.STDOUT).strip(),
               "host": args.host, "bytes": args.size, "info_hash": info_hash, "sha256": digest,
-              "piece_length": args.piece_length, "artifacts": str(root), "release": args.release,
+              "piece_length": args.piece_length, "format": "hybrid" if args.hybrid else "v1", "artifacts": str(root), "release": args.release,
               "download_only": args.download_only, "transport": args.transport, "rate_limit": args.rate_limit, "filesystem": filesystem,
               "timing_status": "untraced"}
     engine = Engine(args, root, config, files, processes)
@@ -603,7 +630,8 @@ def main():
         ]:
             log = (root / f"{name}.log").open("w")
             files.append(log)
-            processes.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=process_environment(root)))
+            processes.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                              env=process_environment(root, args.host)))
         engine.start()
         wait_for("Transmission RPC", lambda: transmission.rpc("session-get"), 10)
         session = transmission.rpc("session-get")
@@ -621,7 +649,7 @@ def main():
         if args.magnet:
             reply = subprocess.run([str(args.daemon.resolve()), "--json", "--socket", str(socket_path), "add", magnet],
                                    capture_output=True, text=True, check=True, timeout=args.timeout + 15,
-                                   env=process_environment(root))
+                                   env=process_environment(root, args.host))
             added = json.loads(reply.stdout)
         else:
             added = control(socket_path, "add", **add_input)
@@ -699,9 +727,18 @@ def main():
             assert extra <= bound, (extra, bound)
             result["kill_restart"].update({"extra_source_payload_bytes": extra, "redownload_bound_bytes": bound, "checksum_matches": True})
         if args.magnet:
+            if args.hybrid:
+                def layers_ready():
+                    row = torrent_status(socket_path, local_id)
+                    assert row["last_error"] is None, row
+                    return row if not row["layers_pending"] else None
+                downloaded = wait_for("background hybrid layers", layers_ready, args.timeout)
             with sqlite3.connect(root / "state" / "catalog.sqlite") as db:
                 stored, = db.execute("SELECT metainfo FROM torrents WHERE id=?", (local_id,)).fetchone()
             assert bencode(info) in stored, "catalog must retain the exact verified info bytes"
+            if args.hybrid:
+                assert not downloaded["layers_pending"] and downloaded["hash_total_bytes"] == 0, downloaded
+                assert bencode(document[b"piece layers"]) in stored, "catalog must retain rebuilt authenticated layers"
             resolutions = sum(exchange["left"] == 1 for exchange in tracker.exchanges)
             assert resolutions > 0
             control(socket_path, "shutdown")

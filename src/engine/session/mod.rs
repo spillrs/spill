@@ -234,10 +234,19 @@ impl Session {
         if let Some(dht) = &network.dht {
             dht.validate(network.listen)?;
         }
-        let listener = TcpListener::bind(network.listen).await?;
-        let address = listener.local_addr()?;
+        // An ephemeral TCP port may already be taken for UDP; pick another.
+        let mut attempts = if network.listen.port() == 0 { 16 } else { 1 };
+        let (listener, address, mut udp) = loop {
+            let listener = TcpListener::bind(network.listen).await?;
+            let address = listener.local_addr()?;
+            attempts -= 1;
+            match udp::Transport::bind(address) {
+                Ok(udp) => break (listener, address, udp),
+                Err(error) if attempts > 0 && error.kind() == io::ErrorKind::AddrInUse => {}
+                Err(error) => return Err(error),
+            }
+        };
         let client = crate::engine::discovery::http_client(network.allow_local_network)?;
-        let mut udp = udp::Transport::bind(address)?;
         let mut session = Shared::new(address, limits, network.allow_local_network, Some(listener));
         session.dht = network.dht.map(|options| {
             Arc::new(dht::Dht::new(

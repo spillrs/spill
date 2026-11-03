@@ -44,7 +44,7 @@ use choker::{Candidate, Choker};
 pub(in crate::engine) use connection::ConnectionId;
 use connection::UnsolicitedBudget;
 pub(in crate::engine) use message::Frame;
-pub(in crate::engine) use observation::{Diagnostics, Event, Progress, Stall};
+pub(in crate::engine) use observation::{Event, Progress, Stall};
 use peer::PeerState as Remote;
 pub(in crate::engine) use picker::PIECE_BYTES as PIECE_BUDGET;
 use picker::Picker;

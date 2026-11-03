@@ -137,62 +137,6 @@ impl Torrent {
             hash_failed_pieces: self.hash_failed_pieces,
         })
     }
-    /// Observe scheduling state without polling/reconciling events or replenishing
-    /// budgets. Bounded O(peers + outstanding requests), no allocation or locks.
-    /// Available during failure and lifecycle barriers; it does not establish join.
-    pub(in crate::engine) fn diagnostics(&self) -> Diagnostics {
-        let established = |peer: &&Remote| peer.established && !peer.retiring;
-        let assigned = self
-            .picker
-            .all_requests()
-            .filter(|p| p.connection.is_some())
-            .count();
-        let observed_piece = self.picker.pieces().next();
-        Diagnostics {
-            peers: self.remotes.len(),
-            established_peers: self.remotes.iter().filter(|p| p.established).count(),
-            unchoked_peers: self
-                .remotes
-                .iter()
-                .filter(established)
-                .filter(|p| !p.choked)
-                .count(),
-            interested_peers: self
-                .remotes
-                .iter()
-                .filter(established)
-                .filter(|p| p.interested)
-                .count(),
-            remote_interested_peers: self
-                .remotes
-                .iter()
-                .filter(established)
-                .filter(|p| p.remote_interested)
-                .count(),
-            retiring_peers: self.remotes.iter().filter(|p| p.retiring).count(),
-            output_blocked_peers: self.remotes.iter().filter(|p| p.output_blocked).count(),
-            upload_unchoked_peers: self
-                .remotes
-                .iter()
-                .filter(|p| p.established && !p.retiring && !p.upload_choked)
-                .count(),
-            pending_upload_requests: self.remotes.iter().map(|p| p.uploads.len()).sum(),
-            outstanding_requests: self.picker.request_count(),
-            assigned_requests: assigned,
-            waiting_requests: self.picker.request_count() - assigned,
-            requests_at_retry_limit: self
-                .picker
-                .all_requests()
-                .filter(|p| p.reassignments == crate::engine::profile::MAX_REASSIGNMENTS)
-                .count(),
-            current_piece: observed_piece.map(|p| p.index),
-            piece_retries_remaining: observed_piece
-                .map(|p| crate::engine::profile::MAX_PIECE_RETRIES.saturating_sub(p.retries)),
-            hashing: self.picker.pieces().any(|p| p.hashing),
-            stalled: self.picker.stall(),
-            failed: self.failed,
-        }
-    }
     pub(in crate::engine) fn has_peer(&self, connection: ConnectionId) -> bool {
         self.remotes
             .iter()

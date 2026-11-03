@@ -43,6 +43,7 @@ pub(in crate::engine) struct Mux {
     cap: usize,
     enabled: bool,
     accepting: bool,
+    entropy_failed: bool,
 }
 impl Mux {
     pub(super) fn new(
@@ -65,6 +66,7 @@ impl Mux {
                 cap,
                 enabled,
                 accepting: true,
+                entropy_failed: false,
             })),
             receiver,
         )
@@ -93,7 +95,7 @@ impl Mux {
         if let Err(error) = self.socket.try_send_to(&bytes, address)
             && error.kind() != io::ErrorKind::WouldBlock
         {
-            tracing::debug!(%error, "utp_send_failed");
+            tracing::trace!(%error, "utp_send_failed");
         }
     }
     fn reset(&self, address: SocketAddr, id: u16, seq: u16, ack: u16, now: Instant) {
@@ -183,9 +185,18 @@ impl Mux {
                 return;
             };
             let seq = match Self::random() {
-                Ok(seq) => seq,
+                Ok(seq) => {
+                    if mux.entropy_failed {
+                        tracing::debug!("utp_entropy_recovered");
+                    }
+                    mux.entropy_failed = false;
+                    seq
+                }
                 Err(error) => {
-                    tracing::warn!(%error, "utp_entropy_failed");
+                    if !mux.entropy_failed {
+                        tracing::warn!(%error, "utp_entropy_failed");
+                    }
+                    mux.entropy_failed = true;
                     return;
                 }
             };

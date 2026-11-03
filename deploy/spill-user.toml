@@ -12,6 +12,12 @@ active_downloads = 4
 active_seeds = 16
 # dht_bootstrap = [] # disable public bootstrap routers, not DHT
 
+# stderr goes to the terminal/journal; detailed logs append to state_dir/debug.log.
+[logging]
+console_filter = "info"
+file_filter = "warn,spill=debug"
+file_enabled = true
+
 [defaults]
 download_limit = 0 # bytes/s; zero = unlimited
 upload_limit = 0

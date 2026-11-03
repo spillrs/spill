@@ -35,7 +35,7 @@ Downloads default to `~/Downloads` on both platforms. If you override
 
 | Key | Default | Meaning |
 |---|---|---|
-| `state_dir` | `~/.local/state/spill` | Catalog (`catalog.sqlite`) and lock file. Created with mode `0700`. Two daemons cannot share one state directory. |
+| `state_dir` | `~/.local/state/spill` | Catalog (`catalog.sqlite`), lock file and debug log (`debug.log`). Created with mode `0700`. Two daemons cannot share one state directory. |
 | `download_dir` | `~/Downloads` | Where new torrents are saved unless `add` gives an output directory. |
 | `control_socket` | `$XDG_RUNTIME_DIR/spill.sock`, else `~/.local/state/spill/spill.sock` | Unix socket for `spill`. Created with mode `0600`. |
 | `listen` | `"0.0.0.0:6881"` | Address and port for TCP peers and for uTP peers, the DHT and UDP trackers (UDP, same port). Both must be free. `"[::]:6881"` listens on IPv6 and IPv4 (dual-stack). |
@@ -74,6 +74,61 @@ alone can reach about 500 MiB, before peer queues, bookkeeping and kernel buffer
 The roughly 35 MiB measurement for 33 torrents in [Limits](limits.md) is a
 web-seed workload, not a uTP worst-case estimate. Size any systemd `MemoryMax`
 for the admitted torrent and peer budgets, not that measured baseline.
+
+## Logging: `[logging]`
+
+The daemon writes operational events to stderr and a more detailed history to
+`<state_dir>/debug.log`. These outputs have independent filters; lowering
+console verbosity does not discard debug-file events. Changes require a restart.
+Client commands keep their usual stdout/JSON and stderr behavior. The embeddable
+engine never installs a subscriber; its application owns tracing configuration.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `console_filter` | `"info"` | Tracing filter for stderr: lifecycle, torrent failures/recovery and subsystem warnings by default. |
+| `file_filter` | `"warn,spill=debug"` | Tracing filter for the debug file: spill debug events and dependency warnings. |
+| `file_enabled` | `true` | Set `false` to create no debug-file output or writer thread. Existing logs are not deleted. |
+
+Filters accept levels (`off`, `error`, `warn`, `info`, `debug`, `trace`) and
+module directives, for example `warn,spill::engine::storage=trace`. Invalid
+effective filters stop startup; the file filter is validated even if file output
+is disabled. `RUST_LOG`, when set, overrides only `console_filter`; it never
+changes the file filter. Startup failures before logging configuration is installed always go to stderr.
+
+`debug.log` is opened in append mode with permissions `0600`, including across
+restarts. spill does not rotate, truncate or limit the file; retention is the
+system administrator's responsibility. If an external tool renames the file,
+restart spill to reopen it at the original path.
+
+A background thread writes files without blocking the torrent runtime. Its
+queue holds at most 1024 events, each capped at 16 KiB; saturation drops new file events rather than
+blocking transfers. Dropped-event counts are reported to stderr at most once a
+minute and on clean shutdown. Shutdown drains queued events; logs are not
+fsynced and a crash can lose recent events. An unusable debug-log destination
+stops startup. Later write failures are reported once to stderr per
+failure episode, retried on subsequent events, and do not stop torrents;
+recovery is also reported. Writer-health messages bypass console filtering.
+
+Verbosity is event-driven, not a progress feed:
+
+- `info`: daemon/torrent lifecycle, recovery and changed port mappings. Successful
+  lease renewals do not repeat the mapping announcement.
+- `debug`: storage recovery, resume rejection, corrupt-piece retries, stalls and
+  web-seed failures. No periodic progress, successful checkpoints or peer dumps.
+- `trace`: peer/dial/handshake churn, successful piece/block activity, checkpoint
+  saves and DHT maintenance. Enable only the module you are investigating.
+
+Continuous listener, UDP, entropy, reconciliation and port-mapping failures
+report the first failure rather than every retry; recovery is logged. Identical
+persisted torrent errors are not repeated until cleared or changed. Retry
+schedules and current errors remain available through the status API.
+Use `spill --json get ID` and `spill --json health` for current progress and
+network diagnostics rather than a logging heartbeat.
+
+Torrent events carry a torrent ID. Peer endpoints remain off by default, and
+payloads and tracker URLs/credentials are not intentionally logged. Logs can
+still contain local paths and error text: review them before sharing.
+See [Troubleshooting](troubleshooting.md#where-are-the-logs) for systemd and macOS.
 
 ## Torrent defaults: `[defaults]`
 

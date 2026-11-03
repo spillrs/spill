@@ -237,9 +237,11 @@ impl Peers {
                         .await
                     }
                     PeerSocket::WebSeed(seed) => {
-                        let result = seed.run(connection, receiver, &events, &context.capacity_changed).await;
+                        let result = seed
+                            .run(connection, receiver, &events, &context.capacity_changed)
+                            .await;
                         if let Err(error) = &result {
-                            tracing::warn!(?connection, kind = ?error.kind(), reason = %error, "web_seed_failed");
+                            tracing::debug!(?connection, kind = ?error.kind(), "web_seed_failed");
                         }
                         result
                     }
@@ -366,7 +368,7 @@ impl Peers {
         match result {
             Ok((_, connection)) => {
                 let entry = self.entries.remove(&connection).expect("tracked peer task");
-                tracing::debug!(
+                tracing::trace!(
                     ?connection,
                     reason = if entry.disconnecting {
                         "disconnect_requested"
@@ -392,7 +394,7 @@ impl Peers {
                     .iter()
                     .find_map(|(id, entry)| (entry.abort.id() == task_id).then_some(*id))
                     .expect("tracked peer task");
-                tracing::debug!(
+                tracing::trace!(
                     ?connection,
                     reason = if error.is_cancelled() {
                         "cancelled"
@@ -475,7 +477,7 @@ impl Peers {
                 }),
             };
             if let Some(connection) = connection {
-                tracing::debug!(
+                tracing::trace!(
                     ?connection,
                     reason = "owner_shutdown",
                     "peer_transport_joined"

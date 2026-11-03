@@ -5,6 +5,10 @@ After=network-online.target
 
 [Service]
 Type=simple
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spill
+SyslogLevelPrefix=true
 ExecStart=/usr/local/bin/spill serve --config %h/.config/spill/spill.toml
 UMask=0077
 Restart=on-failure

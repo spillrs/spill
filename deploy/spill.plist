@@ -11,6 +11,8 @@
         <string>--config</string>
         <string>@HOME@/Library/Application Support/spill/spill.toml</string>
     </array>
+    <key>Umask</key>
+    <integer>63</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

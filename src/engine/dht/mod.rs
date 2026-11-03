@@ -194,20 +194,22 @@ impl Node {
         }
     }
     fn snapshot(&self) -> SavedState {
-        let mut stats = self.stats(false);
-        stats.routing_nodes += self.routing[1].len();
-        stats.good_nodes += self.routing[1].good(Instant::now());
-        tracing::info!(
-            routing_nodes = stats.routing_nodes,
-            good_nodes = stats.good_nodes,
-            pending = stats.pending,
-            torrents = stats.torrents,
-            peers = stats.peers,
-            rate_sources = stats.rate_sources,
-            answered = stats.answered,
-            dropped = stats.dropped,
-            "dht_state_snapshot"
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let mut stats = self.stats(false);
+            stats.routing_nodes += self.routing[1].len();
+            stats.good_nodes += self.routing[1].good(Instant::now());
+            tracing::trace!(
+                routing_nodes = stats.routing_nodes,
+                good_nodes = stats.good_nodes,
+                pending = stats.pending,
+                torrents = stats.torrents,
+                peers = stats.peers,
+                rate_sources = stats.rate_sources,
+                answered = stats.answered,
+                dropped = stats.dropped,
+                "dht_state_snapshot"
+            );
+        }
         SavedState {
             id: self.id,
             nodes: self

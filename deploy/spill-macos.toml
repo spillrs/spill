@@ -9,6 +9,12 @@ allow_local_network = false
 active_downloads = 4
 active_seeds = 16
 
+# Detailed logs append to state_dir/debug.log, separate from launchd stderr.
+[logging]
+console_filter = "info"
+file_filter = "warn,spill=debug"
+file_enabled = true
+
 [defaults]
 download_limit = 0
 upload_limit = 0

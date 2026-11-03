@@ -64,7 +64,7 @@ impl WebSeeds {
                 urls.push_back(url);
             }
         }
-        tracing::info!(sources = urls.len(), "web_seed_policy");
+        tracing::debug!(sources = urls.len(), "web_seed_policy");
         Ok(Self {
             allow_local_network,
             urls,

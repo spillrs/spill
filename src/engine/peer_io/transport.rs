@@ -86,7 +86,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
             }
         };
         if !addressed {
-            tracing::debug!(
+            tracing::trace!(
                 ?connection,
                 reason = "info_hash_mismatch",
                 "handshake_rejected"
@@ -94,7 +94,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
             return Err(protocol("handshake info hash mismatch"));
         }
         if remote.peer_id == local.peer_id {
-            tracing::debug!(
+            tracing::trace!(
                 ?connection,
                 reason = "self_connection",
                 "handshake_rejected"
@@ -120,7 +120,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
     })
     .await
     .map_err(|_| {
-        tracing::debug!(?connection, "handshake_deadline");
+        tracing::trace!(?connection, "handshake_deadline");
         handshake_expired()
     })??;
     if Instant::now() >= deadline {

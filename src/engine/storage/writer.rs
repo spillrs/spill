@@ -30,6 +30,7 @@ use tokio::{
     sync::{Mutex, Notify, Semaphore, mpsc, oneshot},
     task::{JoinHandle, JoinSet},
 };
+use tracing::Instrument;
 
 // Preserve two-way write/hash overlap for common pieces without letting the
 // metainfo's admitted piece size determine each job's allocation.
@@ -332,7 +333,7 @@ impl Writer {
                             } else {
                                 // Availability may change while uploads are queued.
                                 // Reject this load, not the whole storage owner.
-                                tracing::debug!(index, offset, length, "upload_read_rejected");
+                                tracing::trace!(index, offset, length, "upload_read_rejected");
                             }
                             Some(Output::Read { index, offset, length, block: block.filter(|_| available).map(|b| SharedBlock::from_shared(b.bytes, b.range)) })
                         }
@@ -407,7 +408,7 @@ impl Writer {
                     Err(io::Error::new(error.kind(), error))
                 }
             }
-        });
+        }.instrument(tracing::Span::current()));
         Self {
             commands: Some(commands),
             outputs,
@@ -677,7 +678,7 @@ async fn save(
     let resume = resume::encode(meta, verified, &fingerprint)?;
     let checkpoint = checkpoint.clone();
     crate::engine::run_blocking(callback, move || checkpoint(resume)).await?;
-    tracing::debug!("resume_saved");
+    tracing::trace!("resume_saved");
     Ok(())
 }
 async fn recover(
@@ -701,8 +702,8 @@ async fn recover(
     let saved = if recheck { None } else { initial_resume }.and_then(|blob| {
         match resume::decode(meta, &blob) {
             Ok(record) => Some(record),
-            Err(_) => {
-                tracing::warn!("resume_rejected");
+            Err(error) => {
+                tracing::debug!(%error, "resume_rejected");
                 None
             }
         }
@@ -785,7 +786,7 @@ async fn recover(
     if result?.is_none() || canceled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    tracing::info!(
+    tracing::debug!(
         rechecked_pieces = candidates.len(),
         trusted_pieces = trusted,
         "storage_recovered"

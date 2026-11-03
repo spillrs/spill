@@ -142,15 +142,18 @@ plutil -replace ProgramArguments.3 -string "$HOME/Library/Application Support/sp
 plutil -replace StandardOutPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
 plutil -replace StandardErrorPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/rs.spill.daemon.plist"
-tail -f "$HOME/Library/Application Support/spill/spill.log"
+tail -f "$HOME/Library/Application Support/spill/debug.log"
 ```
 
 The commands set the executable to your installed `spill`, including script
 and Cargo installations. launchd does not expand `~`, so the commands substitute
 absolute paths. Edit the TOML before loading if needed; its example enables
 the web interface on `127.0.0.1:8080`. The agent restarts after failure, not
-clean shutdown. The log is not rotated automatically; truncate or rotate it
-occasionally if it grows. To unload it:
+clean shutdown. Detailed logs append to `debug.log` in the state directory.
+The plist's separate `spill.log` captures operational stderr, including failures
+before the debug writer starts. Retention and rotation of both files are managed
+externally; restart the agent after renaming either file so it reopens the path.
+See [Logging](configuration.md#logging-logging) for filters. To unload it:
 
 ```sh
 launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/rs.spill.daemon.plist"

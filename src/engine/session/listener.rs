@@ -34,6 +34,9 @@ impl AcceptBackoff {
             tokio::time::sleep_until(self.retry_at).await;
             match accept().await {
                 Ok(socket) => {
+                    if self.failures != 0 {
+                        tracing::debug!(listener = self.listener, "service_accept_recovered");
+                    }
                     self.failures = 0;
                     self.retry_at = Instant::now();
                     return Ok(socket);
@@ -59,14 +62,23 @@ impl AcceptBackoff {
         let delay = (INITIAL_DELAY * (1u32 << self.failures.min(6))).min(MAX_DELAY);
         self.failures = self.failures.saturating_add(1);
         self.retry_at = Instant::now() + delay;
-        warn!(
-            listener = self.listener,
-            kind = ?error.kind(),
-            os_code = error.raw_os_error(),
-            retry = self.failures,
-            delay_ms = delay.as_millis() as u64,
-            "service_accept_retry"
-        );
+        if self.failures == 1 {
+            warn!(
+                listener = self.listener,
+                kind = ?error.kind(),
+                os_code = error.raw_os_error(),
+                "service_accept_retry"
+            );
+        } else {
+            tracing::trace!(
+                listener = self.listener,
+                kind = ?error.kind(),
+                os_code = error.raw_os_error(),
+                retry = self.failures,
+                delay_ms = delay.as_millis() as u64,
+                "service_accept_retry"
+            );
+        }
         Ok(())
     }
 }

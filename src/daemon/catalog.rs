@@ -329,6 +329,7 @@ impl Catalog {
                     "UPDATE torrents SET last_error=NULL,retry_count=0,retry_at=0 WHERE id=?1",
                     [id],
                 )?;
+                tracing::info!(torrent_id = id, "torrent_recovered");
                 row.last_error = None;
                 row.retry_count = 0;
                 row.retry_at = 0;
@@ -427,11 +428,16 @@ impl Catalog {
                 let delay = (5u64.saturating_mul(1u64 << row.retry_count.min(9))).min(1800);
                 row.retry_at = now() + delay;
             }
-            row.last_error = Some(error.to_string());
+            let message = error.to_string();
+            let changed = row.last_error.as_ref() != Some(&message);
+            row.last_error = Some(message);
             c.execute(
                 "UPDATE torrents SET last_error=?2,retry_count=?3,retry_at=?4,intent=?5 WHERE id=?1",
                 params![id, row.last_error, row.retry_count, row.retry_at, serde_json::to_string(&row.intent)?],
             )?;
+            if changed {
+                tracing::warn!(torrent_id = id, %error, retry_at = row.retry_at, "torrent_failed");
+            }
             Ok(())
         })
     }

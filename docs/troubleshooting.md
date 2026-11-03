@@ -2,20 +2,55 @@
 
 ## Where are the logs?
 
-The daemon writes errors to standard error. On Linux under systemd that is
-the journal:
+`spill serve` writes timestamped operational events to stderr, with color only
+on a terminal. Detailed logs append to `<state_dir>/debug.log`; spill does not
+rotate or limit this file. Retention is managed externally. Client command
+stdout and JSON are not logs.
+
+On Linux under systemd, stderr goes to the journal:
 
 ```sh
-journalctl --user -u spill -f     # user service
-sudo journalctl -u spill -f       # system service
+journalctl --user -u spill -f             # user service
+sudo journalctl -u spill -f               # system service
+sudo journalctl -u spill -p warning       # warnings and errors
+sudo tail -f /var/lib/spill/debug.log     # system service debug history
 ```
 
-Per-torrent errors are also kept in the catalog: `spill get ID` shows
-`last_error`, `tracker_message` and, when retrying, `retry_at`.
+spill supplies severity prefixes when stderr is connected to the journal, so
+`journalctl -p` can filter by priority. The journal owns its retention. For a user
+service, the default debug path is `~/.local/state/spill/debug.log`.
 
-On macOS, the launchd agent writes to
-`~/Library/Application Support/spill/spill.log`. Check the agent with
-`launchctl print gui/$(id -u)/rs.spill.daemon`.
+For temporary console debugging:
+
+```sh
+RUST_LOG=spill=debug spill serve --config /absolute/path/to/spill.toml
+```
+
+Under systemd, set `Environment=RUST_LOG=spill=debug` in a service override and
+restart. Remove the override and restart when finished. This changes only the
+console/journal output, not the independently configured debug file. Normal
+debug logs omit peer churn, successful piece/block activity and checkpoints;
+select a module at `trace` when those details are needed, for example
+`RUST_LOG=warn,spill::engine::peer_io=trace`. There are no periodic progress
+logs; use `spill --json get ID` for current state. See
+[Logging configuration](configuration.md#logging-logging) for filters.
+
+Per-torrent errors are also kept in the catalog: `spill get ID` shows
+`last_error`, `tracker_message` and, when retrying, `retry_at`. Torrent log events
+include their ID so you can correlate interleaved transfers.
+
+On macOS, the launchd agent captures stderr in
+`~/Library/Application Support/spill/spill.log`; detailed logs are in
+`~/Library/Application Support/spill/debug.log`. Neither is macOS unified
+logging. Check the agent with
+`launchctl print gui/$(id -u)/rs.spill.daemon`. The separate launchd stderr file
+needs administrator-managed retention; see [Installation](install.md#macos).
+
+`debug_log_write_failed` means the debug file could not be written.
+Check free space and permissions; transfers continue, and `debug_log_recovered`
+marks successful writing again. `debug_log_events_dropped` reports file events
+lost to a full writer queue. Capture the journal/console too when reporting
+these failures. Very verbose filters can generate substantial output.
 
 ## macOS file-descriptor limit
 

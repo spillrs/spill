@@ -38,6 +38,7 @@ daemon = [
     "dep:serde_json",
     "dep:toml",
     "dep:axum",
+    "dep:tracing-subscriber",
     "tokio/signal",
     "rustix/process",
 ]
@@ -63,8 +64,10 @@ sha1 = { version = "0.11", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-# Optional-to-observe structured diagnostics; no subscriber, payload or endpoint logging.
+# Embedders choose their subscriber; the daemon installs independently filtered outputs.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+# Formatting, span context and per-output filters are not provided by tracing itself.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"], optional = true }
 # OS entropy for peer IDs/transactions; std retains error sources (MIT/Apache-2.0).
 getrandom = { version = "0.4.3", features = ["std"] }
 # Established URL syntax/host parser; no resolver or HTTP client (MIT/Apache-2.0).

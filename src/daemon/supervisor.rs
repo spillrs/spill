@@ -40,6 +40,7 @@ pub struct Supervisor {
     pub db: Catalog,
     session: Session,
     dht_saved: Instant,
+    failure_recording_failed: bool,
     running: HashMap<String, Running>,
     pub shutdown: watch::Sender<bool>,
 }
@@ -77,6 +78,7 @@ impl Supervisor {
             db,
             session,
             dht_saved: Instant::now(),
+            failure_recording_failed: false,
             running: HashMap::new(),
             shutdown: watch::channel(false).0,
         })
@@ -302,11 +304,24 @@ impl Supervisor {
         observer.reannounce();
         Ok(())
     }
-    fn failure(&self, id: &str, error: io::Error) {
+    fn failure(&mut self, id: &str, error: io::Error) {
         if self.running.get(id).is_some_and(|r| r.quarantined) {
-            eprintln!("torrent {id}: {error}");
-        } else if let Err(e) = self.db.failure(id, &error) {
-            eprintln!("torrent {id}: {error}; recording failure: {e}");
+            tracing::error!(torrent_id = id, %error, "torrent_quarantined");
+        } else {
+            match self.db.failure(id, &error) {
+                Ok(()) => {
+                    if self.failure_recording_failed {
+                        tracing::info!("torrent_failure_record_recovered");
+                    }
+                    self.failure_recording_failed = false;
+                }
+                Err(catalog_error) => {
+                    if !self.failure_recording_failed {
+                        tracing::error!(torrent_id = id, %error, %catalog_error, "torrent_failure_record_failed");
+                    }
+                    self.failure_recording_failed = true;
+                }
+            }
         }
     }
     pub async fn reconcile(&mut self) -> io::Result<()> {
@@ -336,7 +351,7 @@ impl Supervisor {
             }
             .await;
             if let Err(e) = result {
-                eprintln!("saving DHT state: {e}");
+                tracing::warn!(error = %e, "dht_state_save_failed");
             }
             self.dht_saved = Instant::now();
         }
@@ -450,15 +465,18 @@ impl Supervisor {
         match self.session.dht_state().await {
             Ok(Some(saved)) => {
                 if let Err(e) = self.db.save_dht(saved) {
-                    eprintln!("saving DHT state: {e}");
+                    tracing::warn!(error = %e, "dht_state_save_failed");
                 }
             }
             Ok(None) => {}
-            Err(e) => eprintln!("saving DHT state: {e}"),
+            Err(e) => tracing::warn!(error = %e, "dht_state_save_failed"),
         }
         result
     }
     fn start(&self, row: &Row) -> io::Result<TorrentHandle> {
+        let span = tracing::info_span!("torrent", torrent_id = %row.id);
+        let _entered = span.enter();
+        tracing::info!(retry = row.retry_at != 0, "torrent_starting");
         let source = match &row.metainfo {
             Some(_) => TorrentSource::Metainfo(row.meta()?.clone()),
             None => TorrentSource::Magnet(

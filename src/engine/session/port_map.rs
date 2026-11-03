@@ -225,7 +225,7 @@ impl Igd {
                 .await?;
             match result {
                 Err(725) if self.lease != 0 => {
-                    tracing::warn!("UPnP error 725: retrying with a permanent lease");
+                    tracing::debug!("UPnP error 725: retrying with a permanent lease");
                     self.lease = 0;
                 }
                 result => return result.map(|_| ()).map_err(soap_error),
@@ -298,7 +298,11 @@ impl Mapping {
         })
         .await;
         if let Err(error) = result.map_err(io::Error::other).and_then(|r| r) {
-            tracing::warn!(%error, "port_mapping_removal_failed");
+            if status.borrow().last_error.is_none() {
+                tracing::warn!(%error, "port_mapping_removal_failed");
+            } else {
+                tracing::trace!(%error, "port_mapping_removal_failed");
+            }
             status.send_modify(|s| s.last_error = Some(format!("mapping removal: {error}")));
         }
     }
@@ -445,6 +449,7 @@ pub(super) async fn run(
 ) {
     let mut mapping = None;
     let mut backoff = Duration::from_secs(60);
+    let mut failed = false;
     loop {
         let attempt = async {
             if let Some(active) = &mut mapping {
@@ -478,7 +483,7 @@ pub(super) async fn run(
                 {
                     Ok(mapped) => return Ok(mapped),
                     Err(error) => {
-                        tracing::warn!(protocol, %error, "port_mapping_failed");
+                        tracing::trace!(protocol, %error, "port_mapping_attempt_failed");
                         errors.push(format!("{protocol}: {error}"));
                         status.send_modify(|s| s.last_error = Some(errors.join("; ")));
                         if let Some(active) = &mapping {
@@ -503,6 +508,14 @@ pub(super) async fn run(
                 } else {
                     "upnp"
                 };
+                let changed = {
+                    let previous = status.borrow();
+                    failed
+                        || previous.protocol != Some(protocol)
+                        || previous.external_ip != Some(ip)
+                        || previous.external_tcp_port != Some(external)
+                        || previous.external_udp_port != Some(external)
+                };
                 status.send_replace(Status {
                     enabled: true,
                     protocol: Some(protocol),
@@ -517,12 +530,18 @@ pub(super) async fn run(
                             .as_secs(),
                     ),
                 });
-                tracing::info!(protocol, external_port = external, "port_mapping_active");
+                if changed {
+                    tracing::info!(protocol, external_port = external, "port_mapping_active");
+                }
+                failed = false;
                 backoff = Duration::from_secs(60);
                 renewal
             }
             Err(error) => {
-                tracing::warn!(%error, "port_mapping_failed");
+                if !failed {
+                    tracing::warn!(%error, "port_mapping_failed");
+                }
+                failed = true;
                 port.send_replace(address.port());
                 if let Some(active) = mapping.take() {
                     active.remove(&status).await;

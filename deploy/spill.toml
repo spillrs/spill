@@ -10,6 +10,12 @@ active_downloads = 4
 active_seeds = 16
 # web_listen = "127.0.0.1:8080"
 
+# stderr goes to the journal; detailed logs append to state_dir/debug.log.
+[logging]
+console_filter = "info"
+file_filter = "warn,spill=debug"
+file_enabled = true
+
 [defaults]
 download_limit = 0
 upload_limit = 0

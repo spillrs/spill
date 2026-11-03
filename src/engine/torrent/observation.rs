@@ -19,7 +19,7 @@ use std::{
     },
 };
 use tokio::{sync::watch, time::Instant};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 type Status = watch::Sender<TorrentStatus>;
 struct Peer {
     address: Option<SocketAddr>,
@@ -37,14 +37,11 @@ pub(super) struct Progress {
     seeding_since: Option<Instant>,
     pub(in crate::engine) active: usize,
     pub(in crate::engine) pending: usize,
-    pub(in crate::engine) complete: bool,
     endpoints: HashMap<ConnectionId, Peer>,
     sources: HashMap<DialId, (&'static str, [u8; 20])>,
     history: HashMap<String, (Instant, Option<String>)>,
     map_count: Option<u32>,
-    blocks: u64,
     closed_retransmits: u64,
-    last_summary: Instant,
     sampled: Instant,
     downloaded: u64,
     uploaded: u64,
@@ -64,21 +61,15 @@ impl Progress {
             seeding_since: None,
             active: 0,
             pending: 0,
-            complete: false,
             endpoints: HashMap::new(),
             sources: HashMap::new(),
             history: HashMap::new(),
             map_count: None,
-            blocks: 0,
             closed_retransmits: 0,
-            last_summary: Instant::now(),
             sampled: Instant::now(),
             downloaded: 0,
             uploaded: 0,
         }
-    }
-    pub(in crate::engine) fn restore_verified(&mut self, transfer: &Shell) {
-        self.complete = transfer.wanted_complete();
     }
     pub(in crate::engine) fn publish_peers(&self, status: &Status) {
         status.send_modify(|s| {
@@ -134,7 +125,7 @@ impl Progress {
         };
         match transfer.attach_peer(socket, role) {
             Ok(id) => {
-                debug!(connection=?id,source,transport,direction=if matches!(role,Role::Inbound){"inbound"}else{"outbound"},endpoint=?address.filter(|_|log_endpoint),"peer_admitted");
+                trace!(connection=?id,source,transport,direction=if matches!(role,Role::Inbound){"inbound"}else{"outbound"},endpoint=?address.filter(|_|log_endpoint),"peer_admitted");
                 self.remember(
                     id,
                     Peer {
@@ -154,7 +145,7 @@ impl Progress {
                     },
                 );
             }
-            Err(error) => warn!(kind=?error.kind(),"peer_rejected"),
+            Err(error) => trace!(kind=?error.kind(),"peer_rejected"),
         }
     }
     pub(in crate::engine) fn prepare_discovery(
@@ -198,7 +189,7 @@ impl Progress {
                         uploaded: 0,
                     },
                 );
-                info!(connection=?id,source="web_seed","web_seed_admitted");
+                trace!(connection=?id,source="web_seed","web_seed_admitted");
             }
         }
         if let Some(queue) = &mut discovery.contacts {
@@ -233,10 +224,7 @@ impl Progress {
                 Ok(id) => {
                     self.sources.insert(id, (entry.source, entry.hash));
                     self.pending += 1;
-                    debug!(?id,source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
-                    if matches!(entry.source, "pex" | "dht") {
-                        info!(source = entry.source, "peer_dial_admitted");
-                    }
+                    trace!(?id,source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
                 }
                 Err(_) => {
                     transfer.connect_failed(address)?;
@@ -270,7 +258,7 @@ impl Progress {
             ),
             Err(error) => {
                 transfer.connect_failed(event.address)?;
-                warn!(kind=?error.kind(),"dial_failed");
+                trace!(dial=?event.id,source,kind=?error.kind(),os_code=error.raw_os_error(),"dial_failed");
             }
         }
         Ok(())
@@ -284,7 +272,6 @@ impl Progress {
     ) -> io::Result<Option<TorrentExit>> {
         match event {
             Event::Complete => {
-                self.complete = true;
                 self.seeding_since.get_or_insert_with(Instant::now);
                 status.send_modify(|s| {
                     s.progress.completed = true;
@@ -294,17 +281,13 @@ impl Progress {
                 info!("seeding_started");
             }
             Event::Verified(index) => {
-                debug!(index, "piece_verified");
+                trace!(index, "piece_verified");
             }
             Event::Block {
                 index,
                 begin,
                 length,
             } => {
-                self.blocks += 1;
-                if self.blocks == 1 {
-                    info!(index, begin, length, "first_payload_received");
-                }
                 trace!(index, begin, length, "block_accepted");
             }
             Event::PeerClosed { connection, result } => {
@@ -331,14 +314,14 @@ impl Progress {
                         diagnostics.peers.retain(|p| p.connection != connection.0);
                     }
                 });
-                debug!(?connection,error_kind=?result.as_ref().err().map(|e|e.kind()),"peer_joined");
+                trace!(?connection,error_kind=?result.as_ref().err().map(|e|e.kind()),"peer_joined");
             }
             Event::Stalled(crate::engine::core::Stall::NoProgress) => {
                 return Ok(Some(TorrentExit::NoProgress));
             }
-            Event::Stalled(reason) => warn!(?reason, "download_stalled"),
-            Event::PieceRetry { index, retry } => warn!(index, retry, "piece_retry"),
-            Event::PeerReady(connection) => debug!(?connection, "peer_ready"),
+            Event::Stalled(reason) => debug!(?reason, "download_stalled"),
+            Event::PieceRetry { index, retry } => debug!(index, retry, "piece_hash_failed"),
+            Event::PeerReady(connection) => trace!(?connection, "peer_ready"),
             Event::IgnoredBlock { index, begin } => trace!(index, begin, "block_ignored"),
         }
         let p = transfer.progress()?;
@@ -462,21 +445,5 @@ impl Progress {
             s.progress.active_peers = self.active;
         });
         Ok(())
-    }
-    pub(in crate::engine) fn log_summary(
-        &mut self,
-        transfer: &Shell,
-        discovery: &Discovery,
-    ) -> io::Result<()> {
-        if !self.complete || self.last_summary.elapsed().as_secs() >= 600 {
-            info!(verified_bytes=transfer.progress()?.verified_bytes(),pending_dials=self.pending,active_peers=self.active,diagnostics=?transfer.diagnostics(),contacts=?discovery.contacts.as_ref().map(|q| q.progress()),"progress");
-            self.last_summary = Instant::now();
-        }
-        Ok(())
-    }
-}
-pub(super) fn log_peers(transfer: &Shell) {
-    for peer in transfer.peer_diagnostics() {
-        debug!(peer=?peer,"peer_status");
     }
 }

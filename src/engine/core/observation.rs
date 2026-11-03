@@ -78,25 +78,3 @@ impl fmt::Debug for Progress {
             .finish_non_exhaustive()
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::engine) struct Diagnostics {
-    pub(in crate::engine) peers: usize,
-    pub(in crate::engine) established_peers: usize,
-    pub(in crate::engine) unchoked_peers: usize,
-    pub(in crate::engine) interested_peers: usize,
-    pub(in crate::engine) remote_interested_peers: usize,
-    pub(in crate::engine) retiring_peers: usize,
-    pub(in crate::engine) output_blocked_peers: usize,
-    pub(in crate::engine) upload_unchoked_peers: usize,
-    pub(in crate::engine) pending_upload_requests: usize,
-    pub(in crate::engine) outstanding_requests: usize,
-    pub(in crate::engine) assigned_requests: usize,
-    pub(in crate::engine) waiting_requests: usize,
-    pub(in crate::engine) requests_at_retry_limit: usize,
-    pub(in crate::engine) current_piece: Option<u32>,
-    pub(in crate::engine) piece_retries_remaining: Option<u32>,
-    pub(in crate::engine) hashing: bool,
-    pub(in crate::engine) stalled: Option<Stall>,
-    pub(in crate::engine) failed: bool,
-}

@@ -187,7 +187,7 @@ impl Network {
                                         if crate::engine::core::fault::is_local(&error) {
                                             return Err(error);
                                         }
-                                        tracing::warn!(kind=?error.kind(), "metadata_peer_rejected");
+                                        tracing::trace!(kind=?error.kind(), "metadata_peer_rejected");
                                         shell.connect_failed(event.address)?;
                                     }
                                 }

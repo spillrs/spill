@@ -121,14 +121,26 @@ impl Transport {
     }
     pub(super) async fn run(self, mut stop: watch::Receiver<bool>) -> io::Result<()> {
         let mut bytes = vec![0; 65_536];
+        let mut failed = false;
         loop {
             tokio::select! {
                 biased;
                 _ = stop.changed() => return Ok(()),
                 received = self.socket.recv_from(&mut bytes) => {
                     match received {
-                        Ok((length, source)) => self.route(&bytes[..length], source),
-                        Err(error) => tracing::warn!(%error, "session UDP receive failed"),
+                        Ok((length, source)) => {
+                            if failed {
+                                tracing::debug!("session_udp_receive_recovered");
+                            }
+                            failed = false;
+                            self.route(&bytes[..length], source);
+                        }
+                        Err(error) => {
+                            if !failed {
+                                tracing::warn!(%error, "session_udp_receive_failed");
+                            }
+                            failed = true;
+                        }
                     }
                 }
             }

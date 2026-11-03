@@ -6,6 +6,7 @@ mod control;
 mod create;
 #[path = "../http.rs"]
 mod http;
+mod logging;
 mod metainfo_url;
 mod observation;
 mod settings;
@@ -54,13 +55,16 @@ fn main() -> ExitCode {
             cli::Command::Create(_) => {
                 unreachable!("creation is dispatched before starting the runtime")
             }
-            cli::Command::Serve { config } => match serve(config.as_deref()).await {
-                Ok(()) => 0,
-                Err(e) => {
-                    eprintln!("{e}");
-                    1
+            cli::Command::Serve { config } => {
+                let mut logging = logging::Logging::init();
+                match serve(config.as_deref(), &mut logging).await {
+                    Ok(()) => 0,
+                    Err(error) => {
+                        tracing::error!(%error, "daemon_failed");
+                        1
+                    }
                 }
-            },
+            }
             cli::Command::Client(command) => match cli::run(command, cli.socket, cli.json).await {
                 Ok(()) => 0,
                 Err(e) => {
@@ -90,7 +94,7 @@ async fn interrupt() -> io::Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! { result = tokio::signal::ctrl_c() => result, _ = term.recv() => Ok(()) }
 }
-async fn serve(path: Option<&std::path::Path>) -> io::Result<()> {
+async fn serve(path: Option<&std::path::Path>, logging: &mut logging::Logging) -> io::Result<()> {
     let config = config::Config::load(path)?;
     let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
     let target = limit.maximum.unwrap_or(1 << 20);
@@ -124,6 +128,8 @@ async fn serve(path: Option<&std::path::Path>) -> io::Result<()> {
         .write(true)
         .open(config.state_dir.join("daemon.lock"))?;
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+    logging.configure(&config.logging, &config.state_dir, lock)?;
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), state_dir = %config.state_dir.display(), "daemon_starting");
     if let Some(parent) = config.control_socket.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -161,8 +167,10 @@ async fn serve(path: Option<&std::path::Path>) -> io::Result<()> {
     let mut clients = JoinSet::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut reconcile_failed = false;
     let interrupted = interrupt();
     tokio::pin!(interrupted);
+    tracing::info!(control_socket = %config.control_socket.display(), listen = %config.listen, web_listen = ?config.web_listen, "daemon_ready");
     let result: io::Result<()> = async {
         loop {
             tokio::select! {
@@ -173,16 +181,28 @@ async fn serve(path: Option<&std::path::Path>) -> io::Result<()> {
                     let control = control.clone();
                     clients.spawn(async move { control::unix_client(stream,control).await });
                 }
-                Some(result) = clients.join_next(), if !clients.is_empty() => { if let Err(e) = result { eprintln!("control client: {e}"); } }
+                Some(result) = clients.join_next(), if !clients.is_empty() => { if let Err(e) = result { tracing::warn!(error = %e, "control_client_failed"); } }
                 _ = tick.tick() => {
-                    if let Err(e) = control.0.lock().await.reconcile().await {
-                        eprintln!("reconcile: {e}");
+                    match control.0.lock().await.reconcile().await {
+                        Ok(()) => {
+                            if reconcile_failed {
+                                tracing::info!("reconcile_recovered");
+                            }
+                            reconcile_failed = false;
+                        }
+                        Err(error) => {
+                            if !reconcile_failed {
+                                tracing::error!(%error, "reconcile_failed");
+                            }
+                            reconcile_failed = true;
+                        }
                     }
                 }
             }
         }
         Ok(())
     }.await;
+    tracing::info!("daemon_shutdown_requested");
     drop(listener);
     let joined = {
         let mut s = control.0.lock().await;
@@ -201,7 +221,7 @@ async fn serve(path: Option<&std::path::Path>) -> io::Result<()> {
     if tokio::time::timeout(Duration::from_secs(1), async {
         while let Some(result) = clients.join_next().await {
             if let Err(e) = result {
-                eprintln!("control client: {e}");
+                tracing::warn!(error = %e, "control_client_failed");
             }
         }
     })
@@ -211,6 +231,7 @@ async fn serve(path: Option<&std::path::Path>) -> io::Result<()> {
         clients.shutdown().await;
     }
     std::fs::remove_file(&config.control_socket)?;
-    drop(lock);
-    result.and(joined)
+    let result = result.and(joined);
+    tracing::info!(clean = result.is_ok(), "daemon_shutdown_complete");
+    result
 }

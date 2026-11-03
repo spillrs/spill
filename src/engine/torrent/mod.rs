@@ -526,33 +526,36 @@ impl TorrentHandle {
         let terminal = status.clone();
         let finalized = Arc::new(AtomicBool::new(false));
         let finished_cleaning = finalized.clone();
-        let task = tokio::spawn(async move {
-            let result = runtime
-                .await
-                .unwrap_or_else(|error| Err(io::Error::other(error)));
-            let drained = cleanup_resources.lock().await.drain().await;
-            let result = result.and(drained);
-            let p = terminal.borrow().progress.clone();
-            let outcome = TorrentOutcome {
-                termination: if result.is_err() {
-                    TorrentExit::Failed
-                } else {
-                    p.exit.expect("terminal exit")
-                },
-                wanted_complete: p.completed,
-                full_complete: p.full_complete,
-                recheck_finished: p.exit == Some(TorrentExit::Rechecked),
-                cleanup_complete: true,
-                error: result.err().map(Arc::new),
-            };
-            terminal.send_modify(|s| {
-                s.progress.phase = TorrentPhase::Stopped;
-                s.progress.exit = Some(outcome.termination);
-            });
-            finished_cleaning.store(true, Ordering::Release);
-            retirement.retire();
-            outcome
-        });
+        let task = tokio::spawn(
+            async move {
+                let result = runtime
+                    .await
+                    .unwrap_or_else(|error| Err(io::Error::other(error)));
+                let drained = cleanup_resources.lock().await.drain().await;
+                let result = result.and(drained);
+                let p = terminal.borrow().progress.clone();
+                let outcome = TorrentOutcome {
+                    termination: if result.is_err() {
+                        TorrentExit::Failed
+                    } else {
+                        p.exit.expect("terminal exit")
+                    },
+                    wanted_complete: p.completed,
+                    full_complete: p.full_complete,
+                    recheck_finished: p.exit == Some(TorrentExit::Rechecked),
+                    cleanup_complete: true,
+                    error: result.err().map(Arc::new),
+                };
+                terminal.send_modify(|s| {
+                    s.progress.phase = TorrentPhase::Stopped;
+                    s.progress.exit = Some(outcome.termination);
+                });
+                finished_cleaning.store(true, Ordering::Release);
+                retirement.retire();
+                outcome
+            }
+            .instrument(tracing::Span::current()),
+        );
         let finished = task.abort_handle();
         (
             Self {

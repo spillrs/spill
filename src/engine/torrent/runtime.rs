@@ -1,6 +1,6 @@
 use super::{
     Network, Networking, RunPolicy, RuntimeOptions, TorrentExit, TorrentPhase, TorrentStatus,
-    observation::{self, Progress},
+    observation::Progress,
 };
 use crate::engine::{discovery::Discovery, torrent::shell::Shell as Task};
 use crate::engine::{next_ready, peer_io::Role};
@@ -9,7 +9,7 @@ use tokio::{
     sync::watch,
     time::{Instant, MissedTickBehavior},
 };
-use tracing::{info, warn};
+use tracing::{debug, trace};
 
 type Status = watch::Sender<TorrentStatus>;
 
@@ -56,7 +56,6 @@ async fn drive(
             handle = dht.get() => handle?,
         });
     }
-    let port = *session.advertised_port.borrow();
     transfer.set_no_progress_timeout(options.no_progress_timeout);
     transfer.set_advertised_port(session.advertised_port.clone());
     transfer.set_dht_port(options.dht.as_ref().map(|h| h.local_addr().port()));
@@ -72,7 +71,6 @@ async fn drive(
         s.progress.hash_failed_bytes = p.hash_failed_bytes();
         s.progress.hash_failed_pieces = p.hash_failed_pieces();
     });
-    info!(listen_port = port, "transfer_listening");
     if let Some(exit) = start_discovery(options, transfer, network, stop, &session).await? {
         return Ok(exit);
     }
@@ -94,12 +92,6 @@ async fn serve(
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut progress = Progress::new(status.clone());
-    progress.restore_verified(transfer);
-    let mut log_tick = tokio::time::interval_at(
-        Instant::now() + Duration::from_secs(5),
-        Duration::from_secs(5),
-    );
-    log_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dial_tick = tokio::time::interval(Duration::from_millis(250));
     dial_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut reannounce = options.reannounce.clone();
@@ -185,14 +177,14 @@ async fn serve(
                         }
                     }
                     Ok(crate::engine::dht::DiscoveryEvent::Finished(found)) => {
-                        info!(queried = found.queried, announced = found.announced, peers = found.peers.len(), "dht_lookup_finished");
+                        trace!(queried = found.queried, announced = found.announced, peers = found.peers.len(), "dht_lookup_finished");
                         // Include peers produced in the lookup's final poll. The
                         // contact queue deduplicates earlier streamed results.
                         if let Some(queue) = &mut network.contacts {
                             let _ = queue.add_dht(hash, &found.peers);
                         }
                     }
-                    Err(error) => warn!(kind = ?error.kind(), "dht_lookup_failed"),
+                    Err(error) => trace!(kind = ?error.kind(), "dht_lookup_failed"),
                 }
             },
             event = direct, if progress.pending > 0 => {
@@ -208,7 +200,7 @@ async fn serve(
                     let socket = match socket {
                         crate::engine::session::Inbound::Tcp(socket) => match tokio::net::TcpStream::from_std(socket) {
                             Ok(socket) => crate::engine::peer_io::Stream::Tcp(socket),
-                            Err(error) => { warn!(kind = ?error.kind(), "peer_register_failed"); continue; }
+                            Err(error) => { debug!(kind = ?error.kind(), "peer_register_failed"); continue; }
                         },
                         crate::engine::session::Inbound::Utp(socket) => crate::engine::peer_io::Stream::Utp(socket),
                     };
@@ -235,7 +227,6 @@ async fn serve(
             } => {},
             _ = dial_tick.tick() => { discovery_dirty = true; observation_dirty = true; },
             _ = tick.tick() => progress.report(transfer, network, status)?,
-            _ = log_tick.tick() => progress.log_summary(transfer, network)?,
             _ = async {
                 if let Some(deadline) = completion_deadline {
                     tokio::time::sleep_until(deadline).await;
@@ -259,7 +250,6 @@ async fn finish(
         s.progress.phase = TorrentPhase::Stopping;
         s.progress.exit = result.as_ref().ok().copied();
     });
-    observation::log_peers(transfer);
     let setup = network.shutdown(run).await;
     let peers = transfer.shutdown().await;
     let p = transfer.progress();
@@ -291,7 +281,7 @@ async fn finish(
             diagnostics.dht.clear();
         }
     });
-    info!(clean = result.is_ok(),
+    debug!(clean = result.is_ok(),
         exit = ?result.as_ref().ok(), error_kind = ?result.as_ref().err().map(|e| e.kind()),
         "torrent_runtime_joined");
     result.map(|_| ()).and(setup).and(peers).and(p.map(|_| ()))

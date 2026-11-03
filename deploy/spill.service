@@ -5,6 +5,10 @@ After=network-online.target
 
 [Service]
 Type=simple
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spill
+SyslogLevelPrefix=true
 User=spill
 Group=spill
 ExecStart=/usr/local/bin/spill serve --config /etc/spill/spill.toml

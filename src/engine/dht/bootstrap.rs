@@ -39,7 +39,7 @@ pub(super) async fn run(
             let mut replied = walk(&handle, ipv6, target, seeds, vec![]).await?;
             if first && !saved.nodes.is_empty() {
                 let good_nodes = handle.stats(ipv6).await?.good_nodes;
-                tracing::info!(source = "saved", ipv6, good_nodes, "dht_bootstrap_finished");
+                tracing::debug!(source = "saved", ipv6, good_nodes, "dht_bootstrap_finished");
             }
             if handle.stats(ipv6).await?.good_nodes < 128 {
                 // Pin DNS answers per attempt; recovery retries failed resolution.
@@ -64,7 +64,7 @@ pub(super) async fn run(
                 replied += walk(&handle, ipv6, target, seeds, addresses.clone()).await?;
                 let good_nodes = handle.stats(ipv6).await?.good_nodes;
                 if first {
-                    tracing::info!(
+                    tracing::debug!(
                         source = "routers",
                         ipv6,
                         routers = addresses.len(),
@@ -72,7 +72,7 @@ pub(super) async fn run(
                         "dht_bootstrap_finished"
                     );
                 } else {
-                    tracing::debug!(
+                    tracing::trace!(
                         ipv6,
                         routers = addresses.len(),
                         good_nodes,

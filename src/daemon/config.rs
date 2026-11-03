@@ -28,6 +28,7 @@ pub struct Config {
     pub active_seeds: usize,
     pub dht_bootstrap: Vec<String>,
     pub defaults: Settings,
+    pub logging: crate::logging::Config,
 }
 fn mapping_gateway<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -80,6 +81,7 @@ impl Default for Config {
             active_seeds: 16,
             dht_bootstrap: spill::engine::session::dht::default_routers(),
             defaults: Default::default(),
+            logging: Default::default(),
         }
     }
 }

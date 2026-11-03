@@ -7,8 +7,10 @@ spill [--socket PATH] [--json] COMMAND
 spill --version
 ```
 
-`spill serve` runs the daemon in the foreground. `spill create` creates torrent
-files locally without a daemon. Other commands talk to a running daemon over its
+`spill serve` runs the daemon in the foreground, writing operational logs to
+stderr and appending detailed logs to `<state_dir>/debug.log`. See
+[Logging](configuration.md#logging-logging) for filters.
+`spill create` creates torrent files locally without a daemon. Other commands talk to a running daemon over its
 Unix socket. Without `--socket`, client commands use:
 
 - Linux: `$XDG_RUNTIME_DIR/spill.sock`, falling back to

@@ -44,6 +44,7 @@ async fn drive(
     status: &Status,
 ) -> io::Result<TorrentExit> {
     transfer.set_bandwidth(options.bandwidth.clone());
+    transfer.set_incoming(session.incoming.clone());
     if *stop.borrow() {
         return Ok(TorrentExit::StopRequested);
     }

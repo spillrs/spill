@@ -105,6 +105,8 @@ pub(in crate::engine) enum Networking {
     Recheck,
 }
 pub(in crate::engine) struct Network {
+    pub(in crate::engine) incoming:
+        Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
     pub(in crate::engine) advertised_port: watch::Receiver<u16>,
     pub(in crate::engine) sockets: tokio::sync::mpsc::Receiver<crate::engine::session::Inbound>,
     pub(in crate::engine) dial_queue: crate::engine::session::dial::Queue,

@@ -137,6 +137,11 @@ metadata resolution and destination preparation happen asynchronously.
 - `RunPolicy::Persistent` keeps serving after completion; `UntilComplete` stops
   after selected-content completion. `Recheck` verifies metainfo against disk
   without peer or discovery I/O. Offline sessions accept only metainfo rechecks.
+- `Session::network_status().await` reports local listener-task readiness and
+  passive inbound TCP/uTP handshake counts, public subsets and last-public ages.
+  Counts are shared across clones and retained after disconnects and torrent
+  removal; a new session resets them. Offline/stopped listeners report no
+  addresses. This sends no probes and does not assert firewall reachability.
 - `Session::inspect` resolves magnet metadata without creating payload files.
 - `snapshot()` gives current progress; `changed().await` observes latest-value
   updates, not an event history. It returns false after the final report.

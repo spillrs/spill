@@ -89,7 +89,7 @@ pub enum Operation {
     Status,
     /// List files and priorities in torrent order.
     Files { id: String },
-    /// Show daemon health, listener, port mapping, and admission state.
+    /// Show daemon health, listeners, inbound peers, port mapping, and admission state.
     Health,
     /// Stop the daemon cleanly and save progress.
     Shutdown,
@@ -246,7 +246,81 @@ fn text(data: &Value) {
         println!("{}", serde_json::to_string_pretty(data).unwrap());
     }
 }
+fn health_text(data: &Value) {
+    println!("{:<26} {}", "PID:", data["pid"]);
+    println!("{:<26} {}", "Running torrents:", data["running"]);
+    println!(
+        "{:<26} {}",
+        "Admission:",
+        if data["admission_closed"] == true {
+            "closed"
+        } else {
+            "open"
+        }
+    );
+    println!("{:<26} {}", "Advertised port:", data["advertised_port"]);
+    if let Some(network) = data.get("network") {
+        for (label, key) in [
+            ("TCP listener:", "tcp_listen"),
+            ("UDP listener:", "udp_listen"),
+        ] {
+            println!(
+                "{label:<26} {}",
+                network[key].as_str().unwrap_or("not running")
+            );
+        }
+        for (label, key) in [("uTP:", "utp_enabled"), ("DHT:", "dht_enabled")] {
+            println!(
+                "{label:<26} {}",
+                if network[key] == true {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+        for (transport, key) in [("TCP", "inbound_tcp"), ("uTP", "inbound_utp")] {
+            let inbound = &network[key];
+            println!(
+                "{:<26} {} ({} public)",
+                format!("Inbound {transport} peers:"),
+                inbound["active"],
+                inbound["active_public"]
+            );
+            println!(
+                "{:<26} {} ({} public)",
+                format!("Inbound {transport} handshakes:"),
+                inbound["total"],
+                inbound["public_total"]
+            );
+            println!(
+                "{:<26} {}",
+                format!("Last public {transport}:"),
+                match inbound["last_public_ago_secs"].as_u64() {
+                    Some(seconds) if seconds < 60 => format!("{seconds}s ago"),
+                    Some(seconds) => format!("{}m {}s ago", seconds / 60, seconds % 60),
+                    None => "none observed since startup".into(),
+                }
+            );
+        }
+    }
+    let mapping = &data["port_mapping"];
+    println!(
+        "{:<26} {}",
+        "Port mapping:",
+        if mapping["enabled"] != true {
+            "disabled"
+        } else {
+            mapping["protocol"].as_str().unwrap_or("not established")
+        }
+    );
+    if let Some(error) = mapping["last_error"].as_str() {
+        println!("{:<26} {}", "Port mapping error:", clean(error));
+    }
+}
+
 pub async fn run(command: Operation, socket: Option<PathBuf>, json: bool) -> Result<(), Error> {
+    let health = matches!(command, Operation::Health);
     let watch = matches!(command, Operation::List { watch: true });
     let request = request(command)?;
     let socket = socket.unwrap_or_else(config::socket);
@@ -265,6 +339,8 @@ pub async fn run(command: Operation, socket: Option<PathBuf>, json: bool) -> Res
         }
         if json {
             println!("{}", response.data);
+        } else if health {
+            health_text(&response.data);
         } else {
             text(&response.data);
         }

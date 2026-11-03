@@ -422,6 +422,12 @@ impl Shell {
         self.stopped = true;
         peers.and(writer)
     }
+    pub(in crate::engine) fn set_incoming(
+        &mut self,
+        incoming: std::sync::Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
+    ) {
+        self.peers.incoming = Some(incoming);
+    }
     pub(in crate::engine) fn set_bandwidth(
         &mut self,
         bandwidth: crate::engine::bandwidth::Throttle,

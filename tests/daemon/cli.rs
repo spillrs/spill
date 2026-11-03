@@ -100,10 +100,19 @@ async fn client_commands_are_top_level_without_a_ctl_alias() {
     for command in ["list", "status"] {
         assert_eq!(client(&daemon, &[command]).await["torrents"][0]["id"], id);
     }
-    assert_eq!(
-        client(&daemon, &["health"]).await["pid"],
-        daemon.child.id().unwrap()
-    );
+    let health = client(&daemon, &["health"]).await;
+    assert_eq!(health["pid"], daemon.child.id().unwrap());
+    let output = Command::new(BIN)
+        .arg("--socket")
+        .arg(&daemon.socket)
+        .arg("health")
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(serde_json::from_str::<Value>(&text).is_err(), "{text}");
+    assert!(text.contains(health["listen"].as_str().unwrap()), "{text}");
     for (command, state) in [
         ("pause", "paused"),
         ("recheck", "paused"),

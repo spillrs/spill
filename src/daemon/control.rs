@@ -194,7 +194,7 @@ impl Control {
             return Err(Error::Invalid("daemon is shutting down".into()));
         }
         match request {
-            Request::Health => Ok(supervisor.health()),
+            Request::Health => Ok(supervisor.health().await),
             Request::Shutdown => {
                 supervisor.shutdown.send_replace(true);
                 Ok(json!({"stopping":true}))
@@ -202,7 +202,7 @@ impl Control {
             Request::List | Request::Status => {
                 let rows = supervisor.db.rows()?;
                 Ok(
-                    json!({"health":supervisor.health(),"torrents":rows.iter().map(|r|supervisor.view(r)).collect::<Vec<_>>()}),
+                    json!({"health":supervisor.health().await,"torrents":rows.iter().map(|r|supervisor.view(r)).collect::<Vec<_>>()}),
                 )
             }
             Request::Add {

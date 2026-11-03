@@ -86,6 +86,7 @@ pub(in crate::engine) enum PeerEvent {
 }
 
 struct SocketContext {
+    incoming: Option<Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>>,
     bandwidth: crate::engine::bandwidth::Throttle,
     read_pause: watch::Receiver<bool>,
     local: Handshake,
@@ -134,6 +135,8 @@ enum Finished {
 }
 
 pub(in crate::engine) struct Peers {
+    pub(in crate::engine) incoming:
+        Option<Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>>,
     pub(in crate::engine) bandwidth: crate::engine::bandwidth::Throttle,
     read_pause: watch::Sender<bool>,
     capacity_changed: Arc<Notify>,
@@ -161,6 +164,7 @@ impl Peers {
     ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::channel(crate::engine::profile::EVENT_QUEUE);
         Ok(Self {
+            incoming: None,
             bandwidth: crate::engine::bandwidth::Throttle::default(),
             read_pause: watch::channel(false).0,
             capacity_changed,
@@ -214,6 +218,7 @@ impl Peers {
         let events = self.events_tx.clone();
         let written = Arc::new(PayloadWrites::child(self.written.clone()));
         let context = SocketContext {
+            incoming: self.incoming.clone(),
             bandwidth: self.bandwidth.clone(),
             read_pause: self.read_pause.subscribe(),
             local: self.local.clone(),

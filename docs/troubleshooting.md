@@ -129,9 +129,17 @@ error if it repeats.
 
 ## Nobody can connect to me
 
-Allow the `listen` port for TCP and UDP in your host firewall. Run
-`spill health`: `port_mapping`
-shows `enabled`, `protocol` (`nat-pmp` or `upnp`), `external_ip`,
+Allow the `listen` port for TCP and UDP in your host firewall. `spill health`
+prints listener readiness, current inbound peers, successful inbound handshake
+totals and the time since the last public TCP/uTP handshake. No observations
+means only that none were seen since startup, not that the port is closed.
+These are passive observations: no external service or probe is used. Local
+peers do not count as evidence of public reachability. A failed automatic
+mapping can coexist with successful inbound peers when forwarding is manual.
+
+For scripts, use `spill health --json`. Its `network` fields are described in
+[Health](cli.md#health). `port_mapping` shows
+`enabled`, `protocol` (`nat-pmp` or `upnp`), `external_ip`,
 `external_tcp_port`, `external_udp_port`, `last_error` and `next_renewal`
 (a Unix timestamp in seconds, null when no renewal is scheduled). The top-level
 `advertised_port` shows the port currently sent to peers and trackers.

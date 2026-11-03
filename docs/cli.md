@@ -53,7 +53,7 @@ preserve full IDs; use prefixes when entering commands.
 | `recheck ID` | Verify every piece against the data on disk, then leave the torrent paused. Use after moving or editing files, or after an unclean power loss. |
 | `reannounce ID` | Announce to the tracker again as soon as the tracker's `min interval` allows. Fails if trackers are disabled or the torrent is not running. A magnet still resolving metadata announces again once resolution finishes. |
 | `remove ID [--delete-payload]` | Remove the torrent. Files are kept unless `--delete-payload` is given; see [Torrents](torrents.md#removing-torrents). |
-| `health` | Daemon process ID, number of running torrents, listen address, port mapping and `admission_closed`. See [Troubleshooting](troubleshooting.md#torrents-stay-queued-after-an-internal-failure). |
+| `health` | Plain-text daemon health, listener readiness, inbound peer observations, port mapping and admission state. Use `--json` for structured output. See [Health](#health). |
 | `shutdown` | Stop the daemon cleanly. |
 
 In `get` JSON, `transfer.peers[].transport` is `"tcp"`, `"utp"` or `"http"`
@@ -63,6 +63,35 @@ running owner, including peers that have closed; restarting the owner resets it.
 Counts are sampled while peer I/O is attached; later FIN-linger retransmissions
 are not included. `transfer.pending_contacts` counts queued and currently dialing
 discovery contacts, not established peers. These diagnostics are not wire traces.
+
+## Health
+
+`spill health` prints readable fields; `spill health --json` returns the complete
+health object. The control/HTTP API stays JSON. Existing fields (`pid`, `running`,
+`listen`, `advertised_port`, `port_mapping`, `admission_closed`) remain available.
+The `network` object adds:
+
+| Field | Meaning |
+|---|---|
+| `tcp_listen`, `udp_listen` | Local address while the listener/receiver task is running; `null` offline or stopped. Not proof of external reachability. |
+| `utp_enabled`, `dht_enabled` | Configured session permissions. DHT can be enabled without its lazy node having started. |
+| `inbound_tcp`, `inbound_utp` | Separate passive observations for each peer transport, with the fields below. |
+
+| Inbound field | Meaning |
+|---|---|
+| `active` | Successful inbound handshakes whose transports are still alive, including LAN peers. |
+| `active_public` | Public-address subset of `active`. |
+| `total` | Successful inbound handshakes since daemon startup, including LAN peers. |
+| `public_total` | Public-address subset of `total`. |
+| `last_public_ago_secs` | Seconds since the last successful public inbound handshake; `null` means none observed since startup. |
+
+Counts exclude bare TCP accepts, incomplete/invalid handshakes, outbound peers
+and web seeds. Totals survive disconnections and torrent removal, but reset with
+the daemon. Public classification excludes loopback, private, link-local and
+shared-address IPv4 ranges; mapped IPv4 addresses are classified as IPv4.
+These observations do not contact any external service or send probes. A recent
+public handshake is evidence of connectivity at that time; a quiet swarm is not
+evidence of a closed port. See [Troubleshooting](troubleshooting.md#nobody-can-connect-to-me).
 
 ## Creating torrents
 

@@ -549,9 +549,10 @@ impl Supervisor {
         };
         self.session.admit(options)
     }
-    pub fn health(&self) -> Value {
+    pub async fn health(&self) -> Value {
         json!({"pid":std::process::id(),"running":self.running.len(),"listen":self.session.local_addr(),
             "advertised_port":self.session.advertised_port(),
-            "port_mapping":self.session.port_mapping(),"admission_closed":self.session.admission_closed()})
+            "port_mapping":self.session.port_mapping(),"admission_closed":self.session.admission_closed(),
+            "network":self.session.network_status().await})
     }
 }

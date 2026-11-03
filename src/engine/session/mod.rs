@@ -5,6 +5,7 @@
 //! Unlike [`super::download`], default reusable sessions do not enable DHT.
 pub mod dht;
 pub(in crate::engine) mod dial;
+pub(in crate::engine) mod incoming;
 mod listener;
 pub(in crate::engine) mod metadata;
 pub mod port_map;
@@ -204,6 +205,39 @@ impl Retirement {
         }
     }
 }
+/// Passive observations of successful inbound BitTorrent handshakes since session creation.
+/// Public peers exclude loopback, private, link-local and shared-address IPv4 ranges;
+/// IPv4-mapped IPv6 addresses are classified as IPv4. These are observations, not
+/// a firewall test. No observations does not imply an unreachable port.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct InboundStatus {
+    /// Successful inbound transports still alive, including local peers.
+    pub active: usize,
+    /// Public subset of `active`.
+    pub active_public: usize,
+    /// Successful inbound handshakes, including local peers, even after disconnect/removal.
+    pub total: u64,
+    /// Public subset of `total`.
+    pub public_total: u64,
+    /// Age of the last successful public handshake, or none since session creation.
+    pub last_public_ago_secs: Option<u64>,
+}
+
+/// Local transport readiness and passive inbound observations. No probes are sent.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct NetworkStatus {
+    /// Local address while the TCP listener task is running; none offline or stopped.
+    pub tcp_listen: Option<SocketAddr>,
+    /// Local address while the UDP receiver task is running; none offline or stopped.
+    pub udp_listen: Option<SocketAddr>,
+    /// Configured network permissions, not proof of external reachability.
+    pub utp_enabled: bool,
+    /// DHT permission, including a lazily initialized node that has not started yet.
+    pub dht_enabled: bool,
+    pub inbound_tcp: InboundStatus,
+    pub inbound_utp: InboundStatus,
+}
+
 /// Clones share executions. Last-clone drop requests stop; shutdown joins cleanup.
 #[derive(Clone)]
 pub struct Session {
@@ -249,6 +283,8 @@ struct Shared {
     bandwidth: crate::engine::bandwidth::Budget,
     rechecks: Arc<Semaphore>,
     address: SocketAddr,
+    incoming: Arc<Mutex<incoming::Incoming>>,
+    utp_enabled: bool,
     advertised_port: watch::Sender<u16>,
     mapping_status: watch::Receiver<port_map::Status>,
     limits: Limits,
@@ -312,6 +348,7 @@ impl Session {
             session.stop.subscribe(),
             session.tasks.get_mut().utp_handshakes.clone(),
         )));
+        session.utp_enabled = network.utp;
         session.dial_queue.set_utp(network.utp.then(|| mux.clone()));
         session.utp = Some(mux.clone());
         udp.utp = Some(mux);
@@ -382,6 +419,8 @@ impl Shared {
             bandwidth: crate::engine::bandwidth::Budget::default(),
             rechecks: Arc::new(Semaphore::new(RECHECK_CONCURRENCY)),
             address,
+            incoming: Arc::default(),
+            utp_enabled: false,
             advertised_port: watch::channel(address.port()).0,
             mapping_status: watch::channel(port_map::Status::default()).1,
             limits,
@@ -415,6 +454,29 @@ impl Shared {
     }
 }
 impl Session {
+    /// Snapshot listener-task readiness and inbound handshakes shared by all clones.
+    /// Counters survive torrent removal and disconnects, but reset with a new session.
+    /// Active counts end with the transport, including cancellation or panic.
+    pub async fn network_status(&self) -> NetworkStatus {
+        let tasks = self.shared.tasks.lock().await;
+        let (inbound_tcp, inbound_utp) = self.shared.incoming.lock().unwrap().snapshot();
+        NetworkStatus {
+            tcp_listen: tasks
+                .listener
+                .as_ref()
+                .filter(|task| !task.is_finished())
+                .map(|_| self.shared.address),
+            udp_listen: tasks
+                .udp
+                .as_ref()
+                .filter(|task| !task.is_finished())
+                .map(|_| self.shared.address),
+            utp_enabled: self.shared.utp_enabled,
+            dht_enabled: self.shared.dht.is_some(),
+            inbound_tcp,
+            inbound_utp,
+        }
+    }
     pub fn port_mapping(&self) -> port_map::Status {
         self.shared.mapping_status.borrow().clone()
     }
@@ -535,6 +597,7 @@ impl Session {
             Networking::Recheck
         } else {
             Networking::Online(Network {
+                incoming: shared.incoming.clone(),
                 advertised_port: shared.advertised_port.subscribe(),
                 sockets,
                 dial_queue: shared.dial_queue.clone(),

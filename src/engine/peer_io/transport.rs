@@ -8,11 +8,26 @@ pub(super) async fn run_socket(
     commands: mpsc::Receiver<Outbound>,
     events: &mpsc::Sender<PeerEvent>,
 ) -> io::Result<()> {
+    let address = if matches!(start.role, Role::Inbound) {
+        Some(socket.peer_addr()?)
+    } else {
+        None
+    };
     match socket {
         Stream::Tcp(mut socket) => {
             // Control frames must not wait for Nagle between batches of blocks.
             socket.set_nodelay(true)?;
             handshake(&mut socket, start, &context, connection, events).await?;
+            let _incoming = address.map(|address| {
+                crate::engine::session::incoming::Incoming::connected(
+                    context
+                        .incoming
+                        .as_ref()
+                        .expect("online inbound statistics"),
+                    true,
+                    address,
+                )
+            });
             let (reader, writer) = socket.into_split();
             run_io_throttled(
                 (reader, context.read_pause),
@@ -30,6 +45,16 @@ pub(super) async fn run_socket(
         }
         Stream::Utp(mut socket) => {
             handshake(&mut socket, start, &context, connection, events).await?;
+            let _incoming = address.map(|address| {
+                crate::engine::session::incoming::Incoming::connected(
+                    context
+                        .incoming
+                        .as_ref()
+                        .expect("online inbound statistics"),
+                    false,
+                    address,
+                )
+            });
             let (reader, writer) = socket.split();
             run_io_throttled(
                 (reader, context.read_pause),

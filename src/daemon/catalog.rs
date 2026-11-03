@@ -1,4 +1,4 @@
-//! Single-user catalog. No legacy schema migrations or removal receipts.
+//! Single-user catalog with transactional startup migrations.
 use crate::settings::Settings;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,9 @@ pub enum Error {
     Payload(#[from] std::io::Error),
     #[error("torrent already exists")]
     Duplicate,
-    #[error("unsupported catalog version {0}; use a fresh state directory")]
+    #[error(
+        "unsupported catalog version {0}; use a compatible spill version or a fresh state directory"
+    )]
     Version(i64),
 }
 type Result<T> = std::result::Result<T, Error>;
@@ -105,9 +107,36 @@ impl Row {
         })
     }
 }
+// Append migrations; published entries must stay unchanged.
+const MIGRATIONS: &[&str] = &[include_str!("migrations/001.sql")];
+
+fn migrate(c: &mut Connection) -> Result<()> {
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if !(0..=MIGRATIONS.len() as i64).contains(&version) {
+        return Err(Error::Version(version));
+    }
+    if version == 0 {
+        let tables: i64 = tx.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        )?;
+        if tables != 0 {
+            return Err(Error::Version(version));
+        }
+    }
+    for (index, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", index as i64 + 1)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 impl Catalog {
     pub fn open(path: &Path) -> Result<Self> {
-        let c = Connection::open(path)?;
+        let mut c = Connection::open(path)?;
         c.busy_timeout(std::time::Duration::from_secs(5))?;
         c.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA journal_mode=WAL;")?;
         // Keep the WAL on close; normal auto-checkpointing bounds its growth.
@@ -117,37 +146,7 @@ impl Catalog {
             rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
             true,
         )?;
-        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version == 0 {
-            let tables: i64 = c.query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-                [],
-                |r| r.get(0),
-            )?;
-            if tables != 0 {
-                return Err(Error::Version(version));
-            }
-            c.execute_batch("BEGIN;
-                CREATE TABLE torrents (
-                    id TEXT PRIMARY KEY, metainfo BLOB, magnet TEXT, output_dir TEXT NOT NULL,
-                    intent TEXT NOT NULL, settings TEXT NOT NULL CHECK(json_valid(settings)),
-                    resume BLOB NOT NULL, downloaded INTEGER NOT NULL DEFAULT 0,
-                    hash_failed_bytes INTEGER NOT NULL DEFAULT 0,
-                    hash_failed_pieces INTEGER NOT NULL DEFAULT 0,
-                    uploaded INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL,
-                    completed_at INTEGER, last_download_at INTEGER, last_upload_at INTEGER,
-                    seed_seconds REAL NOT NULL DEFAULT 0, complete INTEGER NOT NULL DEFAULT 0,
-                    completed_announces TEXT NOT NULL CHECK(json_valid(completed_announces)),
-                    v1 TEXT UNIQUE, v2 TEXT UNIQUE,
-                    created_files BLOB, last_error TEXT,
-                    retry_count INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0,
-                    CHECK(metainfo IS NOT NULL OR magnet IS NOT NULL),
-                    CHECK(v1 IS NOT NULL OR v2 IS NOT NULL));
-                CREATE TABLE dht (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node_id BLOB NOT NULL, nodes BLOB NOT NULL);
-                PRAGMA user_version=1; COMMIT;")?;
-        } else if version != 1 {
-            return Err(Error::Version(version));
-        }
+        migrate(&mut c)?;
         c.prepare("SELECT settings, resume, uploaded, seed_seconds, complete, created_files, retry_at FROM torrents LIMIT 0")?;
         let rows = Self::read_rows(&c)?.into_iter().map(Arc::new).collect();
         Ok(Self(Arc::new(Mutex::new(State {

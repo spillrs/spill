@@ -214,12 +214,19 @@ port for TCP and UDP yourself. See [Networking](networking.md#automatic-port-map
 
 ## Upgrading
 
-Before 1.0, spill does not migrate old catalogs. If an upgrade reports
-`unsupported catalog version`, start with a fresh `state_dir`. Keep your
-download directory: re-adding a torrent whose complete files are already there
-verifies and seeds them without downloading again.
+Stop the daemon before upgrading and back up its state directory. On startup,
+spill checks the catalog schema version and automatically applies pending
+migrations before loading torrents. Schema changes and their version updates
+commit together; a failed migration rolls back and stops startup.
 
-The catalog uses schema version 1. Catalogs with an unsupported schema require a
-fresh state directory. Re-adding files does not recover their previous traffic
-totals or timestamps. Incompatible or invalid cached DHT contacts are discarded
-and rebuilt without affecting saved torrents.
+Schema version 1 is the supported baseline and the current version. Existing
+version 1 catalogs need no changes. Unversioned nonempty catalogs and catalogs
+newer than the binary supports are rejected. If startup reports
+`unsupported catalog version`, use a compatible spill binary. Do not reset the
+version manually. Alternatively, use a fresh `state_dir` and re-add torrents:
+complete files are verified and seeded without downloading again, but partial
+downloads, traffic totals and timestamps are not recovered. Keep the old state
+directory as a backup.
+
+Incompatible or invalid cached DHT contacts are discarded and rebuilt without
+affecting saved torrents.

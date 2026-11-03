@@ -102,8 +102,16 @@ async fn ipv6_restart_keeps_dht_enabled_for_saved_torrents() {
 }
 
 #[tokio::test]
-async fn restart_resumes_from_verified_checkpoint_and_rejects_unsupported_catalogs() {
+async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_newer_versions() {
     let root = Temp::new();
+    std::fs::create_dir_all(root.0.join("state")).unwrap();
+    let db = rusqlite::Connection::open(root.0.join("state/catalog.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    drop(db);
     let source = WebSeed::new().await;
     let bytes = metainfo(Some(&source.url));
     let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
@@ -128,6 +136,11 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_unsupported_catalo
     assert!(!resume.is_empty());
     let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
     daemon.state(&id, "seeding").await;
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
     assert_eq!(
         source.hits.load(Ordering::Relaxed),
         1,
@@ -167,7 +180,18 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_unsupported_catalo
         .await
         .unwrap();
     assert_eq!(status.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&status.stderr).contains("fresh state directory"));
+    assert!(String::from_utf8_lossy(&status.stderr).contains("unsupported catalog version 2"));
+    let db = rusqlite::Connection::open(root.0.join("state/catalog.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row("SELECT id FROM torrents", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        id
+    );
 }
 
 #[tokio::test]

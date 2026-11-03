@@ -47,7 +47,7 @@ A client command can't reach the control socket.
 | `Address already in use` | Another program (often another client) uses the `listen` port for TCP or UDP. Pick another port or stop it. |
 | `control socket already in use` | Another spill is running with the same socket. |
 | `Resource temporarily unavailable` | Another spill holds the lock on the same `state_dir` (`daemon.lock`). |
-| `unsupported catalog version` | The catalog schema is incompatible. Use a fresh `state_dir`; re-add torrents, and complete files are adopted without downloading. |
+| `unsupported catalog version` | Use a compatible spill binary: the catalog is newer than this binary supports or is a nonempty unversioned catalog. Do not reset its version manually. See [Upgrading](install.md#upgrading). |
 | `absolute paths and a nonzero active cap are required` | A path in the config is relative, or uses `~`, or the active slots are invalid, or `web_listen` isn't loopback. |
 | `unknown field …` | A typo or a removed key in the config (for example `allow_local_peers`, now `allow_local_network`). |
 
@@ -134,8 +134,9 @@ allow only spill. The firewall permission does not configure your router.
 An incompatible resume checkpoint causes the bound torrent's payload to be
 fully rechecked when it next starts. Existing good data is not downloaded again. Keep the state
 directory and payload in place; deleting the catalog also discards the recorded
-authority to reopen partial files. Catalog-schema incompatibility is separate
-and may require a fresh state directory.
+authority to reopen partial files. Catalog migrations run automatically at
+startup; unsupported catalog versions are a separate issue. See
+[Upgrading](install.md#upgrading).
 
 ## Files look wrong after a crash or power loss
 

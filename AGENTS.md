@@ -103,6 +103,9 @@ ran and which you did not.
   `pub(crate)` unless the daemon needs it.
 - **Small error surface.** Use `io::Error` internally and plain `thiserror`
   enums at the daemon boundary. Do not build error taxonomies.
+- **Catalog upgrades use startup migrations.** Append ordered SQL migrations in
+  `src/daemon/migrations/` and register them in `catalog.rs`. Never change a
+  published migration; schema version 1 is the supported baseline.
 - **Comments state why, not what,** and stay short. No changelog or
   history comments, and no comments that restate the code.
 - **Prefer deleting code.** When a change makes something unused, remove
@@ -125,6 +128,4 @@ ran and which you did not.
 
 - Add dependencies without saying why the standard library or an existing
   dependency is not enough.
-- Support old catalog schemas or on-disk formats before 1.0; bump the
-  version and document that a fresh state directory is required.
 - Put model names, agent names or session links in code, comments or docs.

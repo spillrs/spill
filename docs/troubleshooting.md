@@ -35,9 +35,12 @@ select a module at `trace` when those details are needed, for example
 logs; use `spill --json get ID` for current state. See
 [Logging configuration](configuration.md#logging-logging) for filters.
 
-Per-torrent errors are also kept in the catalog: `spill get ID` shows
-`last_error`, `tracker_message` and, when retrying, `retry_at`. Torrent log events
-include their ID so you can correlate interleaved transfers.
+Torrent failures are also kept in the catalog: `spill get ID` shows
+`last_error` and, when retrying, `retry_at`. Tracker failures appear separately
+in `transfer.trackers[].error`; tracker warnings appear in `tracker_message`
+and `transfer.trackers[].warning`. A backup tracker's last error can remain
+visible while another tracker succeeds. Torrent log events include their ID
+so you can correlate interleaved transfers.
 
 On macOS, the launchd agent captures stderr in
 `~/Library/Application Support/spill/spill.log`; detailed logs are in
@@ -113,8 +116,8 @@ A client command can't reach the control socket.
   causes. `pause` then `resume` retries immediately. Local filesystem failures
   retry with backoff; invalid authenticated metadata, private magnets and learned
   duplicate hashes pause the torrent instead.
-- On a private tracker, `last_error` shows the tracker's reason, for example an
-  unregistered torrent or a client that isn't whitelisted.
+- On a private tracker, `transfer.trackers[].error` shows the tracker's reason,
+  for example an unregistered torrent or a client that isn't whitelisted.
 
 ## Torrents stay queued after an internal failure
 

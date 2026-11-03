@@ -17,7 +17,8 @@ then open <http://127.0.0.1:8080> locally.
 
 - A compact transfer table with search, sorting, multi-selection, state filters,
   lifetime downloaded/uploaded totals, rates, peers, ETA and discovery policy.
-  Hover over status for the latest error or tracker message.
+  Hover over status for the latest torrent failure or tracker warning. Tracker
+  failures stay in Sources and do not put a torrent in the error filter.
 - Adding a `.torrent` file, magnet link, or HTTP(S) torrent URL, with an optional
   output directory. Paste URLs into the same field as magnet links. The add
   dialog initializes Trackers, DHT, PEX and Web seeds from daemon defaults;

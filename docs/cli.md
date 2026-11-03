@@ -136,6 +136,12 @@ true }` records. `false` means pending; an absent record means no completion
 event was recorded for that swarm. Delivery is persisted independently for each
 hybrid swarm.
 
+`last_error` reports torrent-level failures, not tracker failures. Tracker errors
+remain in `transfer.trackers[].error`, alongside each tracker's state, counters
+and reply age. A failed tracker can retain its last error while another tracker
+is succeeding; that does not make the torrent failed. `tracker_message` exposes
+a tracker warning, also available in `transfer.trackers[].warning`.
+
 `transfer.trackers[]` and `transfer.dht[]` identify their swarm with the same
 `swarm` key: SHA-1 for v1, the 20-byte SHA-256 prefix for v2. DHT observations
 are an array, empty when disabled. Hybrids with authenticated layers have

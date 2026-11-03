@@ -428,8 +428,8 @@ async fn private_tracker_failure_and_warning_reach_status() {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let row = daemon.call(json!({"op":"get","id":id})).await;
-            if row["last_error"] == "Passkey invalid" {
-                assert_eq!(row["transfer"]["trackers"][0]["error"], "Passkey invalid");
+            if row["transfer"]["trackers"][0]["error"] == "Passkey invalid" {
+                assert!(row["last_error"].is_null(), "{row}");
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

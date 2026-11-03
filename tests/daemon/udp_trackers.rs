@@ -350,11 +350,8 @@ async fn udp_tracker_failure_text_reaches_status_in_both_exchanges() {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let row = daemon.call(json!({"op":"get","id":id})).await;
-                if row["last_error"] == "Unregistered torrent" {
-                    assert_eq!(
-                        row["transfer"]["trackers"][0]["error"],
-                        "Unregistered torrent"
-                    );
+                if row["transfer"]["trackers"][0]["error"] == "Unregistered torrent" {
+                    assert!(row["last_error"].is_null(), "{row}");
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;

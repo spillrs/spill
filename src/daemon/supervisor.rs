@@ -262,10 +262,6 @@ impl Supervisor {
                 row.checkpoint.hash_failed_pieces,
             ));
         let transfer = status.as_ref().map(crate::observation::transfer);
-        let tracker_error = status
-            .as_ref()
-            .and_then(|s| s.diagnostics.as_ref())
-            .and_then(|d| d.trackers.iter().find_map(|t| t.error.as_ref()));
         let tracker_message = status
             .as_ref()
             .and_then(|s| s.diagnostics.as_ref())
@@ -290,7 +286,7 @@ impl Supervisor {
             "layers_pending":meta.is_some_and(|meta| meta.layers_pending()),
             "completed_announces":row.checkpoint.completed_announces.iter().map(|(key, delivered)|
                 json!({"swarm":crate::observation::swarm_key(*key),"delivered":delivered})).collect::<Vec<_>>(),
-            "last_error":row.last_error.as_ref().or(tracker_error),
+            "last_error":row.last_error,
             "tracker_message":tracker_message,"retry_at":row.retry_at,"transfer":transfer})
     }
     pub async fn reannounce(

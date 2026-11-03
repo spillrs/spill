@@ -55,17 +55,24 @@ Behaviour is tested end to end. Unit tests are not wanted.
   hooks, feature flags or public APIs that exist only for tests. If a test
   needs to observe something, it must be useful in the daemon's JSON output
   to real users too.
-- **A bug fix comes with an end-to-end reproduction** in the matching module
-  under `tests/daemon/` or `tests/engine/` when one can be built with in-process
-  peers, trackers, web seeds or filesystem payloads. Otherwise, add or extend an
-  interop scenario. Library-only behaviour belongs under `tests/engine/`.
+- **Trivial fixes do not require new tests.** Validate them with existing tests
+  or a focused manual reproduction; do not introduce a harness just to test a
+  straightforward correction.
+- **Non-trivial bug fixes warrant proportionate regression protection.** Prefer
+  extending an existing end-to-end scenario under `tests/daemon/` or
+  `tests/engine/` using in-process peers, trackers, web seeds or filesystem
+  payloads. Use interop scenarios when needed. Library-only behaviour belongs
+  under `tests/engine/`.
 - Keep `tests/daemon.rs` and `tests/engine.rs` as module lists; group scenarios
   by behaviour under their matching directories and put shared harness code in
   `tests/common/`. Engine scenarios must not import daemon-dependent helpers or
   require the daemon binary. Retain real-daemon assertions when moving library
   scenarios; do not duplicate existing protection.
-- Do not add tests to raise coverage. A test must protect a user-visible
-  behaviour that could plausibly regress.
+- **Tests must earn their LOC.** Add tests only for non-trivial, user-visible
+  behaviour that could plausibly regress. Weigh the regression protection
+  against all added test, fixture and harness LOC and their maintenance cost;
+  a small fix does not justify a large test scaffold. Do not add tests merely
+  to raise coverage, mirror implementation details or duplicate existing protection.
 
 ### Test tiers
 

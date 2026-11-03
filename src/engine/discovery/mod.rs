@@ -429,6 +429,11 @@ impl reqwest::dns::Resolve for Resolver {
             .await??;
             let allowed: Vec<_> = addresses
                 .filter(|a| crate::engine::network::source(*a, allow_local_network))
+                .map(|mut address| {
+                    // A nonzero DNS port overrides the URL's default HTTPS port.
+                    address.set_port(0);
+                    address
+                })
                 .collect();
             if allowed.is_empty() {
                 return Err(invalid().into());

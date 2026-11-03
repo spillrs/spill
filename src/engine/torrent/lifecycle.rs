@@ -42,6 +42,7 @@ pub(super) struct Context {
     pub metadata: watch::Sender<Metadata>,
     pub recovery: Arc<std::sync::Mutex<Option<RecoveryState>>>,
     pub inspection: bool,
+    pub retirement: crate::engine::session::Retirement,
 }
 
 pub(super) async fn run(
@@ -58,6 +59,21 @@ pub(super) async fn run(
     if *context.stop.borrow() {
         return stopped();
     }
+    let callback = options.persistence.resolved.take();
+    let metadata = context.metadata.clone();
+    let status = context.status.clone();
+    let resolved: Arc<dyn Fn(OwnedMetainfo) -> io::Result<()> + Send + Sync> =
+        Arc::new(move |meta| {
+            if let Some(callback) = &callback {
+                callback(meta.clone())?;
+            }
+            status.send_modify(|s| s.progress.layers_pending = meta.layers_pending());
+            metadata.send_modify(|m| {
+                m.metainfo = Some(meta);
+                m.acknowledged = true;
+            });
+            Ok(())
+        });
     let meta = match options.source {
         TorrentSource::Metainfo(meta) => meta,
         TorrentSource::Magnet(magnet) => {
@@ -71,10 +87,10 @@ pub(super) async fn run(
                 .resolve(
                     &mut resources.metadata,
                     &magnet,
-                    options.settings.trackers,
-                    options.settings.dht,
+                    &options.settings,
                     options.profile,
                     context.stop.clone(),
+                    &context.status,
                 )
                 .await;
             let drained = resources.metadata.drain().await;
@@ -88,33 +104,35 @@ pub(super) async fn run(
                 other => other?,
             };
             drained?;
-            assert_eq!(meta.info_hash(), magnet.info_hash());
+            assert!(magnet.info_hash().matches_info_bytes(meta.info_bytes()));
+            context.retirement.resolve(&meta)?;
             super::options::selection(&meta, &options.settings)?;
             context
                 .metadata
                 .send_modify(|m| m.metainfo = Some(meta.clone()));
-            if let Some(callback) = options.persistence.resolved.take() {
-                let resolved = meta.clone();
-                let result =
-                    crate::engine::run_blocking(&mut resources.acknowledgement, move || {
-                        callback(resolved)
-                    })
-                    .await;
-                if let Err(error) = result {
-                    let error = Arc::new(error);
-                    context
-                        .metadata
-                        .send_modify(|m| m.error = Some(error.clone()));
-                    return Err(io::Error::new(error.kind(), error));
-                }
+            let callback = resolved.clone();
+            let pending = meta.clone();
+            let result = crate::engine::run_blocking(&mut resources.acknowledgement, move || {
+                callback(pending)
+            })
+            .await;
+            if let Err(error) = result {
+                let error = Arc::new(error);
+                context
+                    .metadata
+                    .send_modify(|m| m.error = Some(error.clone()));
+                return Err(io::Error::new(error.kind(), error));
             }
-            context.metadata.send_modify(|m| m.acknowledged = true);
             meta
         }
     };
-    context
-        .status
-        .send_modify(|s| s.progress.total_bytes = meta.layout().total_length());
+    context.status.send_modify(|s| {
+        s.identity = meta.info_hash();
+        s.progress.metadata_ready = true;
+        s.progress.info_validated = true;
+        s.progress.layers_pending = meta.layers_pending();
+        s.progress.total_bytes = meta.layout().total_length();
+    });
     if context.inspection {
         context
             .status
@@ -151,7 +169,7 @@ pub(super) async fn run(
             *recovery.lock().unwrap() = Some(RecoveryState {
                 binding: binding.clone(),
                 resume: None,
-                completed_announce: None,
+                completed_announces: Vec::new(),
             });
             if let Some(callback) = binding_callback {
                 callback(binding.clone())?;
@@ -197,7 +215,7 @@ pub(super) async fn run(
     let Some(storage) = prepared? else {
         return stopped();
     };
-    let (resume, completed_announce) = {
+    let (resume, completed_announces) = {
         let recovery = context.recovery.lock().unwrap();
         let state = recovery.as_ref().expect("recorded destination");
         (
@@ -205,7 +223,7 @@ pub(super) async fn run(
                 .verified_resume()
                 .map(<[u8]>::to_vec)
                 .or_else(|| state.resume.clone()),
-            state.completed_announce,
+            state.completed_announces.clone(),
         )
     };
     if *context.stop.borrow() {
@@ -220,35 +238,43 @@ pub(super) async fn run(
         options.profile,
         options.run == RunPolicy::Recheck,
         resume,
-        Box::new(move |resume| {
-            if let Some(callback) = &checkpoint {
-                callback(resume.clone())?;
-            }
-            recovery
-                .lock()
-                .unwrap()
-                .as_mut()
-                .expect("recorded destination")
-                .resume = Some(resume);
-            Ok(())
-        }),
+        Persistence {
+            checkpoint: Some(Box::new(move |resume| {
+                if let Some(callback) = &checkpoint {
+                    callback(resume.clone())?;
+                }
+                recovery
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .expect("recorded destination")
+                    .resume = Some(resume);
+                Ok(())
+            })),
+            resolved: Some(Box::new(move |meta| resolved(meta))),
+            ..Default::default()
+        },
         context.rechecks,
     ));
     let recovery = context.recovery.clone();
     let announce = options.persistence.completion_announce;
     let runtime_options = RuntimeOptions {
         reannounce: context.requests,
-        completed_announce,
-        announce_checkpoint: Arc::new(move |delivered| {
+        completed_announces,
+        announce_checkpoint: Arc::new(move |hash, delivered| {
             if let Some(callback) = &announce {
-                callback(delivered)?;
+                callback(hash, delivered)?;
             }
-            recovery
-                .lock()
-                .unwrap()
+            let mut recovery = recovery.lock().unwrap();
+            let states = &mut recovery
                 .as_mut()
                 .expect("recorded destination")
-                .completed_announce = Some(delivered);
+                .completed_announces;
+            if let Some((_, state)) = states.iter_mut().find(|(key, _)| *key == hash) {
+                *state = delivered;
+            } else {
+                states.push((hash, delivered));
+            }
             Ok(())
         }),
         settings: options.settings,

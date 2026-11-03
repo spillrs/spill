@@ -17,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     name = "spill",
     version,
     about = "A modern torrent client built in Rust",
-    after_help = "Run `spill serve` in one terminal, then use client commands in another.\n`spill create` works offline. Torrent IDs accept unambiguous prefixes.\nUse --json for automation. Guide: https://spill.rs/docs/ | Rust engine: https://docs.rs/spill"
+    after_help = "Run `spill serve` in one terminal, then use client commands in another.\n`spill create` works offline. Torrent IDs and full-hash aliases accept unambiguous prefixes.\nUse --json for automation. Guide: https://spill.rs/docs/ | Rust engine: https://docs.rs/spill"
 )]
 pub struct Cli {
     #[arg(long, global = true)]
@@ -204,12 +204,21 @@ fn clean(value: &str) -> String {
 }
 fn text(data: &Value) {
     if let Some(rows) = data["torrents"].as_array() {
-        println!("ID            STATE         VERIFIED / TOTAL       NAME");
+        let width = rows
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .map(str::len)
+            .max()
+            .unwrap_or(40);
+        println!(
+            "{:<width$}  STATE         VERIFIED / TOTAL       NAME",
+            "ID"
+        );
         for row in rows {
             let id = row["id"].as_str().unwrap_or("");
             println!(
-                "{:<12}  {:<12}  {} / {}  {}",
-                &id[..id.len().min(12)],
+                "{:<width$}  {:<12}  {} / {}  {}",
+                id,
                 row["state"].as_str().unwrap_or("?"),
                 row["verified_bytes"],
                 row["total_bytes"],

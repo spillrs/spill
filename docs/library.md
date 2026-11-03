@@ -43,6 +43,34 @@ For magnets, parse the URI with `spill::protocol::magnet::Magnet::parse` and
 pass `TorrentSource::Magnet`. Private torrents require metainfo, not magnets.
 See the [API reference](https://docs.rs/spill) for exact signatures.
 
+The protocol parsers can inspect v1, v2 and hybrid metainfo and magnets.
+Their `info_hash()` accessors return `TorrentIdentity`; use `v1()` or `v2()`
+for a full hash, and `wire_key()` only for its 20-byte routing key.
+`TorrentHandle::info_hash()` returns the admission identity; snapshots contain
+all hashes learned during resolution. `Session::torrent`
+accepts `TorrentIdentity`: a single hash matches a known hash of the execution;
+a hybrid lookup requires both hashes to match the same execution. A truncated
+v2 routing key is never a lookup identity.
+
+The engine and daemon handle v1, v2-only and hybrid torrents the same way; see
+[v2 and hybrid torrents](v2.md) for format behaviour, magnet resolution, swarms
+and peer protocol rules. For library users:
+
+- `TorrentDiagnostics` identifies tracker and DHT entries by their `swarm` key;
+  `dht` contains one entry per swarm. Tracker and DHT codecs in
+  `spill::protocol` take plain 20-byte keys, not v1 identities.
+- `OwnedMetainfo::layers_pending()` identifies hybrids that verify with SHA-1
+  while required v2 layers are absent. `verification()` returns `V1` in that state.
+- `resolved` acknowledges magnet metainfo before payload preparation. For a
+  pending hybrid it is called again when a background rebuild finishes after
+  full payload verification; `wait_complete()` does not wait for this. Stop
+  cancels the rebuild, so `UntilComplete` may leave layers pending. Store both
+  publications; restarting with the original pending metainfo after a full-mode
+  checkpoint rejects that resume binding and rechecks the payload. Use
+  `TorrentHandle::metainfo()` to retain the latest metainfo for the next execution.
+  `inspect` can return a pending hybrid without payload I/O.
+- `Layout::is_multi_file()` indicates that file paths are relative to `name`.
+
 `download()` stops after the selected content completes and joins cleanup before
 returning. It uses an ephemeral IPv4 listener, uTP, public DHT routers, no port
 mapping, and no permission to contact LAN addresses. It keeps no recovery record.
@@ -78,13 +106,16 @@ fn main() -> std::io::Result<()> {
 This is a blocking API; use `spawn_blocking` when calling it from an async
 application. The progress callback runs on the calling thread. Return an error
 from it to cancel; creation joins its workers before returning. The result
-includes encoded metainfo, its info hash, root name, total bytes, and piece count.
+includes encoded metainfo, `CreatedTorrent::info_hash` as a `TorrentIdentity`,
+root name, total bytes (including alignment padding), and piece count.
 The caller owns output publication; the CLI additionally refuses overwrites and
 publishes the completed document atomically.
 
 `Options::piece_length` is in **bytes**, unlike the CLI's exponent. Defaults are
-256 KiB pieces and the available CPU count. Files are byte-sorted, symlinks are
-followed, and the source is never modified. Keep it unchanged until the call
+256 KiB pieces and the available CPU count. `Options::format` selects
+`Format::V1` (the default), `Format::V2` or `Format::Hybrid`. V1 sorts whole
+path bytes; v2 and hybrid sort path components and align files to pieces.
+Symlinks are followed, and the source is never modified. Keep it unchanged until the call
 returns. See [Creating torrents](cli.md#creating-torrents) for supported fields,
 source traversal, limits, and the separate add-and-seed workflow; rustdoc owns
 the exact API contract.
@@ -109,6 +140,17 @@ metadata resolution and destination preparation happen asynchronously.
 - `Session::inspect` resolves magnet metadata without creating payload files.
 - `snapshot()` gives current progress; `changed().await` observes latest-value
   updates, not an event history. It returns false after the final report.
+  `TorrentStatus` requires an identity and does not implement `Default`.
+  `TorrentStatus::identity` contains the full known identity; use its enum
+  variants or `v1()`/`v2()` accessors for format and hashes.
+  `progress.metadata_ready` means metainfo sufficient for payload verification
+  is available, independently of payload recovery. `progress.layers_pending`
+  identifies hybrid SHA-1-only verification before a background layer rebuild.
+  `progress.info_validated` distinguishes validated info bytes from payload-ready
+  metainfo for v2-only magnets.
+  `hash_bytes` and `hash_total_bytes` report authenticated v2 layer
+  acquisition, excluding proof siblings and repeated roots. They are acquisition
+  counters, not payload bytes; a metainfo/recovered start has no acquisition work.
 - `wait_complete()` waits for wanted-content completion, not termination.
   `outcome()` reports termination, errors, and cleanup. A clean incomplete stop
   is not a successful download.
@@ -128,6 +170,15 @@ All destinations require an existing root directory:
 | `Recover` | Reopen a previous execution using its recorded destination binding and checkpoints. |
 
 spill never overwrites files it has no recorded authority to write.
+Resume records bind the format, full torrent identity and pending/full layer
+mode. A full hybrid cannot trust a pending-mode checkpoint without rechecking.
+The rebuild saves a full-mode checkpoint, so a normal completed restart needs
+no extra recheck. Fingerprints cover real files, including empty files, not
+virtual padding. `Recover` fully rechecks
+payload when a checkpoint is incompatible, using its existing destination binding.
+Keep that binding and payload; checkpoint incompatibility alone does not require
+a fresh state directory.
+
 A resume checkpoint alone does not authorize reopening partial payload:
 `DestinationBinding` does. Store the binding, its original root directory,
 resume bytes, and completed-announce delivery state together. Preserve resume
@@ -135,7 +186,11 @@ bytes unchanged and serialize the binding through its serde implementation.
 Its format may change before 1.0.
 
 `Persistence` provides optional acknowledgements for resolved metadata, destination
-bindings, checkpoints, and completed-announce delivery. They run on blocking
+bindings, checkpoints, and completed-announce delivery. The `completion_announce`
+callback receives `(swarm_key, delivered)`; `RecoveryState::completed_announces`
+stores `(swarm_key, delivered)` pairs. Preserve every swarm independently: `false`
+means pending and `true` means acknowledged. Acknowledging one hybrid swarm does
+not acknowledge the other. They run on blocking
 threads. Acknowledgement failures fail the execution. Callbacks must not wait
 synchronously for their own execution or session to stop.
 

@@ -1,5 +1,14 @@
 use serde_json::{Value, json};
 use spill::engine::torrent::{TorrentPhase, TorrentStatus, telemetry};
+use std::fmt::Write;
+
+pub fn swarm_key(key: [u8; 20]) -> String {
+    let mut hex = String::with_capacity(40);
+    for byte in key {
+        write!(hex, "{byte:02x}").unwrap();
+    }
+    hex
+}
 
 pub fn phase(status: &TorrentStatus, recheck: bool) -> &'static str {
     match status.progress.phase {
@@ -21,7 +30,7 @@ pub fn transfer(s: &TorrentStatus) -> Value {
         .map(peer)
         .collect();
     let trackers: Vec<_> = s.diagnostics.iter().flat_map(|d| &d.trackers).map(|t| json!({
-        "url":t.url,"tier":t.tier,"slot":t.slot,"state":t.state,"exchanges":t.exchanges,
+        "swarm":swarm_key(t.swarm),"url":t.url,"tier":t.tier,"slot":t.slot,"state":t.state,"exchanges":t.exchanges,
         "failures":t.failures,"last_reply_ago_ms":t.last_reply_ago_ms,"next_announce_ms":t.next_announce_ms,
         "seeders":t.seeders,"leechers":t.leechers,"peers_returned":t.peers_returned,"error":t.error,"warning":t.warning,
     })).collect();
@@ -35,10 +44,10 @@ pub fn transfer(s: &TorrentStatus) -> Value {
             })
         })
         .collect();
-    let dht = s.diagnostics.as_ref().and_then(|d| d.dht.as_ref()).map(|d| json!({
-        "lookup_pending":d.lookup_pending,"next_lookup_ms":d.next_lookup_ms,"last_lookup_ago_ms":d.last_lookup_ago_ms,
+    let dht: Vec<_> = s.diagnostics.iter().flat_map(|d| &d.dht).map(|d| json!({
+        "swarm":swarm_key(d.swarm),"lookup_pending":d.lookup_pending,"next_lookup_ms":d.next_lookup_ms,"last_lookup_ago_ms":d.last_lookup_ago_ms,
         "queried":d.queried,"announced":d.announced,"peers_returned":d.peers_returned,"error":d.error,
-    }));
+    })).collect();
     json!({"ready":s.progress.ready,"completed":s.progress.completed,
         "active_peers":s.progress.active_peers,"downloaded_bytes":s.progress.processed_payload_bytes,
         "uploaded_bytes":s.progress.written_payload_bytes,

@@ -24,7 +24,7 @@ pub struct DhtOptions {
     pub routers: Vec<String>,
 }
 use crate::protocol::{
-    identity::InfoHashV1,
+    identity::TorrentIdentity,
     peer::{HANDSHAKE_LEN, Handshake},
 };
 use std::{
@@ -104,7 +104,7 @@ pub(in crate::engine) enum Inbound {
     Tcp(std::net::TcpStream),
     Utp(utp::Stream),
 }
-type Routes = Arc<Mutex<HashMap<InfoHashV1, mpsc::Sender<Inbound>>>>;
+type Routes = Arc<Mutex<HashMap<[u8; 20], mpsc::Sender<Inbound>>>>;
 #[derive(Clone)]
 struct Pending {
     counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
@@ -141,27 +141,65 @@ impl Drop for HandshakePermit {
     }
 }
 struct Owner {
+    known: TorrentIdentity,
+    listener: Option<mpsc::Sender<Inbound>>,
     handle: TorrentHandle,
     profile: Profile,
     identity: Arc<()>,
 }
+#[derive(Clone)]
 pub(in crate::engine) struct Retirement {
     registry: std::sync::Weak<Mutex<Registry>>,
     routes: Routes,
-    hash: InfoHashV1,
+    hash: TorrentIdentity,
     identity: Arc<()>,
 }
 impl Retirement {
+    pub(in crate::engine) fn resolve(
+        &self,
+        meta: &crate::protocol::metainfo::OwnedMetainfo,
+    ) -> io::Result<()> {
+        let identity = meta.info_hash();
+        let registry = self
+            .registry
+            .upgrade()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "session stopped"))?;
+        let mut registry = registry.lock().unwrap();
+        if registry.torrents.values().any(|owner| {
+            !Arc::ptr_eq(&owner.identity, &self.identity)
+                && owner
+                    .known
+                    .wire_keys()
+                    .any(|known| identity.wire_keys().any(|key| key == known))
+        }) {
+            return Err(crate::engine::profile::AdmissionError::Duplicate.into());
+        }
+        let owner = registry
+            .torrents
+            .get_mut(&self.hash.wire_key())
+            .expect("registered execution");
+        owner.known = identity;
+        if let Some(sender) = &owner.listener {
+            let mut routes = self.routes.lock().unwrap();
+            for key in owner.known.wire_keys() {
+                routes.insert(key, sender.clone());
+            }
+        }
+        Ok(())
+    }
     pub(in crate::engine) fn retire(&self) {
         if let Some(registry) = self.registry.upgrade() {
             let mut registry = registry.lock().unwrap();
             if registry
                 .torrents
-                .get(&self.hash)
+                .get(&self.hash.wire_key())
                 .is_some_and(|owner| Arc::ptr_eq(&owner.identity, &self.identity))
             {
-                self.routes.lock().unwrap().remove(&self.hash);
-                registry.torrents.remove(&self.hash);
+                let mut routes = self.routes.lock().unwrap();
+                for key in registry.torrents[&self.hash.wire_key()].known.wire_keys() {
+                    routes.remove(&key);
+                }
+                registry.torrents.remove(&self.hash.wire_key());
             }
         }
     }
@@ -172,7 +210,7 @@ pub struct Session {
     shared: Arc<Shared>,
 }
 struct Registry {
-    torrents: HashMap<InfoHashV1, Owner>,
+    torrents: HashMap<[u8; 20], Owner>,
     closed: bool,
 }
 impl Registry {
@@ -391,13 +429,20 @@ impl Session {
     pub fn admission_closed(&self) -> bool {
         self.shared.registry.lock().unwrap().is_closed()
     }
-    pub fn torrent(&self, hash: InfoHashV1) -> Option<TorrentHandle> {
+    /// Look up a full identity, never a truncated v2 routing key. A single hash
+    /// matches any known hash of the owner; a hybrid requires both to match.
+    pub fn torrent(&self, hash: TorrentIdentity) -> Option<TorrentHandle> {
         self.shared
             .registry
             .lock()
             .unwrap()
             .torrents
-            .get(&hash)
+            .values()
+            .find(|owner| {
+                let known = owner.known;
+                hash.v1().is_none_or(|v1| known.v1() == Some(v1))
+                    && hash.v2().is_none_or(|v2| known.v2() == Some(v2))
+            })
             .map(|owner| owner.handle.clone())
     }
     pub fn torrents(&self) -> Vec<TorrentHandle> {
@@ -453,7 +498,12 @@ impl Session {
         let recheck = matches!(options.run, RunPolicy::Recheck);
         if registry.is_closed()
             || (shared.tracker_http.is_none() && !recheck)
-            || registry.torrents.contains_key(&hash)
+            || registry.torrents.values().any(|owner| {
+                owner
+                    .known
+                    .wire_keys()
+                    .any(|known| hash.wire_keys().any(|key| key == known))
+            })
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -494,6 +544,13 @@ impl Session {
                 dht: shared.dht.clone(),
             })
         };
+        let identity = Arc::new(());
+        let retirement = Retirement {
+            registry: Arc::downgrade(&shared.registry),
+            routes: shared.routes.clone(),
+            hash,
+            identity: identity.clone(),
+        };
         let metadata = magnet.then(|| metadata::Network {
             port: shared.advertised_port.subscribe(),
             dial_queue: shared.dial_queue.clone(),
@@ -502,13 +559,6 @@ impl Session {
             allow_local_network: shared.allow_local_network,
             dht: shared.dht.clone(),
         });
-        let identity = Arc::new(());
-        let retirement = Retirement {
-            registry: Arc::downgrade(&shared.registry),
-            routes: shared.routes.clone(),
-            hash,
-            identity: identity.clone(),
-        };
         let (handle, start) = TorrentHandle::spawn(
             options,
             bandwidth,
@@ -518,12 +568,17 @@ impl Session {
             retirement,
             inspection,
         );
-        if !recheck && !inspection {
-            shared.routes.lock().unwrap().insert(hash, sender);
+        if !magnet && !recheck && !inspection {
+            let mut routes = shared.routes.lock().unwrap();
+            for key in hash.wire_keys() {
+                routes.insert(key, sender.clone());
+            }
         }
         registry.torrents.insert(
-            hash,
+            hash.wire_key(),
             Owner {
+                known: hash,
+                listener: (!recheck && !inspection).then_some(sender),
                 handle: handle.clone(),
                 profile,
                 identity,
@@ -687,7 +742,7 @@ async fn route_utp(
                     if let Ok(Ok(HANDSHAKE_LEN)) = tokio::time::timeout(limits.handshake_timeout, socket.peek(&mut bytes)).await
                         && let Ok((handshake, _)) = Handshake::decode(&bytes)
                     {
-                        let sender = routes.lock().unwrap().get(&InfoHashV1::from_bytes(handshake.info_hash)).cloned();
+                        let sender = routes.lock().unwrap().get(&handshake.info_hash).cloned();
                         if let Some(sender) = sender {
                             match sender.try_send(Inbound::Utp(socket)) {
                                 Ok(()) => return,
@@ -714,7 +769,7 @@ async fn drain_handshakes(pending: &mut JoinSet<()>) -> io::Result<()> {
     }
     result
 }
-async fn peek_hash(socket: TcpStream) -> io::Result<(InfoHashV1, TcpStream)> {
+async fn peek_hash(socket: TcpStream) -> io::Result<([u8; 20], TcpStream)> {
     // Own the readiness guard while routing: TcpStream::peek retains readable
     // readiness for an unchanged prefix and would spin on fragmented input.
     // Tokio's replacement registration API requires unsafe. The deprecated
@@ -738,7 +793,7 @@ async fn peek_hash(socket: TcpStream) -> io::Result<(InfoHashV1, TcpStream)> {
         if length == bytes.len() {
             let (handshake, _) = Handshake::decode(&bytes).map_err(io::Error::other)?;
             return Ok((
-                InfoHashV1::from_bytes(handshake.info_hash),
+                handshake.info_hash,
                 TcpStream::from_std(socket.into_inner())?,
             ));
         }

@@ -39,7 +39,7 @@ pub(super) struct Progress {
     pub(in crate::engine) pending: usize,
     pub(in crate::engine) complete: bool,
     endpoints: HashMap<ConnectionId, Peer>,
-    sources: HashMap<DialId, &'static str>,
+    sources: HashMap<DialId, (&'static str, [u8; 20])>,
     history: HashMap<String, (Instant, Option<String>)>,
     map_count: Option<u32>,
     blocks: u64,
@@ -90,18 +90,17 @@ impl Progress {
         transfer: &mut Shell,
         discovery: &mut Discovery,
     ) -> io::Result<()> {
-        if let Some(manager) = &mut discovery.announces {
+        let events = transfer.take_announces();
+        for manager in &mut discovery.announces {
             let p = transfer.progress()?;
             manager.counters = crate::engine::discovery::Counters {
                 downloaded: p.received_payload_bytes(),
                 uploaded: transfer.uploaded_bytes(),
                 left: p.remaining_bytes(),
             };
-            for event in transfer.take_announces() {
-                manager.request(event).await?;
+            for event in &events {
+                manager.request(*event).await?;
             }
-        } else {
-            transfer.take_announces();
         }
         Ok(())
     }
@@ -220,23 +219,23 @@ impl Progress {
             return Ok(());
         };
         while transfer.can_connect() && dials.ready() {
-            let Ok(Some(address)) = queue.candidate(|a| transfer.rejects_contact(a)) else {
+            let Some(entry) = queue.candidate(|a| transfer.rejects_contact(a)) else {
                 dials.withdraw();
                 return Ok(());
             };
-            let Some(address) = transfer.contact(address)? else {
-                queue.dial_completed(address, false, false);
+            let Some(address) = transfer.contact(entry.address)? else {
+                queue.dial_completed(entry.address, false, false);
                 dials.withdraw();
                 return Ok(());
             };
             let utp = queue.try_utp(address);
             match dials.admit(address, utp) {
                 Ok(id) => {
-                    self.sources.insert(id, queue.selected_source);
+                    self.sources.insert(id, (entry.source, entry.hash));
                     self.pending += 1;
-                    debug!(?id,source=queue.selected_source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
-                    if matches!(queue.selected_source, "pex" | "dht") {
-                        info!(source = queue.selected_source, "peer_dial_admitted");
+                    debug!(?id,source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
+                    if matches!(entry.source, "pex" | "dht") {
+                        info!(source = entry.source, "peer_dial_admitted");
                     }
                 }
                 Err(_) => {
@@ -259,11 +258,11 @@ impl Progress {
     ) -> io::Result<()> {
         let event = event.ok_or_else(|| io::Error::other("unexpected dial completion"))?;
         self.pending = self.pending.saturating_sub(1);
-        let source = self.sources.remove(&event.id).unwrap_or("unknown");
+        let (source, hash) = self.sources.remove(&event.id).expect("admitted dial");
         match event.result {
             Ok(socket) => self.attach_peer(
                 socket,
-                Role::Outbound,
+                Role::Outbound(hash),
                 transfer,
                 source,
                 options.log_peer_endpoints,
@@ -437,9 +436,10 @@ impl Progress {
                 web_seeds,
                 trackers: discovery
                     .announces
-                    .as_ref()
-                    .map_or_else(Vec::new, |a| a.snapshots()),
-                dht: discovery.dht.as_ref().map(|d| d.snapshot()),
+                    .iter()
+                    .flat_map(|a| a.snapshots())
+                    .collect(),
+                dht: discovery.dht.iter().map(|d| d.snapshot()).collect(),
                 retry: transfer.retry_status(),
             }))
         } else {

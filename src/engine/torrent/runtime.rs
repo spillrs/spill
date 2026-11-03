@@ -2,8 +2,8 @@ use super::{
     Network, Networking, RunPolicy, RuntimeOptions, TorrentExit, TorrentPhase, TorrentStatus,
     observation::{self, Progress},
 };
-use crate::engine::peer_io::Role;
 use crate::engine::{discovery::Discovery, torrent::shell::Shell as Task};
+use crate::engine::{next_ready, peer_io::Role};
 use std::{io, sync::Arc, time::Duration};
 use tokio::{
     sync::watch,
@@ -13,9 +13,9 @@ use tracing::{info, warn};
 
 type Status = watch::Sender<TorrentStatus>;
 
-fn tracker_event(peers: Vec<std::net::SocketAddr>, discovery: &mut Discovery) {
+fn tracker_event(hash: [u8; 20], peers: Vec<std::net::SocketAddr>, discovery: &mut Discovery) {
     if let Some(queue) = &mut discovery.contacts {
-        let _ = queue.add_tracker(&peers);
+        let _ = queue.add_tracker(hash, &peers);
     }
 }
 
@@ -129,11 +129,7 @@ async fn serve(
         }
         progress.update_counters(transfer, network).await?;
         if options.run == RunPolicy::UntilComplete && status.borrow().progress.completed {
-            if !network
-                .announces
-                .as_ref()
-                .is_some_and(|a| a.completion_pending())
-            {
+            if !network.announces.iter().any(|a| a.completion_pending()) {
                 return Ok(TorrentExit::Complete);
             }
             let deadline =
@@ -148,19 +144,18 @@ async fn serve(
         }
         progress.prepare_dials(transfer, network, options)?;
         progress.publish_peers(status);
-        let announces = &mut network.announces;
-        let tracker = async {
-            let Some(a) = announces else {
-                return std::future::pending().await;
-            };
-            a.next().await
-        };
-        let dht = async {
-            let Some(dht) = &mut network.dht else {
-                return std::future::pending().await;
-            };
-            dht.next_event().await
-        };
+        let tracker = next_ready(
+            network
+                .announces
+                .iter_mut()
+                .map(|a| async move { (a.hash, a.next().await) }),
+        );
+        let dht = next_ready(
+            network
+                .dht
+                .iter_mut()
+                .map(|d| async move { (d.hash, d.next_event().await) }),
+        );
         let dial_turn = network.dials.as_ref().map(|d| d.turn.clone());
         let direct = async {
             let Some(d) = &mut network.dials else {
@@ -172,21 +167,21 @@ async fn serve(
             biased;
             _ = stop.changed() => return Ok(TorrentExit::StopRequested),
             _ = reannounce.changed() => {
-                if let Some(a) = &mut network.announces {
+                for a in &mut network.announces {
                     a.reannounce();
                 }
                 discovery_dirty = true;
             },
-            event = tracker => {
-                tracker_event(event?, network);
+            (hash, event) = tracker => {
+                tracker_event(hash, event?, network);
                 discovery_dirty = true;
             },
-            result = dht => {
+            (hash, result) = dht => {
                 discovery_dirty = true;
                 match result {
                     Ok(crate::engine::dht::DiscoveryEvent::Peers(peers)) => {
                         if let Some(queue) = &mut network.contacts {
-                            let _ = queue.add_dht(options.metainfo.info_hash(), &peers);
+                            let _ = queue.add_dht(hash, &peers);
                         }
                     }
                     Ok(crate::engine::dht::DiscoveryEvent::Finished(found)) => {
@@ -194,7 +189,7 @@ async fn serve(
                         // Include peers produced in the lookup's final poll. The
                         // contact queue deduplicates earlier streamed results.
                         if let Some(queue) = &mut network.contacts {
-                            let _ = queue.add_dht(options.metainfo.info_hash(), &found.peers);
+                            let _ = queue.add_dht(hash, &found.peers);
                         }
                     }
                     Err(error) => warn!(kind = ?error.kind(), "dht_lookup_failed"),
@@ -293,7 +288,7 @@ async fn finish(
             diagnostics.peers.clear();
             diagnostics.trackers.clear();
             diagnostics.web_seeds.clear();
-            diagnostics.dht = None;
+            diagnostics.dht.clear();
         }
     });
     info!(clean = result.is_ok(),

@@ -336,11 +336,11 @@ async fn tracker_checkpoint_panic_after_cancelled_stop_retains_cleanup_ownership
                 state: RecoveryState {
                     binding: binding.clone(),
                     resume: None,
-                    completed_announce: Some(false),
+                    completed_announces: vec![(meta.info_hash().wire_key(), false)],
                 },
             },
         );
-        options.persistence.completion_announce = Some(Box::new(move |_| {
+        options.persistence.completion_announce = Some(Box::new(move |_, _| {
             entered.lock().unwrap().take().unwrap().send(()).unwrap();
             waiting
                 .lock()
@@ -371,7 +371,7 @@ async fn tracker_checkpoint_panic_after_cancelled_stop_retains_cleanup_ownership
                 state: RecoveryState {
                     binding: binding.clone(),
                     resume: None,
-                    completed_announce: None,
+                    completed_announces: Vec::new(),
                 },
             },
         );

@@ -43,6 +43,8 @@ pub struct PeerDiagnostics {
 
 #[derive(Clone, Debug)]
 pub struct TrackerStatus {
+    /// Twenty-byte swarm key (SHA-1 or the SHA-256 prefix).
+    pub swarm: [u8; 20],
     pub url: String,
     /// Zero-based original metainfo tier/slot, not scheduler preference order.
     pub tier: usize,
@@ -72,6 +74,8 @@ pub struct WebSeedStatus {
 
 #[derive(Clone, Debug)]
 pub struct DhtStatus {
+    /// Twenty-byte swarm key (SHA-1 or the SHA-256 prefix).
+    pub swarm: [u8; 20],
     pub lookup_pending: bool,
     pub next_lookup_ms: u64,
     pub last_lookup_ago_ms: Option<u64>,

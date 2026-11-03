@@ -21,17 +21,27 @@ impl fmt::Display for AdmissionLimit {
 pub enum AdmissionError {
     Metainfo(crate::protocol::metainfo::Error),
     ResourceLimit(AdmissionLimit),
+    PrivateMagnet,
+    Duplicate,
 }
 impl AdmissionError {
-    pub(in crate::engine) fn of(error: &io::Error) -> Option<&Self> {
-        error.get_ref().and_then(|e| e.downcast_ref::<Self>())
+    /// Recover an admission failure, including errors shared by torrent handles.
+    pub fn of(error: &io::Error) -> Option<&Self> {
+        let cause = error.get_ref()?;
+        cause.downcast_ref::<Self>().or_else(|| {
+            cause
+                .downcast_ref::<std::sync::Arc<io::Error>>()
+                .and_then(|error| Self::of(error))
+        })
     }
 }
 impl fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Metainfo(_) => f.write_str("invalid or unsupported v1 metainfo"),
+            Self::Metainfo(error) => write!(f, "invalid or unsupported metainfo: {error}"),
             Self::ResourceLimit(limit) => write!(f, "unsupported torrent: {limit}"),
+            Self::PrivateMagnet => f.write_str("private torrents require a .torrent file"),
+            Self::Duplicate => f.write_str("torrent already exists"),
         }
     }
 }

@@ -3,15 +3,23 @@
 use crate::engine::core::file_progress::FileProgress;
 
 use super::cache::{self, CacheView};
-use crate::engine::profile::{MAX_UPLOAD_READS, Profile};
+use crate::engine::profile::{AdmissionError, MAX_UPLOAD_READS, Profile};
+use crate::engine::torrent::Persistence;
 use crate::engine::{
-    core::{SharedBlock, live},
+    core::{ConnectionId, SharedBlock, live},
     provisioning::FileStorage,
 };
-use crate::protocol::{metainfo::OwnedMetainfo, resume};
-use sha1::{Digest, Sha1};
+use crate::protocol::{
+    merkle,
+    metainfo::{
+        FileKind, OwnedMetainfo, PieceVerification,
+        hash::{PieceAccumulator, PieceHasher},
+    },
+    peer::hash::HashRequest,
+    resume,
+};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io,
     sync::{
         Arc,
@@ -28,18 +36,26 @@ use tokio::{
 const MAX_BUFFERED_HASH_BYTES: usize = 4 * 1024 * 1024;
 pub(in crate::engine) const RECHECK_CONCURRENCY: usize = 4;
 
-struct ReadResult {
-    index: u32,
-    offset: u32,
-    length: u32,
-    start: u32,
-    bytes: io::Result<Vec<u8>>,
+enum ReadResult {
+    Block {
+        index: u32,
+        offset: u32,
+        length: u32,
+        start: u32,
+        bytes: io::Result<Vec<u8>>,
+    },
+    Leaves {
+        id: ConnectionId,
+        request: HashRequest,
+        leaves: io::Result<Vec<[u8; 32]>>,
+    },
 }
 enum Command {
     Write(u32, u32, Arc<()>, SharedBlock),
     Hash(u32, Arc<()>),
     Hashed(u32, bool),
     Read(u32, u32, u32),
+    Leaves(ConnectionId, HashRequest, u32),
     ReadDone(ReadResult),
     Flush,
 }
@@ -55,6 +71,11 @@ pub(in crate::engine) enum Output {
         length: u32,
         block: Option<SharedBlock>,
     },
+    Leaves {
+        id: ConnectionId,
+        request: HashRequest,
+        leaves: Vec<[u8; 32]>,
+    },
     Flushed,
     Error(io::Error),
 }
@@ -63,6 +84,7 @@ struct Jobs {
     inline: Option<JoinHandle<io::Result<()>>>,
     fingerprint: Option<JoinHandle<io::Result<Vec<u8>>>>,
     changed: Option<JoinHandle<io::Result<super::PieceSet>>>,
+    layers: Option<JoinHandle<io::Result<Option<OwnedMetainfo>>>>,
     recovery: JoinSet<(u32, io::Result<Option<bool>>)>,
     hashes: JoinSet<io::Result<(u32, bool)>>,
     reads: JoinSet<ReadResult>,
@@ -72,6 +94,7 @@ impl Jobs {
         let mut result = crate::engine::join_blocking(&mut self.inline).await;
         result = result.and(crate::engine::join_blocking(&mut self.fingerprint).await);
         result = result.and(crate::engine::join_blocking(&mut self.changed).await);
+        result = result.and(crate::engine::join_blocking(&mut self.layers).await);
         while let Some(job) = self.recovery.join_next().await {
             result = result.and(job.map_err(io::Error::other).and_then(
                 |(_, passed)| match passed {
@@ -91,10 +114,10 @@ impl Jobs {
             result = result.and(job.map_err(io::Error::other).and_then(|r| r).map(|_| ()));
         }
         while let Some(job) = self.reads.join_next().await {
-            result = result.and(
-                job.map_err(io::Error::other)
-                    .and_then(|read| read.bytes.map(|_| ())),
-            );
+            result = result.and(job.map_err(io::Error::other).and_then(|read| match read {
+                ReadResult::Block { bytes, .. } => bytes.map(|_| ()),
+                ReadResult::Leaves { leaves, .. } => leaves.map(|_| ()),
+            }));
         }
         result
     }
@@ -109,16 +132,17 @@ pub(in crate::engine) struct Writer {
     pending: usize,
     epochs: HashMap<u32, Arc<()>>,
     cancel_recovery: Arc<AtomicBool>,
+    cancel_changed: Arc<Notify>,
     capacity_changed: Arc<Notify>,
 }
 impl Writer {
     pub(in crate::engine) fn spawn(
         storage: FileStorage,
-        meta: OwnedMetainfo,
+        mut meta: OwnedMetainfo,
         profile: Profile,
         recheck: bool,
         initial_resume: Option<Vec<u8>>,
-        checkpoint: crate::engine::torrent::Checkpoint,
+        persistence: Persistence,
         rechecks: Arc<Semaphore>,
     ) -> Self {
         let capacity = profile.write_queue_bytes / crate::engine::profile::BLOCK_LEN as usize;
@@ -128,12 +152,19 @@ impl Writer {
         let view = CacheView::default();
         let cancel_recovery = Arc::new(AtomicBool::new(false));
         let canceled = cancel_recovery.clone();
+        let cancel_changed = Arc::new(Notify::new());
+        let cancel_notify = cancel_changed.clone();
         let capacity_changed = Arc::new(Notify::new());
         let changed = capacity_changed.clone();
         // Immutable descriptors are shared only with owned blocking jobs. The
         // writer awaits each mutation before starting the next command batch.
         let storage = Arc::new(storage);
-        let checkpoint: Arc<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync> = checkpoint.into();
+        let checkpoint: Arc<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync> =
+            persistence.checkpoint.expect("writer checkpoint").into();
+        let resolved: Arc<dyn Fn(OwnedMetainfo) -> io::Result<()> + Send + Sync> = persistence
+            .resolved
+            .expect("writer metadata acknowledgement")
+            .into();
         let jobs = Arc::new(Mutex::new(Jobs::default()));
         let worker_jobs = jobs.clone();
         let task = tokio::spawn(async move {
@@ -147,7 +178,7 @@ impl Writer {
                     // remain subject to the previous fingerprint on the next run.
                     return Ok(());
                 };
-                let Jobs { inline, fingerprint, hashes, reads, .. } = &mut *jobs;
+                let Jobs { inline, fingerprint, hashes, reads, layers, .. } = &mut *jobs;
                 let mut live = live::Live::new(&meta);
                 let mut files = FileProgress::new(&meta, &verified);
                 for index in files.complete() {
@@ -166,6 +197,18 @@ impl Writer {
                     if closing && hashes.is_empty() && reads.is_empty() { break; }
                     let command = tokio::select! {
                         biased;
+                        result = async { layers.as_mut().expect("layer job").await }, if layers.is_some() => {
+                            layers.take();
+                            if let Some(complete) = result.map_err(io::Error::other)?? {
+                                let callback = resolved.clone();
+                                let published = complete.clone();
+                                crate::engine::run_blocking(inline, move || callback(published)).await?;
+                                meta = complete;
+                                save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?;
+                                dirty = false;
+                            }
+                            continue;
+                        },
                         result = hashes.join_next(), if !hashes.is_empty() => {
                             let (index, passed) = result.expect("hash job").map_err(io::Error::other)??;
                             Command::Hashed(index, passed)
@@ -182,8 +225,7 @@ impl Writer {
                             Command::Hash(index, epoch)
                         }
                         () = async {}, if pending_read.is_some() && reads.len() < MAX_UPLOAD_READS => {
-                            let (index, offset, length) = pending_read.take().expect("pending read");
-                            Command::Read(index, offset, length)
+                            pending_read.take().expect("pending read")
                         }
                         () = async {}, if pending_command.is_some() && pending_hash.is_none() && pending_read.is_none() => {
                             pending_command.take().expect("batched command")
@@ -227,16 +269,22 @@ impl Writer {
                         Command::Hash(index, epoch) => {
                             let range = meta.layout().piece_range(index)
                                 .ok_or_else(|| io::Error::other("invalid hash piece"))?;
-                            let len = (range.end - range.start) as usize;
-                            let expected = *meta.piece_hash(index).expect("piece hash");
+                            let len = if meta.info_hash().v1().is_none() {
+                                meta.layout().piece_data_end(index).expect("v2 piece data") as usize
+                            } else {
+                                (range.end - range.start) as usize
+                            };
                             if let Some(buffered) = live.take(&meta, index, &epoch) {
-                                hashes.spawn_blocking(move || Ok::<_, io::Error>((index, buffered.digest()[..] == expected)));
+                                let metainfo = meta.clone();
+                                hashes.spawn_blocking(move || Ok::<_, io::Error>((index, buffered.digest(&metainfo, index)?)));
                             } else if len <= MAX_BUFFERED_HASH_BYTES {
                                 live.discard(index);
                                 let source = storage.clone();
+                                let mut hash = PieceHasher::new(&meta, index);
                                 hashes.spawn_blocking(move || {
                                     let bytes = source.read(index, 0, len)?;
-                                    Ok((index, Sha1::digest(&bytes)[..] == expected))
+                                    hash.update(&bytes);
+                                    Ok((index, hash.finish().map_err(AdmissionError::Metainfo)?.0))
                                 });
                             } else {
                                 live.discard(index);
@@ -245,7 +293,7 @@ impl Writer {
                                 hashes.spawn_blocking(move || {
                                     let hash = fold_piece(&source, &metainfo, index, crate::engine::profile::HASH_CHUNK_LEN, None)?
                                         .expect("joined download hash");
-                                    Ok((index, hash.finalize()[..] == expected))
+                                    Ok((index, hash.finish().map_err(AdmissionError::Metainfo)?.0))
                                 });
                             }
                             None
@@ -262,8 +310,8 @@ impl Writer {
                             dirty = true;
                             Some(Output::Hashed { index, verified: passed })
                         }
-                        Command::Read(index, offset, length) if reads.len() == MAX_UPLOAD_READS => {
-                            pending_read = Some((index, offset, length));
+                        command @ (Command::Read(..) | Command::Leaves(..)) if reads.len() == MAX_UPLOAD_READS => {
+                            pending_read = Some(command);
                             None
                         }
                         Command::Read(index, offset, length) => {
@@ -277,7 +325,7 @@ impl Writer {
                                     let storage = storage.clone();
                                     reads.spawn_blocking(move || {
                                         let bytes = storage.read(index, window.start as u32, window.len());
-                                        ReadResult { index, offset, length, start: window.start as u32, bytes }
+                                        ReadResult::Block { index, offset, length, start: window.start as u32, bytes }
                                     });
                                     continue;
                                 }
@@ -288,11 +336,42 @@ impl Writer {
                             }
                             Some(Output::Read { index, offset, length, block: block.filter(|_| available).map(|b| SharedBlock::from_shared(b.bytes, b.range)) })
                         }
-                        Command::ReadDone(ReadResult { index, offset, length, start, bytes }) => {
+                        Command::ReadDone(ReadResult::Block { index, offset, length, start, bytes }) => {
                             view.insert(index, start, bytes?, profile.cache_bytes)?;
                             // Own the result before another load can evict its window.
                             let block = view.block(index, offset, length)?.expect("loaded upload window");
                             Some(Output::Read { index, offset, length, block: Some(SharedBlock::from_shared(block.bytes, block.range)) })
+                        }
+                        Command::Leaves(id, request, piece) => {
+                            assert!(has(&verified, piece), "verified leaf read");
+                            let source = storage.clone();
+                            let metainfo = meta.clone();
+                            reads.spawn_blocking(move || {
+                                let leaves = (|| {
+                                    let length = metainfo.layout().piece_data_end(piece).expect("leaf piece data") as usize;
+                                    let mut leaves = Vec::new();
+                                    for offset in (0..length).step_by(crate::engine::profile::HASH_CHUNK_LEN) {
+                                        let count = crate::engine::profile::HASH_CHUNK_LEN.min(length - offset);
+                                        let bytes = source.read(piece, offset as u32, count)?;
+                                        leaves.extend(bytes.chunks(crate::protocol::merkle::BLOCK_LENGTH).map(crate::protocol::merkle::block_hash));
+                                    }
+                                    let commitment = match metainfo.verification(piece).expect("piece verification") {
+                                        PieceVerification::V2(v2) | PieceVerification::Hybrid { v2, .. } => v2,
+                                        PieceVerification::V1(_) => unreachable!("v2 hash serving"),
+                                    };
+                                    leaves.resize(commitment.blocks as usize, [0; 32]);
+                                    if crate::protocol::merkle::root_from_layer(&leaves, 0) != commitment.layer_hash {
+                                        // External payload edits must not turn a verified bit into a false proof.
+                                        leaves.clear();
+                                    }
+                                    Ok(leaves)
+                                })();
+                                ReadResult::Leaves { id, request, leaves }
+                            });
+                            None
+                        }
+                        Command::ReadDone(ReadResult::Leaves { id, request, leaves }) => {
+                            Some(Output::Leaves { id, request, leaves: leaves? })
                         }
                         Command::Flush => {
                             // The core sends this once at wanted completion, after
@@ -302,6 +381,7 @@ impl Writer {
                             crate::engine::run_blocking(inline, move || destination.sync_data()).await?;
                             save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?;
                             dirty = false;
+                            start_layers(&storage, &meta, &verified, layers, &rechecks, &canceled, &cancel_notify);
                             Some(Output::Flushed)
                         }
                     };
@@ -313,6 +393,8 @@ impl Writer {
                 Ok(())
             }
             .await;
+            canceled.store(true, Ordering::Relaxed);
+            cancel_notify.notify_one();
             result = result.and(jobs.drain().await);
             changed.notify_one();
             match result {
@@ -336,6 +418,7 @@ impl Writer {
             pending: 0,
             epochs: HashMap::new(),
             cancel_recovery,
+            cancel_changed,
             capacity_changed,
         }
     }
@@ -407,6 +490,14 @@ impl Writer {
     ) -> io::Result<()> {
         self.enqueue(Command::Read(index, offset, length), true)
     }
+    pub(in crate::engine) fn leaves(
+        &mut self,
+        id: ConnectionId,
+        request: HashRequest,
+        piece: u32,
+    ) -> io::Result<()> {
+        self.enqueue(Command::Leaves(id, request, piece), true)
+    }
     pub(in crate::engine) fn flush(&mut self) -> io::Result<()> {
         self.enqueue(Command::Flush, true)
     }
@@ -435,6 +526,7 @@ impl Writer {
     }
     pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
         self.cancel_recovery.store(true, Ordering::Relaxed);
+        self.cancel_changed.notify_one();
         self.commands.take();
         self.outputs.close();
         if let Some(task) = &mut self.task {
@@ -462,6 +554,116 @@ fn set(bits: &mut [u8], index: u32, value: bool) {
         bits[index as usize / 8] &= !mask;
     }
 }
+fn start_layers(
+    storage: &Arc<FileStorage>,
+    meta: &OwnedMetainfo,
+    verified: &[u8],
+    job: &mut Option<JoinHandle<io::Result<Option<OwnedMetainfo>>>>,
+    rechecks: &Arc<Semaphore>,
+    canceled: &Arc<AtomicBool>,
+    cancel_notify: &Arc<Notify>,
+) {
+    if job.is_some()
+        || !meta.layers_pending()
+        || (0..meta.layout().piece_count()).any(|piece| !has(verified, piece))
+    {
+        return;
+    }
+    let source = storage.clone();
+    let pending = meta.clone();
+    let rechecks = rechecks.clone();
+    let canceled = canceled.clone();
+    let cancel_notify = cancel_notify.clone();
+    *job = Some(tokio::spawn(async move {
+        let permit = tokio::select! {
+            permit = rechecks.acquire_owned() => permit.map_err(io::Error::other)?,
+            () = cancel_notify.notified() => return Ok(None),
+        };
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            rebuild_layers(&source, &pending, &canceled)
+        })
+        .await
+        .map_err(io::Error::other)?
+    }));
+}
+
+fn rebuild_layers(
+    storage: &FileStorage,
+    meta: &OwnedMetainfo,
+    canceled: &AtomicBool,
+) -> io::Result<Option<OwnedMetainfo>> {
+    let piece_length = u64::from(meta.layout().piece_length());
+    let mut layers = BTreeMap::new();
+    for file in meta
+        .layout()
+        .files()
+        .iter()
+        .filter(|file| file.kind() == FileKind::Data && file.length() != 0)
+    {
+        let blocks = file
+            .length()
+            .min(piece_length)
+            .div_ceil(merkle::BLOCK_LENGTH as u64)
+            .next_power_of_two() as u32;
+        let mut hashes = Vec::new();
+        let first = file.offset() / piece_length;
+        for relative in 0..file.length().div_ceil(piece_length) {
+            let piece = (first + relative) as u32;
+            let length = (file.length() - relative * piece_length).min(piece_length) as usize;
+            let mut accumulator = PieceAccumulator::new(length, true, true);
+            for offset in (0..length).step_by(crate::engine::profile::HASH_CHUNK_LEN) {
+                if canceled.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                let count = crate::engine::profile::HASH_CHUNK_LEN.min(length - offset);
+                accumulator.update(&storage.read(piece, offset as u32, count)?);
+            }
+            let range = meta.layout().piece_range(piece).expect("hybrid piece");
+            let mut padding = range.end - range.start - length as u64;
+            const ZERO: [u8; merkle::BLOCK_LENGTH] = [0; merkle::BLOCK_LENGTH];
+            while padding != 0 {
+                let count = padding.min(ZERO.len() as u64) as usize;
+                accumulator.update(&ZERO[..count]);
+                padding -= count as u64;
+            }
+            let (sha1, leaves) = accumulator.finish();
+            // External edits must not promote stale SHA-1 verification bits.
+            if sha1.as_ref() != meta.piece_hash(piece) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "payload changed while rebuilding hybrid layers",
+                ));
+            }
+            hashes.push(merkle::piece_hash(
+                &leaves,
+                blocks * merkle::BLOCK_LENGTH as u32,
+            ));
+        }
+        // Small-file roots also need validation: SHA-1 alone did not check them.
+        let root = file.pieces_root().expect("nonempty hybrid file");
+        if merkle::root_from_layer(&hashes, blocks.ilog2()) != root {
+            return Err(
+                AdmissionError::Metainfo(crate::protocol::metainfo::Error::InvalidField(
+                    "inconsistent hybrid piece commitments",
+                ))
+                .into(),
+            );
+        }
+        if file.length() > piece_length {
+            layers
+                .entry(root)
+                .or_insert_with(|| hashes.as_flattened().to_vec());
+        }
+    }
+    if canceled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    meta.with_piece_layers(&layers)
+        .map(Some)
+        .map_err(|error| AdmissionError::Metainfo(error).into())
+}
+
 async fn save(
     storage: &Arc<FileStorage>,
     meta: &OwnedMetainfo,
@@ -550,10 +752,13 @@ async fn recover(
                         crate::engine::profile::HASH_CHUNK_LEN,
                         Some(&canceled),
                     )
-                    .map(|hash| {
+                    .and_then(|hash| {
                         hash.map(|hash| {
-                            hash.finalize()[..] == meta.piece_hash(index).expect("piece hash")[..]
+                            hash.finish()
+                                .map(|(passed, _)| passed)
+                                .map_err(|error| AdmissionError::Metainfo(error).into())
                         })
+                        .transpose()
                     });
                     (index, passed)
                 });
@@ -593,13 +798,20 @@ fn fold_piece(
     index: u32,
     chunk_len: usize,
     canceled: Option<&AtomicBool>,
-) -> io::Result<Option<Sha1>> {
+) -> io::Result<Option<PieceHasher>> {
     let range = meta
         .layout()
         .piece_range(index)
         .ok_or_else(|| io::Error::other("invalid hash piece"))?;
-    let len = (range.end - range.start) as usize;
-    let mut hash = Sha1::new();
+    let len = if matches!(
+        meta.verification(index).expect("piece verification"),
+        PieceVerification::V2(_)
+    ) {
+        meta.layout().piece_data_end(index).expect("piece data end") as usize
+    } else {
+        (range.end - range.start) as usize
+    };
+    let mut hash = PieceHasher::new(meta, index);
     let mut offset = 0;
     while offset < len {
         if canceled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {

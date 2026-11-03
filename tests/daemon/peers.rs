@@ -77,6 +77,8 @@ async fn tracker_dials_do_not_duplicate_an_inbound_peer_identity() {
             .parse_owned(&bytes)
             .unwrap()
             .info_hash()
+            .v1()
+            .unwrap()
             .as_bytes();
         let mut daemon = Daemon::start(&root.0, "trackers=true\nweb_seeds=false", None).await;
         let id = daemon.add(&bytes, None).await;
@@ -181,6 +183,8 @@ async fn inbound_handshake_bursts_fill_available_peer_slots() {
         .parse_owned(&bytes)
         .unwrap()
         .info_hash()
+        .v1()
+        .unwrap()
         .as_bytes();
     let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;
     let id = daemon.add(&bytes, None).await;

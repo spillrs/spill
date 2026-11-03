@@ -141,6 +141,22 @@ async fn clones_retain_execution_and_cancelled_shutdown_remains_joinable() {
         let mut observer = session.admit(options).unwrap();
         let hash = observer.info_hash();
         assert!(sibling.torrent(hash).is_some());
+        let mut same_prefix = [0; 32];
+        same_prefix[..20].copy_from_slice(&hash.wire_key());
+        let v2 = spill::protocol::identity::InfoHashV2::from_bytes(same_prefix);
+        assert!(
+            sibling
+                .torrent(spill::protocol::identity::TorrentIdentity::V2(v2))
+                .is_none()
+        );
+        assert!(
+            sibling
+                .torrent(spill::protocol::identity::TorrentIdentity::Hybrid(
+                    hash.v1().unwrap(),
+                    v2
+                ))
+                .is_none()
+        );
         drop(session);
         loop {
             let status = observer.snapshot();

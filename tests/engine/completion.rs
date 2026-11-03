@@ -125,7 +125,7 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
             let mut options = TorrentOptions::new(TorrentSource::Metainfo(meta.clone()), Destination::Open(destination.0.clone()));
             options.settings = TorrentSettings { trackers, file_priorities: if partial { vec![FilePriority::Normal, FilePriority::Skip] } else { Vec::new() }, ..settings };
             options.peers = vec![seed.local_addr()];
-            options.persistence.completion_announce = Some(Box::new(move |delivered| {
+            options.persistence.completion_announce = Some(Box::new(move |_, delivered| {
                 saved.lock().unwrap().push(delivered);
                 if delivered && fail_ack { Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "delivery checkpoint denied")) } else { Ok(()) }
             }));

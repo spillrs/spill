@@ -22,10 +22,12 @@ Private trackers track your ratio from announces, so spill follows these rules:
   counts payload received, including data that later fails its hash check.
   Protocol overhead is not counted.
 - `completed` is sent once, when a download that had missing data finishes.
-  Delivery is saved in the catalog (`completed_announce` in `get`: `null` = not
-  completed here, `false` = waiting to be delivered, `true` = acknowledged), so
-  it survives restarts and is not repeated. If a tracker accepts the event but
+  Delivery is saved per swarm in the catalog (`completed_announces` in `get`:
+  an absent record = not completed here, `delivered: false` = waiting,
+  `delivered: true` = acknowledged), so it survives restarts and is not repeated. If a tracker accepts the event but
   its reply is lost, it may be sent again.
+- Both hybrid swarms receive the same torrent-wide payload counters, not
+  per-swarm totals. Summing their tracker accounting can double-count traffic.
 - Torrents whose files were already complete when added (cross-seeding, moved
   data) announce as seeds and never send `completed`.
 - A `tracker id` from the tracker is sent back on later announces, and the

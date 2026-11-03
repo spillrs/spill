@@ -24,11 +24,12 @@ struct State {
     cap: usize,
     waiting: VecDeque<Weak<Notify>>,
 }
-struct Entry {
+pub(in crate::engine) struct Entry {
     owner: u64,
-    address: SocketAddr,
+    pub(in crate::engine) address: SocketAddr,
     due: Instant,
-    source: &'static str,
+    pub(in crate::engine) source: &'static str,
+    pub(in crate::engine) hash: [u8; 20],
 }
 impl State {
     fn refresh(&mut self) {
@@ -66,7 +67,6 @@ impl Queue {
             owner: state.next,
             allow_local_network: state.allow_local_network,
             known: HashMap::new(),
-            selected_source: "tracker",
         };
         let turn = Turn {
             queue: self.clone(),
@@ -155,10 +155,10 @@ pub(in crate::engine) struct Contacts {
     owner: u64,
     allow_local_network: bool,
     known: HashMap<SocketAddr, Known>,
-    pub(in crate::engine) selected_source: &'static str,
 }
 struct Known {
     source: &'static str,
+    hash: [u8; 20],
     utp_failed: bool,
     queued: bool,
 }
@@ -166,7 +166,12 @@ impl Contacts {
     pub(in crate::engine) fn try_utp(&self, address: SocketAddr) -> bool {
         !self.known[&address].utp_failed
     }
-    fn add(&mut self, peers: &[SocketAddr], source: &'static str) -> io::Result<()> {
+    fn add(
+        &mut self,
+        hash: [u8; 20],
+        peers: &[SocketAddr],
+        source: &'static str,
+    ) -> io::Result<()> {
         let mut state = self.queue.0.lock().unwrap();
         for &address in peers {
             if !crate::engine::network::peer(address, self.allow_local_network)
@@ -186,55 +191,65 @@ impl Contacts {
             }
             let known = self.known.entry(address).or_insert(Known {
                 source,
+                hash,
                 utp_failed: false,
                 queued: false,
             });
             known.source = source;
+            known.hash = hash;
             known.queued = true;
             state.entries.push_back(Entry {
                 owner: self.owner,
                 address,
                 due: Instant::now(),
                 source,
+                hash,
             });
         }
         Ok(())
     }
-    pub(in crate::engine) fn add_direct(&mut self, peers: &[SocketAddr]) -> io::Result<()> {
-        self.add(peers, "direct")
+    pub(in crate::engine) fn add_direct(
+        &mut self,
+        hash: [u8; 20],
+        peers: &[SocketAddr],
+    ) -> io::Result<()> {
+        self.add(hash, peers, "direct")
     }
-    pub(in crate::engine) fn add_tracker(&mut self, peers: &[SocketAddr]) -> io::Result<()> {
-        self.add(peers, "tracker")
+    pub(in crate::engine) fn add_tracker(
+        &mut self,
+        hash: [u8; 20],
+        peers: &[SocketAddr],
+    ) -> io::Result<()> {
+        self.add(hash, peers, "tracker")
     }
     pub(in crate::engine) fn add_dht(
         &mut self,
-        _: crate::protocol::identity::InfoHashV1,
+        hash: [u8; 20],
         peers: &[SocketAddr],
     ) -> io::Result<()> {
-        self.add(peers, "dht")
+        self.add(hash, peers, "dht")
     }
     pub(in crate::engine) fn add_pex(
         &mut self,
-        _: crate::engine::peer_io::ConnectionId,
+        hash: [u8; 20],
         peers: &[SocketAddr],
     ) -> io::Result<()> {
-        self.add(peers, "pex")
+        self.add(hash, peers, "pex")
     }
     pub(in crate::engine) fn candidate(
         &mut self,
         rejects: impl Fn(SocketAddr) -> bool,
-    ) -> io::Result<Option<SocketAddr>> {
+    ) -> Option<Entry> {
         let mut state = self.queue.0.lock().unwrap();
         for _ in 0..state.entries.len() {
             let entry = state.entries.pop_front().unwrap();
             if entry.owner != self.owner || entry.due > Instant::now() || rejects(entry.address) {
                 state.entries.push_back(entry);
             } else {
-                self.selected_source = entry.source;
-                return Ok(Some(entry.address));
+                return Some(entry);
             }
         }
-        Ok(None)
+        None
     }
     pub(in crate::engine) fn dial_completed(
         &mut self,
@@ -250,6 +265,7 @@ impl Contacts {
                 address,
                 due: Instant::now() + Duration::from_secs(30),
                 source: "direct",
+                hash: known.hash,
             });
         } else if known.utp_failed {
             known.queued = false;

@@ -1,6 +1,9 @@
 //! Offline torrent creation; never connects to the daemon.
-use clap::Args;
-use spill::engine::create::{self, Options};
+use clap::{Args, builder::TypedValueParser};
+use spill::{
+    engine::create::{self, Format, Options},
+    protocol::identity::TorrentIdentity,
+};
 use std::{
     ffi::OsString,
     fs::{self, OpenOptions},
@@ -12,6 +15,14 @@ use std::{
 pub struct Arguments {
     /// File or directory to hash.
     target: PathBuf,
+    /// Torrent format; v1 matches mktorrent, v2 and hybrid follow BEP 52.
+    #[arg(short = 'F', long, default_value = "v1", value_parser = clap::builder::PossibleValuesParser::new(["v1", "v2", "hybrid"]).map(|value| match value.as_str() {
+        "v1" => Format::V1,
+        "v2" => Format::V2,
+        "hybrid" => Format::Hybrid,
+        _ => unreachable!("validated format"),
+    }))]
+    format: Format,
     /// Tracker tier; comma-separated URLs are alternatives, repeated -a adds backups.
     #[arg(short = 'a', long = "announce", value_name = "URL[,URL]", action = clap::ArgAction::Append)]
     announce: Vec<String>,
@@ -54,6 +65,7 @@ pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
     }
     let defaults = Options::default();
     let options = Options {
+        format: args.format,
         piece_length: 1 << args.piece_length,
         threads: args.threads.unwrap_or(defaults.threads),
         name: args.name.clone(),
@@ -95,6 +107,13 @@ pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
             serde_json::json!({
                 "output": output.to_string_lossy(),
                 "info_hash": torrent.info_hash.to_string(),
+                "format": match torrent.info_hash {
+                    TorrentIdentity::V1(_) => "v1",
+                    TorrentIdentity::V2(_) => "v2",
+                    TorrentIdentity::Hybrid(..) => "hybrid",
+                },
+                "v1": torrent.info_hash.v1().map(|hash| hash.to_string()),
+                "v2": torrent.info_hash.v2().map(|hash| hash.to_string()),
                 "total_bytes": torrent.total_length,
                 "piece_count": torrent.piece_count,
             })

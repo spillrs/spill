@@ -23,7 +23,9 @@ catalog is required.
 
 ## Capabilities
 
-- Download and seed BitTorrent v1 torrents from `.torrent` files and magnet links.
+- Download and seed v1, v2-only and hybrid `.torrent` files and magnet links.
+  V2/hybrid metainfo TCP discovery and daemon lifecycles have been checked
+  with libtorrent 2.1.2.0; see [Scope](#scope) for the validation limits.
 - Connect to peers over TCP and uTP (BEP 29).
 - Discover peers through HTTP, HTTPS and UDP trackers, the DHT, and peer exchange
   (PEX); download from HTTP web seeds.
@@ -39,8 +41,24 @@ Read [Torrents](torrents.md), [Networking](networking.md), and
 
 ## Scope
 
-spill supports Linux and macOS and BitTorrent v1. It does not support v2 or
-hybrid torrents, protocol encryption (MSE/PE), or local peer discovery.
+spill supports Linux and macOS. The daemon and [embeddable engine](library.md)
+accept v1, v2-only and hybrid metainfo and magnets. Controlled libtorrent 2.1.2.0
+magnet checks pass in both directions for the reference v2/hybrid fixtures and
+a generated 1025-piece layer, including singleton hash serving and source-free
+restart. Pending-layer hybrid downloads from v1-only peers and rebuilt-layer
+seeding still require controlled interop validation; the recorded magnet checks
+cover peer-supplied layers.
+Controlled plaintext TCP checks against libtorrent 2.1.2.0 cover direct peers,
+local HTTP/UDP trackers, isolated DHT, hybrid PEX and the v2/hybrid daemon
+lifecycle, including kill/restart and proof serving. Transmission 4.1.3 covers
+the v1 magnet/HTTP-tracker regression. The
+[recorded checks](https://github.com/spillrs/spill/blob/main/tests/interop/baselines/discovery-daemon.json)
+are not evidence of public-swarm capacity, v2 uTP interoperability or universal
+client compatibility. HTTP(S) web seeds support all three formats. Controlled
+HTTP checks against libtorrent 2.1.2.0 cover v2/hybrid file URLs, short tails,
+padding and combined peer/web-seed downloads; see the
+[web-seed checks](https://github.com/spillrs/spill/blob/main/tests/interop/baselines/webseeds.json).
+Protocol encryption (MSE/PE) and local peer discovery are not supported.
 The daemon is single-user; its optional web interface listens only on loopback
 and has no multi-user authentication. Remote access requires an SSH tunnel.
 

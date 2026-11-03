@@ -2,6 +2,7 @@
 use crate::engine::{
     core::extensions::invalid,
     discovery::{AnnounceOptions, Announcer},
+    next_ready,
     profile::Profile,
     session::dht::Dht,
     torrent::shell::Shell,
@@ -27,7 +28,7 @@ pub(in crate::engine) struct Network {
 pub(in crate::engine) struct Resources {
     shell: Option<Shell>,
     dials: Option<crate::engine::session::dial::Client>,
-    manager: Option<Announcer>,
+    managers: Vec<([u8; 20], Announcer)>,
 }
 impl Resources {
     pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
@@ -39,13 +40,13 @@ impl Resources {
             Some(shell) => shell.drain().await,
             None => Ok(()),
         };
-        let announces = match &mut self.manager {
-            Some(manager) => manager.drain().await,
-            None => Ok(()),
-        };
+        let mut announces = Ok(());
+        for (_, manager) in &mut self.managers {
+            announces = announces.and(manager.drain().await);
+        }
         self.dials = None;
         self.shell = None;
-        self.manager = None;
+        self.managers.clear();
         dials.and(peers).and(announces)
     }
 }
@@ -54,10 +55,10 @@ impl Network {
         &self,
         resources: &mut Resources,
         magnet: &Magnet,
-        trackers: bool,
-        dht: bool,
+        settings: &crate::engine::settings::TorrentSettings,
         profile: Profile,
         mut stop: watch::Receiver<bool>,
+        status: &watch::Sender<crate::engine::torrent::TorrentStatus>,
     ) -> io::Result<OwnedMetainfo> {
         if *stop.borrow() {
             return Err(io::Error::new(
@@ -65,7 +66,9 @@ impl Network {
                 "metadata stopped",
             ));
         }
-        let node = if dht && let Some(dht) = &self.dht {
+        let node = if settings.dht
+            && let Some(dht) = &self.dht
+        {
             Some(tokio::select! {
                 biased;
                 _ = stop.changed() => return Err(io::ErrorKind::Interrupted.into()),
@@ -75,47 +78,76 @@ impl Network {
             None
         };
         let peer_id = crate::engine::identity::generate_peer_id()?;
-        resources.shell = Some(Shell::magnet(magnet.info_hash(), peer_id, profile)?);
+        let identity = magnet.info_hash();
+
+        let discovery_bytes = if magnet.trackers().next().is_some() {
+            20 + magnet
+                .trackers()
+                .map(|url| url.len().to_string().len() + 1 + url.len())
+                .sum::<usize>()
+        } else {
+            0
+        };
+        resources.shell = Some(Shell::magnet(identity, peer_id, profile, discovery_bytes)?);
         let shell = resources.shell.as_mut().expect("metadata shell");
         shell.set_advertised_port(self.port.clone());
         let (mut contacts, dials) = self.dial_queue.client(profile);
         resources.dials = Some(dials);
         let dials = resources.dials.as_mut().expect("metadata dials");
-        resources.manager = if trackers {
-            Announcer::new(
-                vec![magnet.trackers().map(|u| u.to_vec()).collect()],
-                AnnounceOptions {
-                    hash: magnet.info_hash(),
-                    peer: peer_id,
-                    port: self.port.clone(),
-                    left: 1,
-                    allow_local_network: self.allow_local_network,
-                    client: self.tracker_http.clone(),
-                    udp: self.tracker_udp.clone(),
-                    completed_announce: None,
-                    checkpoint: Arc::new(|_| Ok(())),
-                },
-            )?
-        } else {
-            None
+        let manager = |key| {
+            if settings.trackers {
+                Announcer::new(
+                    vec![magnet.trackers().map(|u| u.to_vec()).collect()],
+                    AnnounceOptions {
+                        hash: key,
+                        peer: peer_id,
+                        port: self.port.clone(),
+                        left: 1,
+                        allow_local_network: self.allow_local_network,
+                        client: self.tracker_http.clone(),
+                        udp: self.tracker_udp.clone(),
+                        completed_announce: None,
+                        checkpoint: Arc::new(|_| Ok(())),
+                    },
+                )
+            } else {
+                Ok(None)
+            }
         };
-        let manager = &mut resources.manager;
-        if manager.is_none() && node.is_none() {
+        for key in identity.wire_keys() {
+            if let Some(announcer) = manager(key)? {
+                resources.managers.push((key, announcer));
+            }
+        }
+        let managers = &mut resources.managers;
+        if managers.is_empty() && node.is_none() {
             return Err(invalid("no metadata discovery sources are enabled"));
         }
         let (sender, mut incoming) = tokio::sync::mpsc::channel(crate::engine::profile::MAX_QUEUED);
+        let mut dial_keys = std::collections::HashMap::new();
         let lookup = async {
             if let Some(node) = &node {
-                loop {
-                    if let Err(error) = node
-                        .metadata_peers(magnet.info_hash(), sender.clone())
-                        .await
-                        && error.kind() == io::ErrorKind::BrokenPipe
-                    {
-                        return Err(error);
-                    }
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
+                let lookups = identity.wire_keys().map(|key| {
+                        let sender = &sender;
+                        async move { loop {
+                            let (peers, mut stream) =
+                                tokio::sync::mpsc::channel(crate::engine::profile::MAX_QUEUED);
+                            let request = node.metadata_peers(key, peers);
+                            tokio::pin!(request);
+                            loop {
+                                tokio::select! {
+                                    result = &mut request => {
+                                        if let Err(error) = result && error.kind() == io::ErrorKind::BrokenPipe { return Err(error); }
+                                        while let Ok(address) = stream.try_recv() { let _ = sender.try_send((key, address)); }
+                                        break;
+                                    }
+                                    Some(address) = stream.recv() => { let _ = sender.try_send((key, address)); }
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        } }
+                    });
+                next_ready(lookups).await
             } else {
                 std::future::pending::<io::Result<()>>().await
             }
@@ -128,33 +160,56 @@ impl Network {
             loop {
                 if *stop.borrow() {return Err(io::Error::new(io::ErrorKind::Interrupted,"metadata stopped"));}
                 while shell.can_connect() && dials.ready() {
-                    let Some(address)=contacts.candidate(|a|shell.rejects_contact(a)).map_err(invalid)?else{dials.withdraw();break};
-                    let Some(address)=shell.contact(address)?else{contacts.dial_completed(address,false,false);break};
+                    let Some(entry)=contacts.candidate(|a|shell.rejects_contact(a))else{dials.withdraw();break};
+                    let Some(address)=shell.contact(entry.address)?else{contacts.dial_completed(entry.address,false,false);break};
                     if dials.admit(address, contacts.try_utp(address)).is_err() {shell.connect_failed(address)?;contacts.dial_completed(address,false,false);break;}
+                    dial_keys.insert(address, entry.hash);
                 }
                 if !shell.can_connect(){dials.withdraw();}
                 tokio::select! {
                     biased;
                     _=stop.changed()=>{},
                     _=tokio::time::sleep_until(deadline)=>return Err(io::Error::new(io::ErrorKind::TimedOut,"metadata resolution deadline")),
-                    event=announce(manager)=>{
-                        let peers = event?;
-                        let _ = contacts.add_tracker(&peers);
+                    event=announce(managers)=>{
+                        let (key, peers) = event?;
+                        let _ = contacts.add_tracker(key, &peers);
                     }
                     result=&mut lookup=>{result?;return Err(invalid("metadata lookup ended"));}
-                    Some(address)=incoming.recv()=>{let _=contacts.add_dht(magnet.info_hash(),&[address]);}
+                    Some((key,address))=incoming.recv()=>{let _=contacts.add_dht(key,&[address]);}
                     event=dials.next(),if dials.has_work()=>{
                         if let Some(event)=event? {
+                            let key = dial_keys.remove(&event.address).expect("metadata dial key");
                             contacts.dial_completed(event.address,event.result.is_ok(),event.utp_failed);
                             match event.result {
-                                Ok(socket)=>{shell.attach_peer(socket,crate::engine::peer_io::Role::Outbound)?;}
+                                Ok(socket)=>{
+                                    if let Err(error) = shell.attach_peer(socket,crate::engine::peer_io::Role::Outbound(key)) {
+                                        // Only a per-peer rejection may leave acquisition running.
+                                        if crate::engine::core::fault::is_local(&error) {
+                                            return Err(error);
+                                        }
+                                        tracing::warn!(kind=?error.kind(), "metadata_peer_rejected");
+                                        shell.connect_failed(event.address)?;
+                                    }
+                                }
                                 Err(_)=>shell.connect_failed(event.address)?,
                             }
                         }
                     }
                     event=shell.next()=>{
                         event?;
-                        if let Some(meta)=shell.take_metadata(){return retain_trackers(meta,magnet,profile);}
+                        let resolved = shell.take_metadata();
+                        if let Some((hash_bytes, hash_total_bytes)) = shell.take_metadata_progress() {
+                            status.send_if_modified(|s| {
+                                let progress = &mut s.progress;
+                                let changed = (progress.info_validated, progress.hash_bytes, progress.hash_total_bytes)
+                                    != (true, hash_bytes, hash_total_bytes);
+                                progress.info_validated = true;
+                                progress.hash_bytes = hash_bytes;
+                                progress.hash_total_bytes = hash_total_bytes;
+                                changed
+                            });
+                        }
+                        if let Some(meta)=resolved{return retain_trackers(meta,magnet,profile);}
                     }
                     _=maintenance.tick()=>{},
                 }
@@ -163,29 +218,29 @@ impl Network {
         // Never return stopped/success/failure before all admitted socket work joins.
         let dials = dials.shutdown().await;
         let peers = shell.shutdown().await;
-        let announces = if let Some(manager) = manager {
-            manager.shutdown().await
-        } else {
-            Ok(())
-        };
+        let mut announces = Ok(());
+        for (_, manager) in managers {
+            announces = announces.and(manager.shutdown().await);
+        }
         dials.and(peers).and(announces)?;
         result
     }
 }
-async fn announce(manager: &mut Option<Announcer>) -> io::Result<Vec<SocketAddr>> {
-    let Some(manager) = manager else {
-        return std::future::pending().await;
-    };
-    manager.next().await
+async fn announce(
+    managers: &mut [([u8; 20], Announcer)],
+) -> io::Result<([u8; 20], Vec<SocketAddr>)> {
+    next_ready(
+        managers
+            .iter_mut()
+            .map(|(key, manager)| async move { manager.next().await.map(|peers| (*key, peers)) }),
+    )
+    .await
 }
 fn retain_trackers(
     meta: OwnedMetainfo,
     magnet: &Magnet,
     profile: Profile,
 ) -> io::Result<OwnedMetainfo> {
-    if meta.is_private() {
-        return Err(invalid("private torrents require a .torrent file"));
-    }
     if magnet.trackers().next().is_none() {
         return Ok(meta);
     }
@@ -194,8 +249,7 @@ fn retain_trackers(
         bytes.extend_from_slice(format!("{}:", tracker.len()).as_bytes());
         bytes.extend_from_slice(tracker);
     }
-    bytes.extend_from_slice(b"ee4:info");
-    bytes.extend_from_slice(meta.info_bytes());
-    bytes.push(b'e');
+    bytes.extend_from_slice(b"ee");
+    bytes.extend_from_slice(&meta.source_bytes()[1..]);
     profile.parse_owned(&bytes).map_err(Into::into)
 }

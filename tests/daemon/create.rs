@@ -96,6 +96,29 @@ fn offline_creation_supports_mktorrent_options_and_preserves_info_identity() {
             Sha1::digest(piece).as_slice()
         );
     }
+    let hybrid = run(&["-F", "hybrid", "--json", "-o", "hybrid.torrent"]);
+    assert!(
+        hybrid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hybrid.stderr)
+    );
+    let response: Value = serde_json::from_slice(&hybrid.stdout).unwrap();
+    let hybrid_bytes = std::fs::read(root.0.join("hybrid.torrent")).unwrap();
+    let hybrid_meta = Profile::default().parse(&hybrid_bytes).unwrap();
+    assert!(matches!(
+        hybrid_meta.info_hash(),
+        spill::protocol::identity::TorrentIdentity::Hybrid(..)
+    ));
+    assert_eq!(response["format"], "hybrid");
+    assert_eq!(
+        response["v1"],
+        hybrid_meta.info_hash().v1().unwrap().to_string()
+    );
+    assert_eq!(
+        response["v2"],
+        hybrid_meta.info_hash().v2().unwrap().to_string()
+    );
+    assert_eq!(response["info_hash"], response["v1"]);
     let second = run(&["--output", "two.torrent", "--threads", "4"]);
     assert!(second.status.success());
     assert_eq!(std::fs::read(root.0.join("two.torrent")).unwrap(), bytes);

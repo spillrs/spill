@@ -11,11 +11,11 @@ async fn utp_zero_window_probe_recovers_and_reset_accepts_send_id() {
     let meta = seed_metainfo("x", b"abc", None);
     let id = daemon.add(&meta, None).await;
     daemon.state(&id, "downloading").await;
-    let hash = *spill::engine::profile::Profile::DEFAULT
+    let hash = spill::engine::profile::Profile::DEFAULT
         .parse_owned(&meta)
         .unwrap()
         .info_hash()
-        .as_bytes();
+        .wire_key();
     let address: std::net::SocketAddr = daemon.call(json!({"op":"health"})).await["listen"]
         .as_str()
         .unwrap()
@@ -198,11 +198,11 @@ async fn utp_reassembly_leaves_room_for_the_missing_datagram() {
     let meta = seed_metainfo("x", b"abc", None);
     let id = daemon.add(&meta, None).await;
     daemon.state(&id, "downloading").await;
-    let hash = *spill::engine::profile::Profile::DEFAULT
+    let hash = spill::engine::profile::Profile::DEFAULT
         .parse_owned(&meta)
         .unwrap()
         .info_hash()
-        .as_bytes();
+        .wire_key();
     let address: std::net::SocketAddr = daemon.call(json!({"op":"health"})).await["listen"]
         .as_str()
         .unwrap()

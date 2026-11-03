@@ -31,7 +31,7 @@ async fn accounting_survives_restart_without_counting_existing_data() {
         let meta = spill::engine::profile::Profile::DEFAULT
             .parse_owned(&bytes)
             .unwrap();
-        let mut peer = raw_peer(&address, *meta.info_hash().as_bytes(), 42).await;
+        let mut peer = raw_peer(&address, meta.info_hash().wire_key(), 42).await;
         tokio::time::timeout(Duration::from_secs(5), async {
             peer.write_all(&[0, 0, 0, 1, 2]).await.unwrap();
             while peer_frame(&mut peer).await != [0, 0, 0, 1, 1] {}

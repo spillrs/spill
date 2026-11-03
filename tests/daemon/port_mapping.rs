@@ -120,10 +120,10 @@ async fn nat_pmp_maps_renews_advertises_and_deletes_on_shutdown() {
         }
     });
     let bytes = seed_metainfo("x", b"abc", Some(&url));
-    let hash = *spill::protocol::metainfo::Metainfo::parse(&bytes, Default::default())
+    let hash = spill::protocol::metainfo::Metainfo::parse(&bytes, Default::default())
         .unwrap()
         .info_hash()
-        .as_bytes();
+        .wire_key();
     let id = daemon.add(&bytes, None).await;
     daemon.state(&id, "seeding").await;
     let started = std::time::Instant::now();
@@ -407,13 +407,13 @@ async fn port_mapping_failure_is_nonfatal_and_disabled_sends_nothing() {
         let received =
             tokio::time::timeout(Duration::from_millis(500), gateway.recv_from(&mut bytes)).await;
         assert_eq!(received.is_ok(), enabled);
-        let hash = *spill::protocol::metainfo::Metainfo::parse(
+        let hash = spill::protocol::metainfo::Metainfo::parse(
             &metainfo(Some(&source.url)),
             Default::default(),
         )
         .unwrap()
         .info_hash()
-        .as_bytes();
+        .wire_key();
         let mut peer = raw_peer(&address.to_string(), hash, 43).await;
         use tokio::io::AsyncWriteExt;
         peer.write_all(&[0, 0, 0, 1, 2]).await.unwrap();

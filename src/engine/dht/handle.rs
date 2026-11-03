@@ -55,7 +55,7 @@ impl Handle {
     pub(super) async fn local_peers(
         &self,
         ipv6: bool,
-        hash: crate::protocol::identity::InfoHashV1,
+        hash: [u8; 20],
     ) -> io::Result<Vec<SocketAddr>> {
         let (reply, result) = oneshot::channel();
         self.commands

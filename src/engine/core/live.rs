@@ -1,8 +1,7 @@
 //! Shared live-download blocks, reserved against the picker's unfinished budget.
 //! A new attempt has a distinct identity; no failed attempt can fill its gaps.
 use super::SharedBlock;
-use crate::protocol::metainfo::{FileKind, OwnedMetainfo};
-use sha1::{Digest, Sha1};
+use crate::protocol::metainfo::{FileKind, OwnedMetainfo, hash::PieceHasher};
 use std::{
     collections::{BTreeMap, HashMap},
     ops::Range,
@@ -20,19 +19,26 @@ pub(in crate::engine) struct Buffered {
     blocks: BTreeMap<u32, SharedBlock>,
 }
 impl Buffered {
-    pub(in crate::engine) fn digest(self) -> Vec<u8> {
-        let mut hash = Sha1::new();
+    pub(in crate::engine) fn digest(
+        self,
+        meta: &OwnedMetainfo,
+        index: u32,
+    ) -> std::io::Result<bool> {
+        let mut hash = PieceHasher::new(meta, index);
         let mut offset = 0;
         for (begin, block) in self.blocks {
             zeros(&mut hash, u64::from(begin) - offset);
-            hash.update(&*block);
+            hash.update(&block);
             offset = u64::from(begin) + block.len() as u64;
         }
         zeros(&mut hash, self.length - offset);
-        hash.finalize().to_vec()
+        hash.finish()
+            .map(|(passed, _)| passed)
+            .map_err(|error| crate::engine::profile::AdmissionError::Metainfo(error).into())
     }
 }
-fn zeros(hash: &mut Sha1, mut length: u64) {
+
+fn zeros(hash: &mut PieceHasher, mut length: u64) {
     const ZERO: [u8; 16384] = [0; 16384];
     while length != 0 {
         let n = length.min(ZERO.len() as u64) as usize;

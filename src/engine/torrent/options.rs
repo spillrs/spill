@@ -2,7 +2,7 @@ use super::{Destination, TorrentOptions, TorrentSource};
 use std::{io, time::Duration};
 
 impl TorrentSource {
-    pub(in crate::engine) fn info_hash(&self) -> crate::protocol::identity::InfoHashV1 {
+    pub(in crate::engine) fn info_hash(&self) -> crate::protocol::identity::TorrentIdentity {
         match self {
             Self::Metainfo(meta) => meta.info_hash(),
             Self::Magnet(magnet) => magnet.info_hash(),
@@ -28,7 +28,7 @@ impl TorrentOptions {
     pub(in crate::engine) fn validate(&self) -> io::Result<()> {
         self.profile.validate()?;
         if let TorrentSource::Metainfo(meta) = &self.source {
-            self.profile.validate_layout(meta.layout())?;
+            self.profile.validate_metainfo(meta.view())?;
             selection(meta, &self.settings)?;
         }
         Ok(())

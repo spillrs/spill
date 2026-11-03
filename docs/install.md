@@ -219,7 +219,7 @@ Before 1.0, spill does not migrate old catalogs. If an upgrade reports
 download directory: re-adding a torrent whose complete files are already there
 verifies and seeds them without downloading again.
 
-The catalog remains at version 5. Incompatible or invalid cached DHT contacts
-are discarded and rebuilt without affecting saved torrents.
-Catalogs older than version 5 require a fresh state directory. Re-adding files does not recover their previous traffic
-totals or timestamps.
+The catalog uses schema version 1. Catalogs with an unsupported schema require a
+fresh state directory. Re-adding files does not recover their previous traffic
+totals or timestamps. Incompatible or invalid cached DHT contacts are discarded
+and rebuilt without affecting saved torrents.

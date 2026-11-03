@@ -26,7 +26,7 @@ impl NamedDestination {
         canceled: impl Fn() -> bool,
     ) -> io::Result<FileStorage> {
         check_canceled(&canceled)?;
-        PayloadPaths::new(meta)?.reject_existing(&root)?;
+        PayloadPaths::new(meta)?.reject_existing(&root, meta.layout())?;
         record(&DestinationBinding::new(meta, false)?)?;
         Self::open_bound(root, meta, None, true, &canceled)
     }
@@ -43,7 +43,7 @@ impl NamedDestination {
         }
         let paths = PayloadPaths::new(meta)?;
         let Some(files) = paths.complete_files(&root, meta.layout())? else {
-            paths.reject_existing(&root)?;
+            paths.reject_existing(&root, meta.layout())?;
             return Ok(None);
         };
         Self::finish_read_only(root, meta, files, None, true, &canceled).map(Some)
@@ -95,10 +95,10 @@ impl NamedDestination {
         }
         let record = Self::check_binding(meta, binding, true)?;
         let verified_resume = if verify {
-            let before = FileStorage::fingerprint_files(files.iter().map(Option::as_ref))?;
+            let before = FileStorage::fingerprint_files(files.iter().filter_map(Option::as_ref))?;
             verify_content_cancellable(meta, &mut files, canceled)?;
             check_canceled(canceled)?;
-            let after = FileStorage::fingerprint_files(files.iter().map(Option::as_ref))?;
+            let after = FileStorage::fingerprint_files(files.iter().filter_map(Option::as_ref))?;
             if before != after {
                 return Err(invalid("seed payload changed during verification"));
             }

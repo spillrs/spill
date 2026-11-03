@@ -14,7 +14,6 @@ use super::NodeId;
 use crate::protocol::{
     bencode::{self, Node, Value},
     compact,
-    identity::InfoHashV1,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,11 +144,11 @@ pub enum Query<'a> {
         want: Option<Want>,
     },
     GetPeers {
-        info_hash: InfoHashV1,
+        info_hash: [u8; 20],
         want: Option<Want>,
     },
     AnnouncePeer {
-        info_hash: InfoHashV1,
+        info_hash: [u8; 20],
         /// None when implied_port is nonzero: use the actual UDP source port.
         port: Option<u16>,
         token: &'a [u8],
@@ -292,7 +291,7 @@ impl<'a> Message<'a> {
                         want: want(args)?,
                     },
                     b"get_peers" => Query::GetPeers {
-                        info_hash: InfoHashV1::from_bytes(array20(args, "info_hash")?),
+                        info_hash: array20(args, "info_hash")?,
                         want: want(args)?,
                     },
                     b"announce_peer" => {
@@ -314,7 +313,7 @@ impl<'a> Message<'a> {
                             Some(u16::try_from(*value).map_err(|_| Error::InvalidField("port"))?)
                         };
                         Query::AnnouncePeer {
-                            info_hash: InfoHashV1::from_bytes(array20(args, "info_hash")?),
+                            info_hash: array20(args, "info_hash")?,
                             port,
                             token: bytes(args, "token")?,
                         }

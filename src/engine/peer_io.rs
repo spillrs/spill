@@ -14,10 +14,7 @@ use std::{
     time::Duration,
 };
 
-use crate::protocol::{
-    identity::InfoHashV1,
-    peer::{HANDSHAKE_LEN, Handshake, message::Message},
-};
+use crate::protocol::peer::{HANDSHAKE_LEN, Handshake, message::Message};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpStream,
@@ -34,7 +31,7 @@ pub(in crate::engine) use crate::engine::core::{ConnectionId, Frame};
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::engine) enum Role {
-    Outbound,
+    Outbound([u8; 20]),
     Inbound,
 }
 
@@ -71,6 +68,7 @@ pub(in crate::engine) enum PeerEvent {
         connection: ConnectionId,
         reserved: [u8; 8],
         peer_id: [u8; 20],
+        info_hash: [u8; 20],
     },
     Frame {
         connection: ConnectionId,
@@ -91,6 +89,7 @@ struct SocketContext {
     bandwidth: crate::engine::bandwidth::Throttle,
     read_pause: watch::Receiver<bool>,
     local: Handshake,
+    identity: crate::protocol::identity::TorrentIdentity,
     written: Arc<PayloadWrites>,
     capacity_changed: Arc<Notify>,
 }
@@ -139,6 +138,7 @@ pub(in crate::engine) struct Peers {
     read_pause: watch::Sender<bool>,
     capacity_changed: Arc<Notify>,
     local: Handshake,
+    identity: crate::protocol::identity::TorrentIdentity,
     written: Arc<PayloadWrites>,
     limits: crate::engine::profile::Profile,
     next_id: u64,
@@ -153,7 +153,8 @@ pub(in crate::engine) struct Peers {
 }
 impl Peers {
     pub(in crate::engine) fn new(
-        info_hash: InfoHashV1,
+        identity: crate::protocol::identity::TorrentIdentity,
+        upgrade: bool,
         peer_id: [u8; 20],
         limits: crate::engine::profile::Profile,
         capacity_changed: Arc<Notify>,
@@ -165,10 +166,17 @@ impl Peers {
             capacity_changed,
             // The scheduling owners implement BEP 10 and BEP 9.
             local: Handshake {
-                reserved: crate::engine::core::extensions::RESERVED,
-                info_hash: *info_hash.as_bytes(),
+                reserved: {
+                    let mut reserved = crate::engine::core::extensions::RESERVED;
+                    if upgrade {
+                        reserved[7] |= 0x10;
+                    }
+                    reserved
+                },
+                info_hash: identity.wire_key(),
                 peer_id,
             },
+            identity,
             limits,
             written: Arc::new(PayloadWrites::default()),
             next_id: 0,
@@ -209,6 +217,7 @@ impl Peers {
             bandwidth: self.bandwidth.clone(),
             read_pause: self.read_pause.subscribe(),
             local: self.local.clone(),
+            identity: self.identity,
             written: written.clone(),
             capacity_changed: self.capacity_changed.clone(),
         };

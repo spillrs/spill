@@ -1,16 +1,18 @@
-//! Borrowed/owned v1 metainfo and logical ranges. Hash original info bytes;
+//! Borrowed/owned metainfo and logical ranges. Hash original info bytes;
 //! paths are untrusted byte components, not filesystem authority.
 
 use std::{borrow::Cow, fmt, ops::Range};
 
+pub(crate) mod hash;
 mod owned;
+mod v2;
 mod view;
-pub use owned::OwnedMetainfo;
+pub use owned::{InfoMetainfo, OwnedMetainfo};
 pub use view::MetainfoView;
 
 use crate::protocol::{
     bencode::{self, Limits, Node, Value},
-    identity::InfoHashV1,
+    identity::{InfoHashV1, InfoHashV2, TorrentIdentity},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +25,7 @@ pub enum Error {
     PathConflict,
     LengthOverflow,
     PieceCount,
+    MetadataLimit,
     UnsupportedVersion,
     UnsupportedSymlink,
 }
@@ -42,16 +45,18 @@ impl std::error::Error for Error {
     }
 }
 
-/// A validated v1 content layout. Tracker/discovery fields remain accessible in
+/// A validated content layout. Tracker/discovery fields remain accessible in
 /// `document`; their validation and runtime policy are deliberately separate.
 #[derive(Debug)]
 pub struct Metainfo<'a> {
     document: Node<'a>,
     info_bytes: &'a [u8],
-    info_hash: InfoHashV1,
+    info_hash: TorrentIdentity,
     name: &'a [u8],
     private: bool,
     piece_hashes: &'a [u8],
+    v2_hashes: Vec<[u8; 32]>,
+    layers_pending: bool,
     layout: Layout<'a>,
 }
 
@@ -59,17 +64,27 @@ impl<'a> Metainfo<'a> {
     /// Parse one complete .torrent document within the bencode budgets.
     /// Content structure is validated; tracker URLs and other outer extensions
     /// are retained but not validated. No content or filesystem is accessed.
+    /// Expanded v2 data-path bytes and piece commitments share `max_input_len`;
+    /// expanded path components are also bounded by `max_nodes`.
     pub fn parse(input: &'a [u8], limits: Limits) -> Result<Self, Error> {
         let document = bencode::decode(input, limits).map_err(Error::Bencode)?;
         dictionary(&document, "metainfo")?;
         let info = required(&document, "info")?;
         dictionary(info, "info")?;
-        if info.get(b"meta version").is_some()
-            || info.get(b"file tree").is_some()
-            || document.get(b"piece layers").is_some()
-        {
+        if let Some(version) = info.get(b"meta version") {
+            if !matches!(version.value(), Value::Integer(2)) {
+                return Err(Error::UnsupportedVersion);
+            }
+            return Self::v2(document, limits, false);
+        }
+        if info.get(b"file tree").is_some() || document.get(b"piece layers").is_some() {
             return Err(Error::UnsupportedVersion);
         }
+        Self::v1(document)
+    }
+
+    fn v1(document: Node<'a>) -> Result<Self, Error> {
+        let info = required(&document, "info")?;
         let name = bytes(required(info, "name")?, "name")?;
         component(name)?;
         let piece_length = u32::try_from(integer(required(info, "piece length")?, "piece length")?)
@@ -116,7 +131,11 @@ impl<'a> Metainfo<'a> {
                     }
                     add_file(&mut files, &mut total_length, entry, path)?;
                 }
-                let mut paths: Vec<_> = files.iter().map(|file| &file.path).collect();
+                let mut paths: Vec<_> = files
+                    .iter()
+                    .filter(|file| file.kind == FileKind::Data)
+                    .map(|file| &file.path)
+                    .collect();
                 paths.sort_unstable();
                 if paths.windows(2).any(|pair| pair[1].starts_with(pair[0])) {
                     return Err(Error::PathConflict);
@@ -134,11 +153,13 @@ impl<'a> Metainfo<'a> {
         // Decoded nodes always retain their original span; no encoder involved.
         let info_bytes = info.raw_bytes().expect("decoded info span");
         Ok(Self {
-            info_hash: InfoHashV1::from_info_bytes(info_bytes),
+            info_hash: TorrentIdentity::V1(InfoHashV1::from_info_bytes(info_bytes)),
             info_bytes,
             name,
             private,
             piece_hashes,
+            v2_hashes: Vec::new(),
+            layers_pending: false,
             layout: Layout {
                 files,
                 total_length,
@@ -156,6 +177,8 @@ impl<'a> Metainfo<'a> {
             info_hash: self.info_hash,
             layout: &self.layout,
             hashes: self.piece_hashes,
+            v2_hashes: &self.v2_hashes,
+            layers_pending: self.layers_pending,
         }
     }
     pub fn document(&self) -> &Node<'a> {
@@ -164,7 +187,7 @@ impl<'a> Metainfo<'a> {
     pub fn info_bytes(&self) -> &'a [u8] {
         self.info_bytes
     }
-    pub fn info_hash(&self) -> InfoHashV1 {
+    pub fn info_hash(&self) -> TorrentIdentity {
         self.info_hash
     }
     pub fn name(&self) -> &'a [u8] {
@@ -176,15 +199,41 @@ impl<'a> Metainfo<'a> {
     pub fn layout(&self) -> &Layout<'a> {
         &self.layout
     }
+    /// V1 SHA-1 commitment, including a hybrid's v1 commitment. None for v2-only.
     pub fn piece_hash(&self, index: u32) -> Option<&'a [u8; 20]> {
         hash_at(self.piece_hashes, index, self.layout.piece_count)
     }
+    /// Hybrid payload can be verified with SHA-1 while required v2 layers are absent.
+    pub fn layers_pending(&self) -> bool {
+        self.layers_pending
+    }
+    pub fn verification(&self, index: u32) -> Option<PieceVerification> {
+        self.view().verification(index)
+    }
+}
+
+/// Authenticated commitments for one complete piece. V1 includes virtual padding;
+/// v2 hashes only data blocks and pads its tree with absent leaf hashes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceVerification {
+    V1([u8; 20]),
+    V2(V2Verification),
+    Hybrid { sha1: [u8; 20], v2: V2Verification },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct V2Verification {
+    pub pieces_root: [u8; 32],
+    pub layer_hash: [u8; 32],
+    /// Tree width, including absent leaves, for this piece's verification.
+    pub blocks: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileKind {
     Data,
-    /// BEP 47 bytes: part of the v1 hash stream, logically zero-filled.
+    /// Virtual zero-filled bytes: BEP 47 padding or implicit v2 alignment gaps.
+    /// Included in v1 hashes, excluded from v2 file hashes.
     Padding,
 }
 
@@ -194,12 +243,14 @@ pub struct File<'a> {
     offset: u64,
     length: u64,
     kind: FileKind,
+    pieces_root: Option<[u8; 32]>,
 }
 
 impl<'a> File<'a> {
-    /// Multi-file paths are relative to `Metainfo::name`; single-file paths
-    /// contain the name itself. No decoding, joining or normalization is done.
-    /// Borrowed parsing retains borrowed components; OwnedMetainfo owns them.
+    /// Multi-file paths are relative to `Metainfo::name`. Single-file paths
+    /// contain the file name itself (from the tree for v2, from `name` for v1).
+    /// Padding paths are virtual, not disk authority. Borrowed paths retain
+    /// byte components; OwnedMetainfo owns them.
     pub fn path(&self) -> &[Cow<'a, [u8]>] {
         &self.path
     }
@@ -211,6 +262,9 @@ impl<'a> File<'a> {
     }
     pub fn kind(&self) -> FileKind {
         self.kind
+    }
+    pub fn pieces_root(&self) -> Option<[u8; 32]> {
+        self.pieces_root
     }
 }
 
@@ -237,6 +291,8 @@ impl<'a> Layout<'a> {
     pub fn piece_count(&self) -> u32 {
         self.piece_count
     }
+    /// Whether paths are relative to `Metainfo::name`. For v2, only a single
+    /// top-level file uses the single-file convention; directories stay intact.
     pub fn is_multi_file(&self) -> bool {
         self.multi_file
     }
@@ -248,6 +304,20 @@ impl<'a> Layout<'a> {
         let start = u64::from(index) * u64::from(self.piece_length);
         let length = (self.total_length - start).min(u64::from(self.piece_length));
         Some(start..start + length)
+    }
+
+    /// End offset of real data in a piece, excluding virtual tail padding.
+    /// For v1 this is not a wire limit: requests may include padding.
+    pub fn piece_data_end(&self, index: u32) -> Option<u32> {
+        let range = self.piece_range(index)?;
+        Some(
+            self.segments(range.clone())
+                .expect("piece range")
+                .filter(|segment| segment.kind == FileKind::Data)
+                .map(|segment| (segment.torrent_offset + segment.length - range.start) as u32)
+                .max()
+                .unwrap_or(0),
+        )
     }
 
     /// Map an arbitrary half-open torrent range without allocating a segment
@@ -373,6 +443,7 @@ fn add_file<'a>(
         offset,
         length,
         kind,
+        pieces_root: None,
     });
     Ok(())
 }

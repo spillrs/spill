@@ -48,6 +48,11 @@ impl Torrent {
             first_message: true,
             choked: true,
             fast: false,
+            wire_mode: if self.info_hash().v1().is_none() {
+                crate::protocol::peer::message::WireMode::V2
+            } else {
+                crate::protocol::peer::message::WireMode::V1
+            },
             remote_dht: false,
             send_dht_port: false,
             dht_port_seen: false,
@@ -61,6 +66,7 @@ impl Torrent {
             dirty: true,
             cancels: VecDeque::new(),
             rejects: VecDeque::new(),
+            hashes: VecDeque::new(),
             send_bitfield: false,
             output_blocked: false,
             retiring: false,
@@ -70,6 +76,7 @@ impl Torrent {
             first_needed: None,
             pending_have,
             asked,
+            kept: Vec::new(),
             web_seed,
             download_rate: peer::DownloadRate::default(),
             uploaded: 0,
@@ -227,7 +234,7 @@ impl Torrent {
                     .all_requests()
                     .filter(|p| p.connection == Some(peer.connection))
                     .count(),
-                authorized_requests: peer.asked.len(),
+                authorized_requests: peer.asked.len() + peer.kept.len(),
                 request_queue: peer.extensions.request_queue,
                 ignored_frames_remaining: remaining.0,
                 ignored_bytes_remaining: remaining.1,
@@ -286,6 +293,15 @@ impl Torrent {
             }
             self.retire_peer(other, invalid_data_text("duplicate peer identity"))?;
         }
+        self.remotes[position].wire_mode = if self
+            .info_hash()
+            .v2()
+            .is_some_and(|hash| hash.wire_key() == handshake.info_hash)
+        {
+            crate::protocol::peer::message::WireMode::V2
+        } else {
+            crate::protocol::peer::message::WireMode::V1
+        };
         self.remotes[position].peer_id = Some(peer_id);
         self.remotes[position].fast = reserved[7] & 0x04 != 0;
         self.remotes[position].remote_dht = reserved[7] & 0x01 != 0;

@@ -2,7 +2,6 @@
 use crate::engine::{core::AnnounceEvent, torrent::telemetry::TrackerStatus};
 use crate::protocol::{
     bencode::{self, Value},
-    identity::InfoHashV1,
     metainfo::OwnedMetainfo,
     tracker::{http, udp},
 };
@@ -67,7 +66,7 @@ struct Tracker {
     next_allowed: Instant,
 }
 pub(in crate::engine) struct AnnounceOptions {
-    pub(in crate::engine) hash: InfoHashV1,
+    pub(in crate::engine) hash: [u8; 20],
     pub(in crate::engine) peer: [u8; 20],
     pub(in crate::engine) port: tokio::sync::watch::Receiver<u16>,
     pub(in crate::engine) left: u64,
@@ -79,7 +78,7 @@ pub(in crate::engine) struct AnnounceOptions {
 }
 pub(in crate::engine) struct Announcer {
     tiers: Vec<Vec<Tracker>>,
-    hash: InfoHashV1,
+    pub(in crate::engine) hash: [u8; 20],
     peer: [u8; 20],
     port: tokio::sync::watch::Receiver<u16>,
     key: u32,
@@ -138,6 +137,7 @@ impl Announcer {
                         last_reply: None,
                         next_allowed: Instant::now(),
                         status: TrackerStatus {
+                            swarm: hash,
                             url: String::from_utf8_lossy(&raw).into_owned(),
                             tier,
                             slot,
@@ -684,8 +684,8 @@ async fn udp_exchange(
 }
 
 pub(super) struct Discovery {
-    pub(in crate::engine) dht: Option<crate::engine::dht::Discovery>,
-    pub(in crate::engine) announces: Option<Announcer>,
+    pub(in crate::engine) dht: Vec<crate::engine::dht::Discovery>,
+    pub(in crate::engine) announces: Vec<Announcer>,
     pub(in crate::engine) contacts: Option<crate::engine::session::dial::Contacts>,
     pub(in crate::engine) dials: Option<crate::engine::session::dial::Client>,
     pub(in crate::engine) web_seeds: Option<crate::engine::webseed::WebSeeds>,
@@ -693,8 +693,8 @@ pub(super) struct Discovery {
 impl Discovery {
     pub(in crate::engine) fn empty() -> Self {
         Self {
-            dht: None,
-            announces: None,
+            dht: Vec::new(),
+            announces: Vec::new(),
             contacts: None,
             dials: None,
             web_seeds: None,
@@ -706,17 +706,15 @@ impl Discovery {
         session: &crate::engine::torrent::Network,
         left: u64,
     ) -> io::Result<()> {
-        self.dht = options
-            .dht
-            .clone()
-            .map(|handle| {
-                crate::engine::dht::Discovery::new(
-                    handle,
-                    options.metainfo.clone(),
+        for hash in crate::engine::core::swarm_identity(&options.metainfo).wire_keys() {
+            if let Some(handle) = &options.dht {
+                self.dht.push(crate::engine::dht::Discovery::new(
+                    handle.clone(),
+                    hash,
                     session.advertised_port.clone(),
-                )
-            })
-            .transpose()?;
+                ));
+            }
+        }
         self.web_seeds = if options.settings.web_seeds && left != 0 {
             Some(crate::engine::webseed::WebSeeds::new(
                 &options.metainfo,
@@ -725,26 +723,35 @@ impl Discovery {
         } else {
             None
         };
-        self.announces = if options.settings.trackers {
-            Announcer::new(
-                Announcer::metainfo(&options.metainfo),
-                AnnounceOptions {
-                    hash: options.metainfo.info_hash(),
-                    peer: options.peer_id,
-                    port: session.advertised_port.clone(),
-                    left,
-                    allow_local_network: session.allow_local_network,
-                    client: session.tracker_http.clone(),
-                    udp: session.tracker_udp.clone(),
-                    completed_announce: options.completed_announce,
-                    checkpoint: options.announce_checkpoint.clone(),
-                },
-            )?
-        } else {
-            None
-        };
+        if options.settings.trackers {
+            for hash in crate::engine::core::swarm_identity(&options.metainfo).wire_keys() {
+                if let Some(announcer) = Announcer::new(
+                    Announcer::metainfo(&options.metainfo),
+                    AnnounceOptions {
+                        hash,
+                        peer: options.peer_id,
+                        port: session.advertised_port.clone(),
+                        left,
+                        allow_local_network: session.allow_local_network,
+                        client: session.tracker_http.clone(),
+                        udp: session.tracker_udp.clone(),
+                        completed_announce: options
+                            .completed_announces
+                            .iter()
+                            .find(|(key, _)| *key == hash)
+                            .map(|(_, delivered)| *delivered),
+                        checkpoint: {
+                            let checkpoint = options.announce_checkpoint.clone();
+                            Arc::new(move |delivered| checkpoint(hash, delivered))
+                        },
+                    },
+                )? {
+                    self.announces.push(announcer);
+                }
+            }
+        }
         let (mut contacts, dials) = session.dial_queue.client(options.profile);
-        contacts.add_direct(&options.peers)?;
+        contacts.add_direct(options.metainfo.info_hash().wire_key(), &options.peers)?;
         self.contacts = Some(contacts);
         self.dials = Some(dials);
         Ok(())
@@ -753,22 +760,20 @@ impl Discovery {
         &mut self,
         _: crate::engine::torrent::RunPolicy,
     ) -> io::Result<()> {
-        self.dht = None;
-        let announces = if let Some(a) = &mut self.announces {
-            a.shutdown().await
-        } else {
-            Ok(())
-        };
-        announces.and(self.drain().await)
+        self.dht.clear();
+        let mut result = Ok(());
+        for a in &mut self.announces {
+            result = result.and(a.shutdown().await);
+        }
+        result.and(self.drain().await)
     }
     pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
-        self.dht = None;
-        let announces = if let Some(a) = &mut self.announces {
-            a.drain().await
-        } else {
-            Ok(())
-        };
-        self.announces = None;
+        self.dht.clear();
+        let mut announces = Ok(());
+        for a in &mut self.announces {
+            announces = announces.and(a.drain().await);
+        }
+        self.announces.clear();
         self.contacts = None;
         let dials = if let Some(d) = &mut self.dials {
             d.shutdown().await

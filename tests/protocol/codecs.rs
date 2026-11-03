@@ -115,24 +115,24 @@ fn block_and_bitfield_layout_boundaries() {
                 begin,
                 length
             }
-            .validate(meta.layout(), 4)
+            .validate(meta.layout(), 4, false)
             .is_ok(),
             valid
         );
     }
     assert!(
         Message::Bitfield(&[0xc0])
-            .validate_layout(meta.layout(), 4)
+            .validate_layout(meta.layout(), 4, false)
             .is_ok()
     );
     assert!(
         Message::Bitfield(&[0x81])
-            .validate_layout(meta.layout(), 4)
+            .validate_layout(meta.layout(), 4, false)
             .is_err()
     );
     assert!(
         Message::Bitfield(&[])
-            .validate_layout(meta.layout(), 4)
+            .validate_layout(meta.layout(), 4, false)
             .is_err()
     );
 }
@@ -143,7 +143,7 @@ fn owned_dht_requests_roundtrip() {
         NodeId, OwnedQuery,
         krpc::{Kind, Message, Query, Want},
     };
-    let hash = InfoHashV1::from_bytes([2; 20]);
+    let hash = [2; 20];
     for query in [
         OwnedQuery::Ping,
         OwnedQuery::FindNode(NodeId([3; 20])),
@@ -210,15 +210,18 @@ fn metainfo_original_identity_and_invalid_shapes() {
     let meta = Metainfo::parse(wire, Limits::default()).unwrap();
     assert_eq!(meta.info_bytes().as_ptr(), wire[7..].as_ptr());
     assert_eq!(
-        meta.info_hash(),
-        InfoHashV1::from_info_bytes(meta.info_bytes())
+        meta.info_hash().v1(),
+        Some(InfoHashV1::from_info_bytes(meta.info_bytes()))
     );
     let owned = OwnedMetainfo::parse(wire, Limits::default()).unwrap();
     assert_eq!(owned.source_bytes(), wire);
     assert_eq!(owned.info_hash(), meta.info_hash());
     let canonical =
         bencode::encode(meta.document().get(b"info").unwrap(), Limits::default()).unwrap();
-    assert_ne!(InfoHashV1::from_info_bytes(&canonical), meta.info_hash());
+    assert_ne!(
+        Some(InfoHashV1::from_info_bytes(&canonical)),
+        meta.info_hash().v1()
+    );
     for end in 0..wire.len() {
         assert!(Metainfo::parse(&wire[..end], Limits::default()).is_err());
     }
@@ -237,8 +240,8 @@ fn magnet_decoding_and_limits() {
     let uri = "magnet:?xt=urn:btih:000102030405060708090a0b0c0d0e0f10111213&dn=a+b%00%ff&tr=udp%3A%2F%2Fx%3A80";
     let magnet = Magnet::parse(uri, Limits::default()).unwrap();
     assert_eq!(
-        magnet.info_hash(),
-        InfoHashV1::from_bytes(std::array::from_fn(|i| i as u8))
+        magnet.info_hash().v1(),
+        Some(InfoHashV1::from_bytes(std::array::from_fn(|i| i as u8)))
     );
     assert_eq!(magnet.display_name(), Some(b"a b\0\xff".as_slice()));
     assert_eq!(magnet.trackers().collect::<Vec<_>>(), [b"udp://x:80"]);
@@ -357,7 +360,7 @@ fn http_tracker_reply_and_query_bounds() {
     assert_eq!(warning.tracker_id(), Some(b"tag".as_slice()));
     assert_eq!(warning.min_interval_secs(), Some(120));
     let request = AnnounceRequest {
-        info_hash: InfoHashV1::from_bytes([0; 20]),
+        info_hash: [0; 20],
         peer_id: [255; 20],
         port: 6881,
         uploaded: 0,
@@ -403,7 +406,7 @@ fn udp_tracker_roundtrip_and_malformed_datagrams() {
     bad[0] ^= 1;
     assert!(Request::decode(&bad, limits).is_err());
     let announce = udp::Announce {
-        info_hash: InfoHashV1::from_bytes([1; 20]),
+        info_hash: [1; 20],
         peer_id: [2; 20],
         downloaded: 3,
         left: 4,

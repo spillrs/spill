@@ -5,10 +5,7 @@
 
 use std::{fmt, net::Ipv4Addr};
 
-use crate::protocol::{
-    compact::{self, PeersV4, PeersV6},
-    identity::InfoHashV1,
-};
+use crate::protocol::compact::{self, PeersV4, PeersV6};
 
 pub const PROTOCOL_ID: u64 = 0x41727101980;
 pub const EVENT_NONE: u32 = 0;
@@ -60,7 +57,7 @@ pub enum Family {
 /// not infer transport policy or rewrite a supplied IPv4 override.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Announce {
-    pub info_hash: InfoHashV1,
+    pub info_hash: [u8; 20],
     pub peer_id: [u8; 20],
     pub downloaded: u64,
     pub left: u64,
@@ -119,7 +116,7 @@ impl<'a> Request<'a> {
             }
             1 => RequestKind::Announce {
                 announce: Announce {
-                    info_hash: InfoHashV1::from_bytes(r.array()?),
+                    info_hash: r.array()?,
                     peer_id: r.array()?,
                     downloaded: r.u64()?,
                     left: r.u64()?,
@@ -175,7 +172,7 @@ impl<'a> Request<'a> {
                 announce: a,
                 extensions,
             } => {
-                out.extend(a.info_hash.as_bytes());
+                out.extend(&a.info_hash);
                 out.extend(a.peer_id);
                 out.extend(a.downloaded.to_be_bytes());
                 out.extend(a.left.to_be_bytes());

@@ -1,22 +1,30 @@
-//! BEP 9 is the first phase of the same clock-driven torrent, not a peer owner.
+//! BEP 9 resolves hybrids immediately; v2-only payload needs authenticated layers.
 use super::*;
-use crate::protocol::peer::{extension, metadata};
-use sha1::{Digest, Sha1};
+use crate::protocol::{
+    metainfo::InfoMetainfo,
+    peer::{extension, hash::HashRequest, metadata},
+};
+use std::collections::BTreeMap;
 
 struct Peer {
     endpoint: Option<SocketAddr>,
+    v2: bool,
     remote: extension::ExtensionMap,
     budget: UnsolicitedBudget,
     size: Option<u32>,
     bytes: Vec<u8>,
     requested: Option<(u32, u32)>,
+    hashes: Option<HashRequest>,
     next_piece: u32,
     pending: VecDeque<Frame>,
     capacity: usize,
     deadline: Instant,
 }
 pub(super) struct Fetch {
-    pub(super) hash: InfoHashV1,
+    pub(super) hash: TorrentIdentity,
+    info: Option<InfoMetainfo>,
+    discovery_bytes: usize,
+    layers: BTreeMap<[u8; 32], BTreeMap<u32, Vec<u8>>>,
     peers: HashMap<ConnectionId, Peer>,
     attached: HashMap<ConnectionId, Option<SocketAddr>>,
     dialing: Vec<SocketAddr>,
@@ -25,12 +33,16 @@ pub(super) struct Fetch {
 impl Torrent {
     pub(in crate::engine) fn magnet(
         now: Instant,
-        hash: InfoHashV1,
+        hash: TorrentIdentity,
         limits: Profile,
+        discovery_bytes: usize,
     ) -> io::Result<Self> {
         let mut torrent = Self::empty(now, limits, Picker::new(1, 1, 1, 1)?);
         torrent.metadata = Some(Fetch {
             hash,
+            info: None,
+            discovery_bytes,
+            layers: BTreeMap::new(),
             peers: HashMap::new(),
             attached: HashMap::new(),
             dialing: Vec::new(),
@@ -48,10 +60,7 @@ impl Torrent {
             }
         };
         if let Some(meta) = resolved {
-            for (id, _) in fetch.attached {
-                self.actions.push(Action::Disconnect { id });
-            }
-            for id in fetch.peers.keys() {
+            for id in fetch.attached.keys().chain(fetch.peers.keys()) {
                 self.actions.push(Action::Disconnect { id: *id });
             }
             self.actions.push(Action::MetadataResolved(meta));
@@ -90,8 +99,17 @@ impl Fetch {
                 }
             }
             Input::PeerConnected { id, handshake } => {
-                let endpoint = self.attached.remove(&id).flatten();
-                if handshake.info_hash != *self.hash.as_bytes()
+                let attached = self.attached.remove(&id);
+                let endpoint = attached.flatten();
+                let identity = self
+                    .info
+                    .as_ref()
+                    .map_or(self.hash, InfoMetainfo::info_hash);
+                let v2 = identity
+                    .v2()
+                    .is_some_and(|v2| v2.wire_key() == handshake.info_hash);
+                if attached.is_none()
+                    || !identity.wire_keys().any(|key| key == handshake.info_hash)
                     || handshake.reserved[5] & 0x10 == 0
                     || self.peers.len() >= profile.peers.min(3)
                 {
@@ -99,11 +117,13 @@ impl Fetch {
                 } else {
                     let mut peer = Peer {
                         endpoint,
+                        v2,
                         remote: extensions::remote_map(),
                         budget: UnsolicitedBudget::new(),
                         size: None,
                         bytes: Vec::new(),
                         requested: None,
+                        hashes: None,
                         next_piece: 0,
                         pending: VecDeque::new(),
                         capacity: 0,
@@ -126,9 +146,39 @@ impl Fetch {
             }
             Input::Frame { id, msg } => {
                 if let Some(peer) = self.peers.get_mut(&id) {
-                    match peer.frame(&msg, self.hash, profile) {
-                        Ok(Some(meta)) => return Ok(Some(meta)),
-                        Ok(None) => {}
+                    let result = if let Some(info) = &self.info
+                        && matches!(
+                            msg.message(),
+                            Message::Hashes { .. } | Message::HashReject(_)
+                        ) {
+                        Self::hash_frame(peer, &msg, info, &mut self.layers).map(|()| None)
+                    } else {
+                        peer.frame(&msg, self.hash, profile)
+                    };
+                    match result {
+                        Ok(Some(info)) if self.info.is_none() => {
+                            if info.completed_size() + self.discovery_bytes
+                                > crate::engine::profile::MAX_META
+                            {
+                                return Err(invalid_data(
+                                    crate::protocol::metainfo::Error::MetadataLimit,
+                                ));
+                            }
+                            if info.is_private() {
+                                return Err(
+                                    crate::engine::profile::AdmissionError::PrivateMagnet.into()
+                                );
+                            }
+                            let identity = info.info_hash();
+                            for peer in self.peers.values_mut() {
+                                peer.bytes.clear();
+                                peer.requested = None;
+                                peer.deadline = now + crate::engine::profile::REQUEST_TIMEOUT;
+                            }
+                            self.hash = identity;
+                            self.info = Some(info);
+                        }
+                        Ok(_) => {}
                         Err(error)
                             if crate::engine::profile::AdmissionError::of(&error).is_some() =>
                         {
@@ -164,15 +214,128 @@ impl Fetch {
         }
         let cap = (crate::engine::profile::MAX_META - 8) as u32;
         self.peers.retain(|&id, peer| {
-            if now >= peer.deadline {
+            if now >= peer.deadline && (self.info.is_none() || peer.hashes.is_some()) {
                 actions.push(Action::Disconnect { id });
                 false
             } else {
                 true
             }
         });
+        if let Some(info) = &self.info {
+            if info.info_hash().v1().is_some() {
+                actions.push(Action::MetadataProgress {
+                    hash_bytes: 0,
+                    hash_total_bytes: 0,
+                });
+                return info
+                    .complete(&BTreeMap::new())
+                    .map(Some)
+                    .map_err(invalid_data);
+            }
+            let piece_length = info.layout().piece_length();
+            let mut work = VecDeque::new();
+            let mut totals = BTreeMap::new();
+            for file in info
+                .layout()
+                .files()
+                .iter()
+                .filter(|f| f.length() > u64::from(piece_length))
+            {
+                let root = file.pieces_root().expect("v2 file root");
+                let count = file.length().div_ceil(u64::from(piece_length)) as u32;
+                if totals.insert(root, u64::from(count) * 32).is_some() {
+                    continue;
+                }
+                for index in (0..count).step_by(512) {
+                    if self
+                        .layers
+                        .get(&root)
+                        .is_some_and(|ranges| ranges.contains_key(&index))
+                        || self.peers.values().any(|peer| {
+                            peer.hashes.is_some_and(|request| {
+                                request.pieces_root == root && request.index == index
+                            })
+                        })
+                    {
+                        continue;
+                    }
+                    work.push_back((root, file.length(), index, count));
+                }
+            }
+            let hash_bytes = self
+                .layers
+                .values()
+                .flat_map(|ranges| ranges.values())
+                .map(|bytes| bytes.len() as u64)
+                .sum();
+            let hash_total_bytes = totals.values().sum();
+            actions.push(Action::MetadataProgress {
+                hash_bytes,
+                hash_total_bytes,
+            });
+            if hash_bytes == hash_total_bytes {
+                let layers = std::mem::take(&mut self.layers)
+                    .into_iter()
+                    .map(|(root, ranges)| (root, ranges.into_values().flatten().collect()))
+                    .collect();
+                return info.complete(&layers).map(Some).map_err(invalid_data);
+            }
+            let idle: Vec<_> = self
+                .peers
+                .iter()
+                .filter(|(_, peer)| peer.v2 && peer.hashes.is_none())
+                .map(|(&id, _)| id)
+                .collect();
+            for id in idle {
+                let request = if let Some((root, length, index, count)) = work.pop_front() {
+                    let width = (count - index).next_power_of_two().min(512);
+                    let blocks = length.div_ceil(crate::protocol::merkle::BLOCK_LENGTH as u64);
+                    let height = u64::BITS - (blocks - 1).leading_zeros();
+                    let base_layer =
+                        (piece_length / crate::protocol::merkle::BLOCK_LENGTH as u32).ilog2();
+                    let request = HashRequest {
+                        pieces_root: root,
+                        base_layer,
+                        index,
+                        length: width.max(2),
+                        proof_layers: height - base_layer - 1,
+                    };
+                    request
+                        .validate(length, 512)
+                        .expect("constructed hash request geometry");
+                    request
+                } else {
+                    let Some((request, _)) = self
+                        .peers
+                        .values()
+                        .filter_map(|peer| peer.hashes.map(|request| (request, peer.deadline)))
+                        .filter(|(request, _)| {
+                            !self
+                                .layers
+                                .get(&request.pieces_root)
+                                .is_some_and(|ranges| ranges.contains_key(&request.index))
+                                && self
+                                    .peers
+                                    .values()
+                                    .filter(|peer| peer.hashes == Some(*request))
+                                    .count()
+                                    == 1
+                        })
+                        .min_by_key(|(_, deadline)| *deadline)
+                    else {
+                        break;
+                    };
+                    request
+                };
+                let peer = self.peers.get_mut(&id).expect("idle metadata peer");
+                peer.queue(Message::HashRequest(request))?;
+                peer.hashes = Some(request);
+                peer.deadline = now + crate::engine::profile::REQUEST_TIMEOUT;
+            }
+        }
         for (&id, peer) in &mut self.peers {
-            if peer.requested.is_none()
+            if self.info.is_none()
+                && peer.requested.is_none()
                 && let (Some(total), Some(ext)) = (peer.size, peer.remote.id_for(b"ut_metadata"))
             {
                 let payload = metadata::Message::new(
@@ -190,6 +353,7 @@ impl Fetch {
                     payload: &payload,
                 })?;
                 peer.requested = Some((peer.next_piece, total));
+                peer.deadline = now + crate::engine::profile::REQUEST_TIMEOUT;
             }
             while peer.capacity > 0 {
                 let Some(msg) = peer.pending.pop_front() else {
@@ -199,7 +363,13 @@ impl Fetch {
                 actions.push(Action::Send { id, msg });
             }
         }
-        if let Some(at) = self.peers.values().map(|p| p.deadline).min() {
+        if let Some(at) = self
+            .peers
+            .values()
+            .filter(|peer| self.info.is_none() || peer.hashes.is_some())
+            .map(|p| p.deadline)
+            .min()
+        {
             actions.push(Action::WakeAt(at));
         }
         let empty = self.peers.is_empty() && self.attached.is_empty() && self.dialing.is_empty();
@@ -208,6 +378,39 @@ impl Fetch {
         }
         self.stalled = empty;
         Ok(None)
+    }
+    fn hash_frame(
+        peer: &mut Peer,
+        frame: &Frame,
+        info: &InfoMetainfo,
+        layers: &mut BTreeMap<[u8; 32], BTreeMap<u32, Vec<u8>>>,
+    ) -> io::Result<()> {
+        let Message::Hashes { request, hashes } = frame.message() else {
+            return Err(invalid("hash request rejected"));
+        };
+        if !peer.v2 || peer.hashes != Some(request) {
+            return Err(invalid("uncorrelated hashes"));
+        }
+        peer.hashes = None;
+        let file = info
+            .layout()
+            .files()
+            .iter()
+            .find(|file| file.pieces_root() == Some(request.pieces_root))
+            .expect("requested root");
+        request
+            .verify(file.length(), 512, hashes)
+            .map_err(invalid_data)?;
+        let count = file
+            .length()
+            .div_ceil(u64::from(info.layout().piece_length())) as u32;
+        let used = request.length.min(count - request.index) as usize * 32;
+        layers
+            .entry(request.pieces_root)
+            .or_default()
+            .entry(request.index)
+            .or_insert_with(|| hashes[..used].to_vec());
+        Ok(())
     }
 }
 impl Peer {
@@ -224,9 +427,9 @@ impl Peer {
     fn frame(
         &mut self,
         frame: &Frame,
-        hash: InfoHashV1,
+        hash: TorrentIdentity,
         profile: Profile,
-    ) -> io::Result<Option<OwnedMetainfo>> {
+    ) -> io::Result<Option<InfoMetainfo>> {
         let cap = (crate::engine::profile::MAX_META - 8) as u32;
         match frame.message() {
             Message::Extended { id: 0, payload } => {
@@ -265,13 +468,19 @@ impl Peer {
                         self.requested = None;
                         self.next_piece += 1;
                         if self.bytes.len() == total_size as usize {
-                            if Sha1::digest(&self.bytes).as_slice() != hash.as_bytes() {
+                            if !hash.matches_info_bytes(&self.bytes) {
                                 return Err(invalid_data_text("metadata info hash mismatch"));
                             }
-                            let mut outer = b"d4:info".to_vec();
-                            outer.extend_from_slice(&self.bytes);
-                            outer.push(b'e');
-                            return profile.parse_owned(&outer).map(Some).map_err(Into::into);
+                            let info = profile.parse_info(&self.bytes)?;
+                            let known = info.info_hash();
+                            if hash.v1().is_some_and(|hash| known.v1() != Some(hash))
+                                || hash.v2().is_some_and(|hash| known.v2() != Some(hash))
+                            {
+                                return Err(invalid_data_text(
+                                    "metadata format does not match magnet topics",
+                                ));
+                            }
+                            return Ok(Some(info));
                         }
                     }
                     metadata::Kind::Data { .. } => {

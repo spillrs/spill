@@ -10,7 +10,7 @@ pub(in crate::engine) mod shell;
 pub mod telemetry;
 
 use crate::engine::{profile::Profile, provisioning::DestinationBinding};
-use crate::protocol::{identity::InfoHashV1, magnet::Magnet, metainfo::OwnedMetainfo};
+use crate::protocol::{identity::TorrentIdentity, magnet::Magnet, metainfo::OwnedMetainfo};
 use std::{
     io,
     net::SocketAddr,
@@ -53,26 +53,35 @@ pub enum Destination {
 pub struct RecoveryState {
     pub binding: DestinationBinding,
     pub resume: Option<Vec<u8>>,
-    pub completed_announce: Option<bool>,
+    /// Per-swarm completion delivery: false is pending, true is acknowledged.
+    /// Keys are SHA-1 hashes or SHA-256 prefixes, not full torrent identities.
+    pub completed_announces: Vec<([u8; 20], bool)>,
 }
 
 /// Acknowledge an encoded resume checkpoint. Failure fails the execution.
 pub type Checkpoint = Box<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync>;
 
+/// Acknowledge completion delivery for one swarm's discovery key.
+pub type AnnounceCheckpoint = Box<dyn Fn([u8; 20], bool) -> io::Result<()> + Send + Sync>;
+
 /// Optional durable-record acknowledgements; failures fail the execution.
 /// Callbacks run on blocking threads and remain owned through stop. They must not
 /// synchronously wait on this execution or session shutdown.
 ///
-/// Metadata acknowledgement precedes destination preparation; binding acknowledgement
+/// Initial metadata acknowledgement precedes destination preparation; rebuilt-layer
+/// acknowledgement precedes its full-mode checkpoint. Binding acknowledgement
 /// precedes file creation; checkpoint acknowledgement precedes content completion.
 /// Tracker-delivery acknowledgement precedes advancing delivery state. Stop and
 /// shutdown join callbacks already in progress without a hard deadline.
 #[derive(Default)]
 pub struct Persistence {
+    /// Acknowledge magnet metainfo and background hybrid layer rebuilds.
+    /// Content completion does not wait for rebuilt layers; stop can cancel the rebuild.
     pub resolved: Option<Box<dyn Fn(OwnedMetainfo) -> io::Result<()> + Send + Sync>>,
     pub binding: Option<Box<dyn Fn(DestinationBinding) -> io::Result<()> + Send + Sync>>,
     pub checkpoint: Option<Checkpoint>,
-    pub completion_announce: Option<Box<dyn Fn(bool) -> io::Result<()> + Send + Sync>>,
+    /// Persist completion delivery separately for each swarm key.
+    pub completion_announce: Option<AnnounceCheckpoint>,
 }
 
 /// Execution inputs. Construct with [`Self::new`], then set policy, resource
@@ -108,8 +117,9 @@ pub(in crate::engine) struct Network {
 /// Fully constructed runtime inputs; no builder placeholders or consumed storage.
 pub(in crate::engine) struct RuntimeOptions {
     pub(in crate::engine) reannounce: watch::Receiver<()>,
-    pub(in crate::engine) completed_announce: Option<bool>,
-    pub(in crate::engine) announce_checkpoint: Arc<dyn Fn(bool) -> io::Result<()> + Send + Sync>,
+    pub(in crate::engine) completed_announces: Vec<([u8; 20], bool)>,
+    pub(in crate::engine) announce_checkpoint:
+        Arc<dyn Fn([u8; 20], bool) -> io::Result<()> + Send + Sync>,
     pub(in crate::engine) settings: crate::engine::settings::TorrentSettings,
     pub(in crate::engine) metainfo: OwnedMetainfo,
     pub(in crate::engine) profile: Profile,
@@ -210,8 +220,10 @@ pub enum TorrentRetryStatus {
 
 /// Latest observations, not an event backlog or a durable resume record.
 /// `written_payload_bytes` means socket-written bytes, not remote receipt.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TorrentStatus {
+    /// Full known hashes, including aliases learned from authenticated metainfo.
+    pub identity: TorrentIdentity,
     pub progress: TorrentProgress,
     pub diagnostics: Option<Arc<TorrentDiagnostics>>,
 }
@@ -230,13 +242,23 @@ pub struct TorrentDiagnostics {
     pub peers: Vec<telemetry::PeerStatus>,
     pub trackers: Vec<telemetry::TrackerStatus>,
     pub web_seeds: Vec<telemetry::WebSeedStatus>,
-    pub dht: Option<telemetry::DhtStatus>,
+    /// Independent lookup state for each enabled swarm.
+    pub dht: Vec<telemetry::DhtStatus>,
     pub retry: TorrentRetryStatus,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct TorrentProgress {
     pub phase: TorrentPhase,
+    /// Validated metainfo sufficient for payload verification is available.
+    pub metadata_ready: bool,
+    /// Info bytes and all supplied magnet topics have passed validation.
+    pub info_validated: bool,
+    /// Hybrid payload uses SHA-1 until v2 layers are rebuilt from verified data.
+    pub layers_pending: bool,
+    /// Authenticated v2 layer bytes acquired, excluding proof siblings.
+    pub hash_bytes: u64,
+    pub hash_total_bytes: u64,
     pub verified_bytes: u64,
     pub total_bytes: u64,
     pub wanted_bytes: u64,
@@ -274,7 +296,7 @@ pub struct TorrentHandle {
     stop: watch::Sender<bool>,
     status: watch::Receiver<TorrentStatus>,
     join: Arc<JoinBarrier>,
-    hash: InfoHashV1,
+    hash: TorrentIdentity,
     metadata: watch::Receiver<lifecycle::Metadata>,
     recovery: Arc<std::sync::Mutex<Option<RecoveryState>>>,
     inspection: bool,
@@ -299,7 +321,9 @@ struct JoinState {
     status: Option<watch::Sender<TorrentStatus>>,
 }
 impl TorrentHandle {
-    pub fn info_hash(&self) -> InfoHashV1 {
+    /// Identity supplied at admission, unchanged by magnet resolution.
+    /// Use [`Self::snapshot`]'s identity for all learned hashes.
+    pub fn info_hash(&self) -> TorrentIdentity {
         self.hash
     }
     pub fn metainfo(&self) -> Option<OwnedMetainfo> {
@@ -445,7 +469,10 @@ impl TorrentHandle {
             _ => None,
         };
         let initial = TorrentStatus {
+            identity: hash,
             progress: TorrentProgress {
+                metadata_ready: metainfo.is_some(),
+                layers_pending: metainfo.as_ref().is_some_and(OwnedMetainfo::layers_pending),
                 total_bytes: metainfo.as_ref().map_or(0, |m| m.layout().total_length()),
                 ..Default::default()
             },
@@ -470,6 +497,7 @@ impl TorrentHandle {
         let inner_status = status.clone();
         let inner_recovery = recovery.clone();
         let (start, installed) = tokio::sync::oneshot::channel();
+        let resolution = retirement.clone();
         let runtime = tokio::spawn(
             async move {
                 installed.await.expect("execution installed");
@@ -487,6 +515,7 @@ impl TorrentHandle {
                         metadata,
                         recovery: inner_recovery,
                         inspection,
+                        retirement: resolution,
                     },
                 )
                 .await

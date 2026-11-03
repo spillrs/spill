@@ -1,11 +1,12 @@
 //! Bounded resume records: original info-hash, exact bitfield and opaque backend
 //! fingerprint. A checksum rejects torn/corrupt records; there are no migrations.
-use crate::protocol::metainfo::OwnedMetainfo;
+use crate::protocol::{identity::TorrentIdentity, metainfo::OwnedMetainfo};
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 use std::io;
 
 const MAGIC: &[u8; 8] = b"SPILLR01";
-/// The file backend records 40 bytes per file.
+/// The file backend records 40 bytes per data file, excluding virtual padding.
 pub const MAX_FILES: usize = 100_000;
 const MAX_FINGERPRINT: usize = 40 * MAX_FILES;
 /// Last checkpoint's display-only counts; fingerprint validation is still required
@@ -44,9 +45,9 @@ pub fn encode(meta: &OwnedMetainfo, verified: &[u8], fingerprint: &[u8]) -> io::
     if fingerprint.len() > MAX_FINGERPRINT || !valid_bits(meta, verified) {
         return Err(invalid());
     }
-    let mut out = Vec::with_capacity(56 + verified.len() + fingerprint.len());
+    let mut out = Vec::with_capacity(68 + verified.len() + fingerprint.len());
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(meta.info_hash().as_bytes());
+    out.extend_from_slice(&binding(meta));
     out.extend_from_slice(&meta.layout().piece_count().to_le_bytes());
     out.extend_from_slice(&(fingerprint.len() as u32).to_le_bytes());
     out.extend_from_slice(verified);
@@ -57,26 +58,42 @@ pub fn encode(meta: &OwnedMetainfo, verified: &[u8], fingerprint: &[u8]) -> io::
 }
 pub fn decode(meta: &OwnedMetainfo, bytes: &[u8]) -> io::Result<Resume> {
     let bits = meta.layout().piece_count().div_ceil(8) as usize;
-    if bytes.len() < 56 + bits
+    if bytes.len() < 68 + bits
         || &bytes[..8] != MAGIC
-        || &bytes[8..28] != meta.info_hash().as_bytes()
-        || u32::from_le_bytes(bytes[28..32].try_into().expect("header"))
+        || bytes[8..40] != binding(meta)
+        || u32::from_le_bytes(bytes[40..44].try_into().expect("header"))
             != meta.layout().piece_count()
     {
         return Err(invalid());
     }
-    let length = u32::from_le_bytes(bytes[32..36].try_into().expect("header")) as usize;
+    let length = u32::from_le_bytes(bytes[44..48].try_into().expect("header")) as usize;
     if length > MAX_FINGERPRINT
-        || bytes.len() != 56 + bits + length
+        || bytes.len() != 68 + bits + length
         || Sha1::digest(&bytes[..bytes.len() - 20])[..] != bytes[bytes.len() - 20..]
-        || !valid_bits(meta, &bytes[36..36 + bits])
+        || !valid_bits(meta, &bytes[48..48 + bits])
     {
         return Err(invalid());
     }
     Ok(Resume {
-        verified: bytes[36..36 + bits].to_vec(),
-        fingerprint: bytes[36 + bits..bytes.len() - 20].to_vec(),
+        verified: bytes[48..48 + bits].to_vec(),
+        fingerprint: bytes[48 + bits..bytes.len() - 20].to_vec(),
     })
+}
+fn binding(meta: &OwnedMetainfo) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update([match meta.info_hash() {
+        TorrentIdentity::V1(_) => 1,
+        TorrentIdentity::V2(_) => 2,
+        TorrentIdentity::Hybrid(..) => 3,
+    }]);
+    hash.update([u8::from(meta.layers_pending())]);
+    if let Some(v1) = meta.info_hash().v1() {
+        hash.update(v1.as_bytes());
+    }
+    if let Some(v2) = meta.info_hash().v2() {
+        hash.update(v2.as_bytes());
+    }
+    hash.finalize().into()
 }
 fn valid_bits(meta: &OwnedMetainfo, bits: &[u8]) -> bool {
     let count = meta.layout().piece_count();

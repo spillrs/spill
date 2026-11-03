@@ -66,6 +66,11 @@ async fn main() -> io::Result<()> {
             let announce = record.with_extension("announce");
             // Only a recorded binding authorizes reopening partial payload;
             // without one, existing files are adopted only if already complete.
+            let completed_announces: Vec<([u8; 20], bool)> = match load(&announce).await? {
+                Some(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other)?,
+                None => Vec::new(),
+            };
+            let announce_states = std::sync::Mutex::new(completed_announces.clone());
             let destination = match load(&binding).await? {
                 Some(bytes) => {
                     let (root, binding): (PathBuf, DestinationBinding) =
@@ -80,18 +85,12 @@ async fn main() -> io::Result<()> {
                             ),
                         ));
                     }
-                    let completed_announce = match load(&announce).await? {
-                        Some(bytes) => {
-                            Some(serde_json::from_slice(&bytes).map_err(io::Error::other)?)
-                        }
-                        None => None,
-                    };
                     Destination::Recover {
                         root,
                         state: RecoveryState {
                             binding,
                             resume: load(&resume).await?,
-                            completed_announce,
+                            completed_announces,
                         },
                     }
                 }
@@ -107,10 +106,16 @@ async fn main() -> io::Result<()> {
                 )
             }));
             options.persistence.checkpoint = Some(Box::new(move |bytes| save(&resume, &bytes)));
-            options.persistence.completion_announce = Some(Box::new(move |delivered| {
+            options.persistence.completion_announce = Some(Box::new(move |hash, delivered| {
+                let mut states = announce_states.lock().unwrap();
+                if let Some((_, state)) = states.iter_mut().find(|(key, _)| *key == hash) {
+                    *state = delivered;
+                } else {
+                    states.push((hash, delivered));
+                }
                 save(
                     &announce,
-                    &serde_json::to_vec(&delivered).map_err(io::Error::other)?,
+                    &serde_json::to_vec(&*states).map_err(io::Error::other)?,
                 )
             }));
             handles.push(session.admit(options)?);

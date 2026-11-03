@@ -3,7 +3,7 @@
 
 use super::{ConnectionId, UnsolicitedBudget};
 use crate::engine::core::requests;
-use crate::protocol::peer::message::BlockRequest;
+use crate::protocol::peer::message::{BlockRequest, WireMode};
 use std::time::Instant;
 use std::{collections::VecDeque, io};
 
@@ -46,6 +46,12 @@ impl DownloadRate {
     }
 }
 
+impl PeerState {
+    pub(in crate::engine) fn rejects_requests(&self) -> bool {
+        self.fast || self.wire_mode == WireMode::V2
+    }
+}
+
 pub(in crate::engine) struct PeerState {
     pub(in crate::engine) connection: ConnectionId,
     pub(in crate::engine) peer_id: Option<[u8; 20]>,
@@ -57,6 +63,7 @@ pub(in crate::engine) struct PeerState {
     pub(in crate::engine) first_message: bool,
     pub(in crate::engine) choked: bool,
     pub(in crate::engine) fast: bool,
+    pub(in crate::engine) wire_mode: WireMode,
     pub(in crate::engine) remote_dht: bool,
     pub(in crate::engine) send_dht_port: bool,
     pub(in crate::engine) dht_port_seen: bool,
@@ -70,6 +77,7 @@ pub(in crate::engine) struct PeerState {
     pub(in crate::engine) dirty: bool,
     pub(in crate::engine) cancels: VecDeque<BlockRequest>,
     pub(in crate::engine) rejects: VecDeque<BlockRequest>,
+    pub(super) hashes: VecDeque<super::hashes::Job>,
     pub(in crate::engine) send_bitfield: bool,
     pub(in crate::engine) output_blocked: bool,
     pub(in crate::engine) retiring: bool,
@@ -82,9 +90,9 @@ pub(in crate::engine) struct PeerState {
     pub(in crate::engine) first_needed: Option<u32>,
     /// Lowest verified piece not yet announced; no per-piece HAVE queue.
     pub(in crate::engine) pending_have: Option<u32>,
-    /// Authorization for still-unfulfilled blocks of this piece attempt. Bounded
-    /// by MAX_REQUESTS; retained across Choke, cleared on fulfillment/restart.
     pub(in crate::engine) asked: requests::Asked,
+    /// V2 still owes an answer after cancellation or a piece restart.
+    pub(in crate::engine) kept: Vec<(BlockRequest, Instant)>,
     pub(in crate::engine) download_rate: DownloadRate,
     pub(in crate::engine) uploaded: u64,
     pub(in crate::engine) output_capacity: usize,

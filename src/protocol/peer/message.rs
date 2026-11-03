@@ -1,4 +1,4 @@
-//! Length-prefixed peer frames (BEP 3, port from BEP 5, envelope from BEP 10).
+//! Length-prefixed peer frames (BEP 3/5/6/10/52).
 //!
 //! Structural decoding is separate from layout validation and connection policy.
 //! Unknown message/extension payloads are preserved, not advertised as supported.
@@ -7,6 +7,15 @@
 use std::fmt;
 
 use crate::protocol::metainfo::Layout;
+
+use super::hash::{self, HashRequest};
+
+/// Negotiated peer protocol; independent of the v1 fast-extension bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireMode {
+    V1,
+    V2,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockRequest {
@@ -17,8 +26,14 @@ pub struct BlockRequest {
 
 impl BlockRequest {
     /// Validate against the actual piece size, including the final short piece.
-    /// The caller chooses its accepted block limit; there is no alignment rule.
-    pub fn validate(&self, layout: &Layout<'_>, max_block_length: u32) -> Result<(), Error> {
+    /// The caller chooses its block limit and whether to exclude virtual padding;
+    /// there is no alignment rule.
+    pub fn validate(
+        &self,
+        layout: &Layout<'_>,
+        max_block_length: u32,
+        limit_to_data_end: bool,
+    ) -> Result<(), Error> {
         let piece = layout
             .piece_range(self.index)
             .ok_or(Error::PieceIndex(self.index))?;
@@ -32,7 +47,10 @@ impl BlockRequest {
             .begin
             .checked_add(self.length)
             .ok_or(Error::BlockRange)?;
-        if u64::from(end) > piece.end - piece.start {
+        if u64::from(end) > piece.end - piece.start
+            || (limit_to_data_end
+                && end > layout.piece_data_end(self.index).expect("validated piece"))
+        {
             return Err(Error::BlockRange);
         }
         Ok(())
@@ -68,6 +86,13 @@ pub enum Message<'a> {
         id: u8,
         payload: &'a [u8],
     },
+    HashRequest(HashRequest),
+    Hashes {
+        request: HashRequest,
+        /// Concatenated 32-byte hashes, base layer first, then proof nodes.
+        hashes: &'a [u8],
+    },
+    HashReject(HashRequest),
     /// Unknown outer ID.
     /// The engine must decide whether to reject, ignore or handle it.
     Unknown {
@@ -106,6 +131,7 @@ pub enum Error {
         actual: usize,
     },
     BitfieldSpareBits,
+    HashRequest(hash::Error),
 }
 
 impl fmt::Display for Error {
@@ -118,6 +144,7 @@ impl std::error::Error for Error {}
 /// Frame-body budget derived from known layout and caller-selected payload
 /// limits. Includes message/extension IDs, excludes the four-byte length prefix.
 /// This is a size bound, NOT a promise to accept/advertise any extension.
+/// Hash exchange callers must also budget for their accepted hash/proof count.
 pub fn frame_limit(
     piece_count: u32,
     max_block_length: u32,
@@ -183,8 +210,15 @@ impl<'a> Message<'a> {
                 id: body[0],
                 payload: &body[1..],
             },
+            21 => Self::HashRequest(read_hash_request(body)),
+            22 => Self::Hashes {
+                request: read_hash_request(body),
+                hashes: &body[48..],
+            },
+            23 => Self::HashReject(read_hash_request(body)),
             id => Self::Unknown { id, payload: body },
         };
+        message.validate_hash_payload()?;
         Ok((message, total))
     }
 
@@ -232,6 +266,22 @@ impl<'a> Message<'a> {
                 output[5] = *id;
                 output[6..total].copy_from_slice(payload);
             }
+            Self::HashRequest(request)
+            | Self::HashReject(request)
+            | Self::Hashes { request, .. } => {
+                output[5..37].copy_from_slice(&request.pieces_root);
+                for (chunk, value) in output[37..53].as_chunks_mut::<4>().0.iter_mut().zip([
+                    request.base_layer,
+                    request.index,
+                    request.length,
+                    request.proof_layers,
+                ]) {
+                    chunk.copy_from_slice(&value.to_be_bytes());
+                }
+                if let Self::Hashes { hashes, .. } = self {
+                    output[53..total].copy_from_slice(hashes);
+                }
+            }
             _ => {}
         }
         Ok(total)
@@ -242,7 +292,12 @@ impl<'a> Message<'a> {
     /// bitfield ordering, negotiate extensions, or reject unknown messages.
     /// Structural decoding intentionally permits empty blocks and arbitrary
     /// indices so the caller can choose how to handle malformed/late traffic.
-    pub fn validate_layout(&self, layout: &Layout<'_>, max_block_length: u32) -> Result<(), Error> {
+    pub fn validate_layout(
+        &self,
+        layout: &Layout<'_>,
+        max_block_length: u32,
+        limit_to_data_end: bool,
+    ) -> Result<(), Error> {
         match self {
             Self::Have(index) | Self::SuggestPiece(index) | Self::AllowedFast(index)
                 if *index >= layout.piece_count() =>
@@ -269,7 +324,7 @@ impl<'a> Message<'a> {
                 Ok(())
             }
             Self::Request(request) | Self::Cancel(request) | Self::Reject(request) => {
-                request.validate(layout, max_block_length)
+                request.validate(layout, max_block_length, limit_to_data_end)
             }
             Self::Piece {
                 index,
@@ -280,9 +335,26 @@ impl<'a> Message<'a> {
                 begin: *begin,
                 length: u32::try_from(block.len()).map_err(|_| Error::LengthOverflow)?,
             }
-            .validate(layout, max_block_length),
+            .validate(layout, max_block_length, limit_to_data_end),
             _ => Ok(()),
         }
+    }
+
+    fn validate_hash_payload(&self) -> Result<(), Error> {
+        match self {
+            Self::HashRequest(request)
+            | Self::HashReject(request)
+            | Self::Hashes { request, .. } => {
+                let count = request.response_hash_count().map_err(Error::HashRequest)?;
+                if let Self::Hashes { hashes, .. } = self
+                    && hashes.len() as u64 != u64::from(count) * 32
+                {
+                    return Err(Error::HashRequest(hash::Error::HashCount));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn id(&self) -> Option<u8> {
@@ -304,11 +376,15 @@ impl<'a> Message<'a> {
             Self::Reject(_) => 16,
             Self::AllowedFast(_) => 17,
             Self::Extended { .. } => 20,
+            Self::HashRequest(_) => 21,
+            Self::Hashes { .. } => 22,
+            Self::HashReject(_) => 23,
             Self::Unknown { id, .. } => *id,
         })
     }
 
     fn body_length(&self) -> Result<u32, Error> {
+        self.validate_hash_payload()?;
         let (header, payload) = match self {
             Self::KeepAlive => (0, 0),
             Self::Choke
@@ -323,8 +399,10 @@ impl<'a> Message<'a> {
             Self::Bitfield(bits) => (1, bits.len()),
             Self::Piece { block, .. } => (9, block.len()),
             Self::Extended { payload, .. } => (2, payload.len()),
+            Self::HashRequest(_) | Self::HashReject(_) => (49, 0),
+            Self::Hashes { hashes, .. } => (49, hashes.len()),
             Self::Unknown { id, payload } => {
-                if *id <= 9 || (13..=17).contains(id) || *id == 20 {
+                if *id <= 9 || (13..=17).contains(id) || (20..=23).contains(id) {
                     return Err(Error::KnownMessageId(*id));
                 }
                 (1, payload.len())
@@ -358,6 +436,8 @@ fn check_length(id: u8, length: u32) -> Result<(), Error> {
         7 => length >= 9,
         9 => length == 3,
         20 => length >= 2,
+        21 | 23 => length == 49,
+        22 => length >= 113 && (length - 49).is_multiple_of(32),
         _ => true,
     };
     if valid {
@@ -374,6 +454,15 @@ fn read_request(body: &[u8]) -> BlockRequest {
         index: read_u32(body),
         begin: read_u32(&body[4..]),
         length: read_u32(&body[8..]),
+    }
+}
+fn read_hash_request(body: &[u8]) -> HashRequest {
+    HashRequest {
+        pieces_root: body[..32].try_into().expect("checked hash header"),
+        base_layer: read_u32(&body[32..]),
+        index: read_u32(&body[36..]),
+        length: read_u32(&body[40..]),
+        proof_layers: read_u32(&body[44..]),
     }
 }
 fn write_pair(output: &mut [u8], index: u32, begin: u32) {

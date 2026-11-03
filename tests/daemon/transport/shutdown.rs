@@ -18,6 +18,8 @@ async fn utp_shutdown_allows_fin_ack_before_reset() {
         .parse_owned(&meta)
         .unwrap()
         .info_hash()
+        .v1()
+        .unwrap()
         .as_bytes();
     let address: std::net::SocketAddr = daemon.call(json!({"op":"health"})).await["listen"]
         .as_str()

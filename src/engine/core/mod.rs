@@ -6,6 +6,7 @@ pub(in crate::engine) mod connection;
 pub(in crate::engine) mod extensions;
 pub(in crate::engine) mod fault;
 pub(in crate::engine) mod file_progress;
+mod hashes;
 pub(in crate::engine) mod live;
 pub(in crate::engine) mod message;
 mod messages;
@@ -29,10 +30,11 @@ use crate::engine::{
     selection,
 };
 use crate::protocol::{
-    identity::InfoHashV1,
+    identity::TorrentIdentity,
     metainfo::OwnedMetainfo,
     peer::{
         Handshake,
+        hash::HashRequest,
         message::{BlockRequest, Message},
     },
 };
@@ -53,6 +55,15 @@ use std::{
 };
 
 pub(in crate::engine) use crate::engine::settings::TorrentSettings;
+
+pub(in crate::engine) fn swarm_identity(meta: &OwnedMetainfo) -> TorrentIdentity {
+    if meta.layers_pending() {
+        TorrentIdentity::V1(meta.info_hash().v1().expect("pending hybrid"))
+    } else {
+        meta.info_hash()
+    }
+}
+
 /// Capacities are reservations available to this single owner, not remote hints.
 pub(in crate::engine) struct Capacity {
     pub(in crate::engine) id: ConnectionId,
@@ -91,6 +102,11 @@ pub(in crate::engine) enum Input<'a> {
     ReadDone {
         request: BlockRequest,
         block: Option<SharedBlock>,
+    },
+    LeavesDone {
+        id: ConnectionId,
+        request: HashRequest,
+        leaves: Vec<[u8; 32]>,
     },
     Ready {
         peers: &'a [Capacity],
@@ -133,6 +149,11 @@ pub(in crate::engine) enum Action {
     Read {
         request: BlockRequest,
     },
+    ReadLeaves {
+        id: ConnectionId,
+        request: HashRequest,
+        piece: u32,
+    },
     Discard {
         piece: u32,
     },
@@ -147,7 +168,6 @@ pub(in crate::engine) enum Action {
         addr: SocketAddr,
     },
     PeerHints {
-        id: ConnectionId,
         contacts: Vec<SocketAddr>,
     },
     WakeAt(Instant),
@@ -155,6 +175,10 @@ pub(in crate::engine) enum Action {
     Stalled(Stall),
     Observed(Event),
     MetadataResolved(OwnedMetainfo),
+    MetadataProgress {
+        hash_bytes: u64,
+        hash_total_bytes: u64,
+    },
     Failed(io::Error),
 }
 
@@ -217,6 +241,8 @@ pub(in crate::engine) struct Torrent {
     write_capacity: usize,
     writing: HashMap<u32, usize>,
     reads: Vec<Read>,
+    leaf_reads: usize,
+    hash_files: HashMap<[u8; 32], Vec<usize>>,
     flushing: bool,
     flushed: bool,
     failed: bool,
@@ -248,6 +274,13 @@ impl Torrent {
             .sum();
         let wanted_remaining = meta.layout().piece_count() - verified_count;
         let mut torrent = Self::empty(now, limits, picker);
+        if !meta.layers_pending() {
+            for (index, file) in meta.layout().files().iter().enumerate() {
+                if let Some(root) = file.pieces_root() {
+                    torrent.hash_files.entry(root).or_default().push(index);
+                }
+            }
+        }
         torrent.meta = Manifest(Some(meta));
         torrent.excluded = verified.clone();
         torrent.verified = verified;
@@ -303,6 +336,8 @@ impl Torrent {
             write_capacity: 0,
             writing: HashMap::new(),
             reads: Vec::new(),
+            leaf_reads: 0,
+            hash_files: HashMap::new(),
             flushing: false,
             flushed: false,
             failed: false,
@@ -328,7 +363,10 @@ impl Torrent {
             return Vec::new();
         }
         if let Input::PeerConnected { id, handshake } = &input
-            && (handshake.info_hash != *self.info_hash().as_bytes()
+            && (!self
+                .info_hash()
+                .wire_keys()
+                .any(|key| key == handshake.info_hash)
                 || self.own_peer_id == Some(handshake.peer_id))
         {
             self.actions.push(Action::Disconnect { id: *id });
@@ -378,6 +416,36 @@ impl Torrent {
             Input::PeerClosed { id } => {
                 if let Some(event) = self.on_close(id)? {
                     self.deferred.push_back(event);
+                }
+            }
+            Input::LeavesDone {
+                id,
+                request,
+                leaves,
+            } => {
+                self.leaf_reads -= 1;
+                if let Some(&peer) = self.remote_slots.get(&id) {
+                    let job = self.remotes[peer].hashes.front().expect("pending leaf job");
+                    assert_eq!(job.request, request, "leaf response correlation");
+                    let hashes::Work::Leaves {
+                        file,
+                        started: true,
+                        ..
+                    } = job.work
+                    else {
+                        unreachable!("started leaf job")
+                    };
+                    let response = (!leaves.is_empty())
+                        .then(|| hashes::response(&self.meta, file, request, &leaves));
+                    self.remotes[peer]
+                        .hashes
+                        .front_mut()
+                        .expect("leaf job")
+                        .work = hashes::Work::Reply {
+                        hashes: response,
+                        charge: 0,
+                    };
+                    self.remotes[peer].dirty = true;
                 }
             }
             Input::Ready { peers, writes } => {
@@ -510,7 +578,7 @@ impl Torrent {
             self.remotes[peer].output_blocked = self.remotes[peer].output_capacity == 0;
             self.remotes[peer].upload_granted = self.choker.granted(self.remotes[peer].connection);
             if !self.remotes[peer].upload_granted {
-                if self.remotes[peer].fast {
+                if self.remotes[peer].rejects_requests() {
                     let queued: Vec<_> = self.remotes[peer].uploads.drain(..).collect();
                     self.remotes[peer].rejects.extend(queued);
                 } else {
@@ -521,6 +589,7 @@ impl Torrent {
         }
         self.schedule_requests()?;
         self.pump_uploads()?;
+        self.pump_hashes()?;
         self.drain_hints();
         if self.wanted_complete()
             && !self.duplex.completion_reported
@@ -561,6 +630,12 @@ impl Torrent {
             .picker
             .next_deadline()
             .into_iter()
+            .chain(
+                self.remotes
+                    .iter()
+                    .filter(|p| !p.retiring)
+                    .flat_map(|p| p.kept.iter().map(|(_, at)| *at)),
+            )
             .chain(self.choker.deadline())
             .chain(self.rate_deadline)
             .chain((!self.remotes.is_empty()).then_some(self.turnover_due))
@@ -635,7 +710,7 @@ impl Torrent {
     pub(in crate::engine) fn rate_waiting(&self) -> bool {
         self.rate_deadline.is_some() && !self.remotes.is_empty()
     }
-    pub(in crate::engine) fn info_hash(&self) -> InfoHashV1 {
+    pub(in crate::engine) fn info_hash(&self) -> TorrentIdentity {
         self.meta.0.as_ref().map_or_else(
             || self.metadata.as_ref().expect("metadata phase").hash,
             |meta| meta.info_hash(),
@@ -651,10 +726,12 @@ impl Torrent {
             .collect()
     }
     pub(in crate::engine) fn upload_reads_in_flight(&self) -> usize {
-        self.reads
-            .iter()
-            .filter(|read| read.result.is_none())
-            .count()
+        self.leaf_reads
+            + self
+                .reads
+                .iter()
+                .filter(|read| read.result.is_none())
+                .count()
     }
     pub(in crate::engine) fn upload_reads_finished(&self) -> usize {
         self.reads

@@ -196,7 +196,7 @@ async fn magnet_resolves_metadata_then_downloads_and_seeds() {
     use tokio::net::UdpSocket;
     let profile = Profile::DEFAULT;
     let meta = profile.parse_owned(&metainfo(None)).unwrap();
-    let hash = meta.info_hash();
+    let hash = meta.info_hash().v1().unwrap();
     let seed = Session::bind(
         NetworkOptions {
             listen: "127.0.0.1:0".parse().unwrap(),
@@ -215,7 +215,13 @@ async fn magnet_resolves_metadata_then_downloads_and_seeds() {
     ))
     .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
-        while !seed.torrent(hash).unwrap().snapshot().progress.ready {
+        while !seed
+            .torrent(spill::protocol::identity::TorrentIdentity::V1(hash))
+            .unwrap()
+            .snapshot()
+            .progress
+            .ready
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })

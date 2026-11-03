@@ -13,7 +13,7 @@
 | `checking` | Running an explicit `recheck`. |
 | `downloading` | Transferring data. |
 | `seeding` | Complete (for the selected files) and uploading. |
-| `paused` | Stopped by you or by a seed goal. Stays stopped across restarts. |
+| `paused` | Stopped by you, a seed goal or a permanent input error. Stays stopped across restarts. |
 | `retrying` | Failed; spill retries automatically. `get` shows the error and when the next attempt happens. |
 
 ## Queueing
@@ -31,6 +31,8 @@ To make a `.torrent` from your own files first, use
 does not automatically add the torrent.
 
 Add a local `.torrent` file, an HTTP(S) torrent URL, or a magnet link.
+Metainfo and magnets may be v1, v2-only or hybrid; see
+[v2 and hybrid torrents](v2.md). Private torrents require a `.torrent` file.
 The daemon fetches torrent URLs and checks the file before adding it. A magnet
 link is added right away and resolves its metadata from peers found via its
 `tr=` trackers and the DHT; trackers from the magnet are kept for the download.
@@ -138,6 +140,11 @@ it), it shows the error and enters `retrying`. spill retries after 10 seconds,
 doubling the delay each time up to 30 minutes. Pausing and resuming clears the
 delay. Problems with a single peer, tracker or web seed never fail a torrent;
 that source is dropped or retried on its own.
+
+Permanent input errors pause the torrent instead of retrying, preserving
+`last_error` with `retry_at` set to zero across restarts. This includes private
+magnets and duplicate hashes learned during metadata resolution. Use a `.torrent`
+file for a private torrent; remove a duplicate rather than retrying it.
 
 ## Removing torrents
 

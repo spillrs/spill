@@ -13,6 +13,7 @@
 # How spill behaves
 
 - [Torrents](torrents.md)
+- [v2 and hybrid torrents](v2.md)
 - [Networking](networking.md)
 - [Private trackers](private-trackers.md)
 - [Limits and performance](limits.md)

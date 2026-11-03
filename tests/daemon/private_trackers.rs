@@ -118,7 +118,7 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
     peer.write_all(
         &spill::protocol::peer::Handshake {
             reserved,
-            info_hash: *meta.info_hash().as_bytes(),
+            info_hash: meta.info_hash().wire_key(),
             peer_id: [42; 20],
         }
         .encode(),
@@ -240,7 +240,7 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let row = daemon.call(json!({"op":"get","id":id})).await;
-            if row["completed_announce"] == true
+            if row["completed_announces"][0]["delivered"] == true
                 && row["transfer"]["trackers"][0]["next_announce_ms"]
                     .as_u64()
                     .is_some_and(|ms| ms > 110_000)
@@ -330,7 +330,7 @@ async fn adopted_private_seed_never_announces_completed() {
     let id = daemon.add(&bytes, None).await;
     for attempt in 0..2 {
         let row = daemon.state(&id, "seeding").await;
-        assert!(row["completed_announce"].is_null(), "{row}");
+        assert_eq!(row["completed_announces"], json!([]), "{row}");
         let started = tokio::time::timeout(Duration::from_secs(5), events.recv())
             .await
             .unwrap()

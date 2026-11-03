@@ -26,6 +26,24 @@ async fn client_commands_are_top_level_without_a_ctl_alias() {
     let root = Temp::new();
     let source = WebSeed::new().await;
     let mut daemon = Daemon::start(&root.0, "web_seeds=true", None).await;
+    {
+        use serde_json::json;
+        let output = root.0.join("unsupported");
+        for topic in [
+            format!("urn:btmh:1120{}", "00".repeat(32)),
+            format!("urn:btmh:1220{}", "00".repeat(31)),
+        ] {
+            let response = daemon.raw(json!({"op":"add", "magnet":format!("magnet:?xt={topic}"), "output_dir":output})).await;
+            assert_ne!(response["code"], 0, "{response}");
+        }
+        assert!(
+            client(&daemon, &["list"]).await["torrents"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!output.exists());
+    }
     let torrent = root.0.join("x.torrent");
     std::fs::write(&torrent, metainfo(Some(&source.url))).unwrap();
     let added = client(

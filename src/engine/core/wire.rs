@@ -17,10 +17,7 @@ impl Torrent {
                 let mut contacts = std::mem::take(&mut peer.extensions.pex.received);
                 contacts.retain(|a| !local.contains(a) && Some(*a) != peer.extensions.pex.endpoint);
                 if !contacts.is_empty() {
-                    self.actions.push(Action::PeerHints {
-                        id: peer.connection,
-                        contacts,
-                    });
+                    self.actions.push(Action::PeerHints { contacts });
                 }
             }
             if self.dht_port.is_some()
@@ -52,7 +49,14 @@ impl Torrent {
             if !self.send(peer, Message::Cancel(request))? {
                 return Ok(());
             }
-            self.remotes[peer].asked.remove_request(&request);
+            let remote = &mut self.remotes[peer];
+            if remote.asked.remove_request(&request)
+                && remote.wire_mode == crate::protocol::peer::message::WireMode::V2
+            {
+                remote
+                    .kept
+                    .push((request, self.now + crate::engine::profile::REQUEST_TIMEOUT));
+            }
             self.remotes[peer].cancels.pop_front();
         }
         if self.remotes[peer].send_bitfield {
@@ -197,7 +201,7 @@ impl Torrent {
         }
         Ok(sent)
     }
-    fn queue_frame(&mut self, peer: usize, msg: Frame) -> io::Result<bool> {
+    pub(super) fn queue_frame(&mut self, peer: usize, msg: Frame) -> io::Result<bool> {
         let remote = &mut self.remotes[peer];
         if remote.retiring || remote.output_capacity == 0 {
             remote.output_blocked = true;
@@ -218,7 +222,15 @@ impl Torrent {
         index: u32,
         begin: u32,
     ) -> io::Result<Option<Event>> {
-        if let Err(error) = self.remotes[position].unsolicited.charge(wire_bytes) {
+        if self.remotes[position].wire_mode == crate::protocol::peer::message::WireMode::V2 {
+            let request = self.remotes[position]
+                .asked
+                .iter()
+                .find(|r| r.index == index && r.begin == begin)
+                .copied()
+                .expect("authorized v2 piece");
+            self.remotes[position].asked.remove_request(&request);
+        } else if let Err(error) = self.remotes[position].unsolicited.charge(wire_bytes) {
             self.retire_peer(position, error)?;
             return Ok(None);
         }

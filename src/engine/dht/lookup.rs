@@ -4,7 +4,6 @@ use super::{
     Contact, Handle, NodeId, Query, Reply,
     routing::{self, K},
 };
-use crate::protocol::{identity::InfoHashV1, metainfo::OwnedMetainfo};
 use std::{
     collections::{HashMap, HashSet},
     future::{Future, poll_fn},
@@ -94,30 +93,16 @@ impl Requests {
     }
 }
 impl Handle {
-    async fn discover_stream(
-        &self,
-        meta: &OwnedMetainfo,
-        port: tokio::sync::watch::Receiver<u16>,
-        peers: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
-    ) -> io::Result<Lookup> {
-        if meta.is_private() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "private torrents cannot use DHT",
-            ));
-        }
-        self.lookup(meta.info_hash(), Some(port), peers).await
-    }
     pub(in crate::engine) async fn metadata_peers(
         &self,
-        hash: InfoHashV1,
+        hash: [u8; 20],
         peers: tokio::sync::mpsc::Sender<SocketAddr>,
     ) -> io::Result<Lookup> {
         self.lookup(hash, None, Some(peers)).await
     }
     async fn lookup(
         &self,
-        hash: InfoHashV1,
+        hash: [u8; 20],
         port: Option<tokio::sync::watch::Receiver<u16>>,
         peer_stream: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
     ) -> io::Result<Lookup> {
@@ -170,11 +155,11 @@ impl Handle {
     async fn lookup_family(
         &self,
         ipv6: bool,
-        hash: InfoHashV1,
+        hash: [u8; 20],
         port: Option<tokio::sync::watch::Receiver<u16>>,
         peer_stream: Option<tokio::sync::mpsc::Sender<SocketAddr>>,
     ) -> io::Result<Lookup> {
-        let target = NodeId(*hash.as_bytes());
+        let target = NodeId(hash);
         let mut closest: Vec<_> = self
             .closest(ipv6, target)
             .await?
@@ -324,7 +309,7 @@ pub(in crate::engine) enum DiscoveryEvent {
 }
 pub(in crate::engine) struct Discovery {
     handle: Handle,
-    meta: OwnedMetainfo,
+    pub(in crate::engine) hash: [u8; 20],
     port: tokio::sync::watch::Receiver<u16>,
     due: Instant,
     pending: Option<Pin<Box<dyn Future<Output = io::Result<Lookup>> + Send>>>,
@@ -338,18 +323,12 @@ pub(in crate::engine) struct Discovery {
 impl Discovery {
     pub(in crate::engine) fn new(
         handle: Handle,
-        meta: OwnedMetainfo,
+        hash: [u8; 20],
         port: tokio::sync::watch::Receiver<u16>,
-    ) -> io::Result<Self> {
-        if meta.is_private() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "private torrents cannot use DHT",
-            ));
-        }
-        Ok(Self {
+    ) -> Self {
+        Self {
             handle,
-            meta,
+            hash,
             peers: None,
             port,
             due: Instant::now(),
@@ -359,10 +338,11 @@ impl Discovery {
             last_announced: 0,
             last_peers: 0,
             last_error: None,
-        })
+        }
     }
     pub(in crate::engine) fn snapshot(&self) -> crate::engine::torrent::telemetry::DhtStatus {
         crate::engine::torrent::telemetry::DhtStatus {
+            swarm: self.hash,
             lookup_pending: self.pending.is_some(),
             next_lookup_ms: self
                 .due
@@ -383,9 +363,9 @@ impl Discovery {
             tokio::time::sleep_until(self.due).await;
             let (sender, peers) = tokio::sync::mpsc::channel(self.handle.max_peers.max(1));
             self.peers = Some(peers);
-            let (handle, meta, port) = (self.handle.clone(), self.meta.clone(), self.port.clone());
+            let (handle, hash, port) = (self.handle.clone(), self.hash, self.port.clone());
             self.pending = Some(Box::pin(async move {
-                handle.discover_stream(&meta, port, Some(sender)).await
+                handle.lookup(hash, Some(port), Some(sender)).await
             }));
         }
     }

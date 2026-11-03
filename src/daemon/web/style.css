@@ -83,7 +83,7 @@ tbody tr.selected,tbody tr.selected:nth-child(even){background:var(--selected)}t
 .detail-grid{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:16px 25px}
 .detail-name{margin:0 0 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 11px var(--mono)}
 .detail-row{display:flex;justify-content:space-between;gap:15px;font-size:10px;margin-bottom:5px}
-.detail-row span:first-child{color:var(--muted)}.detail-row span:last-child{font-family:var(--mono);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text}
+.detail-row span:first-child{color:var(--muted);min-width:0;overflow-wrap:anywhere}.detail-row span:last-child{font-family:var(--mono);font-variant-numeric:tabular-nums;min-width:0;overflow-wrap:anywhere;text-align:right;user-select:text}
 .detail-resizer{position:absolute;top:-4px;left:0;right:0;height:7px;z-index:5;cursor:row-resize;touch-action:none}
 .detail-resizer:hover:after,.detail-resizer:focus-visible:after{content:'';position:absolute;left:0;right:0;top:3px;height:2px;background:var(--cobalt)}
 .telemetry-scroll{overflow:auto}.telemetry-table{table-layout:auto;min-width:760px}

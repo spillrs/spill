@@ -47,7 +47,7 @@ A client command can't reach the control socket.
 | `Address already in use` | Another program (often another client) uses the `listen` port for TCP or UDP. Pick another port or stop it. |
 | `control socket already in use` | Another spill is running with the same socket. |
 | `Resource temporarily unavailable` | Another spill holds the lock on the same `state_dir` (`daemon.lock`). |
-| `unsupported catalog version` | The catalog is from an older spill. Use a fresh `state_dir`; re-add torrents, and complete files are adopted without downloading. |
+| `unsupported catalog version` | The catalog schema is incompatible. Use a fresh `state_dir`; re-add torrents, and complete files are adopted without downloading. |
 | `absolute paths and a nonzero active cap are required` | A path in the config is relative, or uses `~`, or the active slots are invalid, or `web_listen` isn't loopback. |
 | `unknown field …` | A typo or a removed key in the config (for example `allow_local_peers`, now `allow_local_network`). |
 
@@ -66,13 +66,18 @@ A client command can't reach the control socket.
 
 - `queued`: all download slots are busy. Raise `active_downloads` or pause another.
 - `metadata` for a long time: no peer with the metadata was found. Check the
-  magnet has trackers or that the DHT is enabled.
+  magnet has trackers or that the DHT is enabled. A v2-only magnet with
+  `info_validated` but not `metadata_ready` still needs authenticated piece
+  layers from peers. Hybrids can download with layers pending and rebuild them
+  locally at full completion.
 - `downloading` with no peers: check `last_error` and the trackers in `get`. If
   peers are on your LAN, set `allow_local_network = true`. Peers that require
   protocol encryption can't be reached (see [Limits](limits.md#known-gaps)).
   For uTP-only peers, check that `utp` is enabled (the default).
 - `retrying`: read `last_error`. Disk full and permission errors are the usual
-  causes. `pause` then `resume` retries immediately.
+  causes. `pause` then `resume` retries immediately. Local filesystem failures
+  retry with backoff; invalid authenticated metadata, private magnets and learned
+  duplicate hashes pause the torrent instead.
 - On a private tracker, `last_error` shows the tracker's reason, for example an
   unregistered torrent or a client that isn't whitelisted.
 
@@ -123,6 +128,14 @@ allow only spill. The firewall permission does not configure your router.
   reachable IPv6 routers or saved IPv6 contacts. Dual-stack listeners can also
   learn IPv6 contacts from IPv4 nodes, then verify them over IPv6. `listen = "[::]:…"` enables both families.
 - `dht_bootstrap = []` with no saved nodes leaves the DHT with nobody to talk to.
+
+## Torrents recheck after an upgrade
+
+An incompatible resume checkpoint causes the bound torrent's payload to be
+fully rechecked when it next starts. Existing good data is not downloaded again. Keep the state
+directory and payload in place; deleting the catalog also discards the recorded
+authority to reopen partial files. Catalog-schema incompatibility is separate
+and may require a fresh state directory.
 
 ## Files look wrong after a crash or power loss
 

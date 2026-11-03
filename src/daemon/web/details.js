@@ -9,9 +9,9 @@ const byteValue = value => `<span title="${esc(value)} bytes">${bytes(value)}</s
 function renderOverview(t) {
   const run = t.transfer;
   const group = (title,rows) => `<div><h3 class="detail-name">${esc(title)}</h3>${rows.map(([label,value]) => detailRow(label,value)).join('')}</div>`;
-  const announcement = t.completed_announce === null ? 'No event' : t.completed_announce ? 'Acknowledged' : 'Pending';
+  const announcements = t.completed_announces.map(s => [s.swarm, s.delivered ? 'Acknowledged' : 'Pending']);
   return (t.last_error ? `<div class="torrent-error">${esc(t.last_error)}</div>` : '') + `<div class="detail-grid">` +
-    group(t.name,[['Info hash',t.id],['Save to',t.output_dir],['Status',t.state],['Intent',t.intent],['Private',t.private === null ? 'Unknown' : t.private ? 'Yes' : 'No'],['Tracker message',t.tracker_message || '—'],['Retry at',date(t.retry_at)]]) +
+    group(t.name,[['ID',t.id],['Format',t.format],['SHA-1',t.v1 || '—'],['SHA-256',t.v2 || '—'],['Metadata',t.metadata_ready ? 'Ready' : t.info_validated ? `Hash layers: ${bytes(t.hash_bytes)} / ${bytes(t.hash_total_bytes)}` : 'Pending'],['V2 layers',!t.v2 ? '—' : t.layers_pending ? 'Pending (v1 mode)' : t.metadata_ready ? 'Ready' : 'Acquiring'],['Save to',t.output_dir],['Status',t.state],['Intent',t.intent],['Private',t.private === null ? 'Unknown' : t.private ? 'Yes' : 'No'],['Tracker message',t.tracker_message || '—'],['Retry at',date(t.retry_at)]]) +
     group('Lifetime accounting',[
       ['Downloaded',bytes(t.downloaded_bytes)],['Uploaded',bytes(t.uploaded_bytes)],
       ['Upload / size ratio',t.total_bytes ? (t.uploaded_bytes/t.total_bytes).toFixed(2) : '—'],
@@ -20,7 +20,8 @@ function renderOverview(t) {
     group('Progress',[
       ['Verified / full size',`${bytes(t.verified_bytes)} / ${bytes(t.total_bytes)}`],
       ['Selected verified / size',`${bytes(t.wanted_verified_bytes)} / ${bytes(t.wanted_bytes)}`],
-      ['Selected complete',t.completed ? 'Yes' : 'No'],['Completion announce',announcement],['ETA',t.eta],['Peers',t.peers]]) +
+      ['Selected complete',t.completed ? 'Yes' : 'No'],['ETA',t.eta],['Peers',t.peers]]) +
+    group('Completion announces',announcements.length ? announcements : [['Status','No event']]) +
     group('Settings',Object.entries(t.settings).map(([key,value]) => [key.replaceAll('_',' '),Array.isArray(value) ? value.length ? value.join(', ') : 'All files' : String(value)])) +
     group('Current run',run ? Object.entries(run).filter(([,value]) => value === null || typeof value !== 'object').map(([key,value]) => [key.replaceAll('_',' '),
       value === null ? '—' : key.endsWith('_bytes') ? bytes(value) : key.endsWith('_bytes_per_second') ? rate(value) : String(value)]) : [['Status','Inactive']]) + '</div>';
@@ -46,10 +47,10 @@ function renderFileManifest(page, previous) {
 function renderSourceTelemetry(t) {
   const trackers = t.transfer?.trackers || [];
   let html = `<div class="source-summary">${['trackers','dht','pex','web_seeds'].map(key => `<span>${esc(key.replaceAll('_',' '))}: <strong>${t.settings[key] ? 'On' : 'Off'}</strong></span>`).join('')}</div>`;
-  html += trackers.length ? telemetryTable(['Tracker','Tier / slot','Status','Seeds','Leechers','Peers','Last reply','Next','Exchanges','Failures','Message'],trackers.map(s => [
-    esc(s.url),`${s.tier+1} / ${s.slot+1}`,esc(s.state),s.seeders ?? '—',s.leechers ?? '—',s.peers_returned ?? '—',duration(s.last_reply_ago_ms),duration(s.next_announce_ms),s.exchanges,s.failures,esc([s.error,s.warning].filter(Boolean).join(' · '))])) : telemetryNote('No active tracker observations.');
-  const dht = t.transfer?.dht;
-  html += '<div class="source-section"><h4>DHT</h4>' + (dht ? `<div class="source-facts">${Object.entries(dht).map(([key,value]) => `<span>${esc(key.replaceAll('_',' '))}: <b>${esc(value ?? '—')}</b></span>`).join('')}</div>` : telemetryNote('No active DHT observation.')) + '</div>';
+  html += trackers.length ? telemetryTable(['Tracker','Swarm key','Tier / slot','Status','Seeds','Leechers','Peers','Last reply','Next','Exchanges','Failures','Message'],trackers.map(s => [
+    esc(s.url),esc(s.swarm),`${s.tier+1} / ${s.slot+1}`,esc(s.state),s.seeders ?? '—',s.leechers ?? '—',s.peers_returned ?? '—',duration(s.last_reply_ago_ms),duration(s.next_announce_ms),s.exchanges,s.failures,esc([s.error,s.warning].filter(Boolean).join(' · '))])) : telemetryNote('No active tracker observations.');
+  const dht = t.transfer?.dht || [];
+  html += '<div class="source-section"><h4>DHT</h4>' + (dht.length ? telemetryTable(['Swarm key','Pending','Next lookup','Last lookup','Queried','Announced','Peers','Error'],dht.map(s => [esc(s.swarm),s.lookup_pending ? 'Yes' : 'No',duration(s.next_lookup_ms),duration(s.last_lookup_ago_ms),s.queried,s.announced,s.peers_returned,esc(s.error || '—')])) : telemetryNote('No active DHT observation.')) + '</div>';
   const seeds = t.transfer?.web_seeds || [];
   if (seeds.length) html += '<div class="source-section"><h4>Web seeds</h4>' + telemetryTable(['URL','State','Last event','Error'],seeds.map(s => [esc(s.url),esc(s.state),duration(s.last_event_ago_ms),esc(s.error || '—')])) + '</div>';
   return html;

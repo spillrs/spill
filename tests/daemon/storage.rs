@@ -5,6 +5,38 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 #[tokio::test]
+async fn temporary_destination_failure_retries_after_the_directory_is_restored() {
+    use base64::{Engine, prelude::BASE64_STANDARD};
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let root = Temp::new();
+        let output = root.0.join("destination");
+        std::fs::create_dir(&output).unwrap();
+        let mut daemon = Daemon::start(&root.0, "", None).await;
+        let added = daemon.call(json!({"op":"add", "metainfo":BASE64_STANDARD.encode(metainfo(None)), "output_dir":output, "paused":true})).await;
+        let id = added["id"].as_str().unwrap();
+        std::fs::remove_dir(&output).unwrap();
+        std::fs::write(&output, b"not a directory").unwrap();
+        daemon.call(json!({"op":"resume", "id":id})).await;
+        let failed = daemon.failed(id).await;
+        assert_eq!(failed["state"], "retrying");
+        assert_eq!(failed["intent"], "run");
+        assert_eq!(failed["last_error"], "output is not a directory");
+        assert!(failed["retry_at"].as_u64().unwrap() > 0);
+        std::fs::remove_file(&output).unwrap();
+        std::fs::create_dir(&output).unwrap();
+        std::fs::write(output.join("x"), b"abc").unwrap();
+        let seeded = loop {
+            let row = daemon.call(json!({"op":"get", "id":id})).await;
+            if row["state"] == "seeding" && row["last_error"].is_null() { break row; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(seeded["last_error"].is_null());
+        assert_eq!(seeded["retry_at"], 0);
+        daemon.stop().await;
+    }).await.expect("transient filesystem failure retries without manual resume");
+}
+
+#[tokio::test]
 async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
     use sha1::{Digest, Sha1};
     let root = Temp::new();

@@ -41,6 +41,38 @@ fn display_counts_include_the_short_final_piece_and_require_a_valid_record() {
 }
 
 #[test]
+fn full_identities_and_verification_formats_bind_resume_records() {
+    let torrents: Vec<_> = [
+        include_bytes!("fixtures/v2.torrent").as_slice(),
+        include_bytes!("fixtures/hybrid.torrent").as_slice(),
+        include_bytes!("fixtures/libtorrent-hybrid.torrent").as_slice(),
+    ]
+    .into_iter()
+    .map(|wire| OwnedMetainfo::parse(wire, Limits::default()).unwrap())
+    .collect();
+    for (index, meta) in torrents.iter().enumerate() {
+        let bits = vec![0; meta.layout().piece_count().div_ceil(8) as usize];
+        let blob = encode(meta, &bits, b"fingerprint").unwrap();
+        assert_eq!(&blob[..8], b"SPILLR01");
+        let decoded = decode(meta, &blob).unwrap();
+        assert_eq!(decoded.verified, bits);
+        assert_eq!(decoded.fingerprint, b"fingerprint");
+        for (other, meta) in torrents.iter().enumerate() {
+            if other != index {
+                assert!(decode(meta, &blob).is_err());
+            }
+        }
+        use sha1::{Digest, Sha1};
+        let mut unsupported = blob.clone();
+        unsupported[..8].copy_from_slice(b"SPILLR00");
+        let end = unsupported.len() - 20;
+        let checksum = Sha1::digest(&unsupported[..end]);
+        unsupported[end..].copy_from_slice(&checksum);
+        assert!(decode(meta, &unsupported).is_err());
+    }
+}
+
+#[test]
 fn roundtrip_and_reject_corruption_identity_shape_and_trailing_bytes() {
     let meta = OwnedMetainfo::parse(
         b"d4:infod6:lengthi1e4:name1:x12:piece lengthi1e6:pieces20:aaaaaaaaaaaaaaaaaaaaee",

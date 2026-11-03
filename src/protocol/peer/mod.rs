@@ -2,6 +2,7 @@
 
 pub mod extension;
 mod handshake;
+pub mod hash;
 pub mod message;
 pub mod metadata;
 pub mod pex;

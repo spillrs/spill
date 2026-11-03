@@ -56,13 +56,14 @@ pub(in crate::engine) struct PayloadPaths {
 }
 impl PayloadPaths {
     pub(in crate::engine) fn new(meta: &OwnedMetainfo) -> io::Result<Self> {
-        let root_name = safe_name(meta.name())?;
+        let root_name = if meta.layout().is_multi_file() {
+            safe_name(meta.name())?
+        } else {
+            Vec::new()
+        };
         let mut paths = Vec::with_capacity(meta.layout().files().len());
         for entry in meta.layout().files() {
-            let mut path = Vec::new();
-            if meta.layout().is_multi_file() {
-                path.extend_from_slice(&root_name);
-            }
+            let mut path = root_name.clone();
             for part in entry.path() {
                 let name = safe_name(part)?;
                 if !path.is_empty() {
@@ -75,7 +76,16 @@ impl PayloadPaths {
             }
             paths.push(path);
         }
-        Self::validated(paths)
+        // Virtual padding names are not filesystem authority and may repeat.
+        Self::validated(
+            paths
+                .iter()
+                .zip(meta.layout().files())
+                .filter(|(_, file)| file.kind() == FileKind::Data)
+                .map(|(path, _)| path.clone())
+                .collect(),
+        )?;
+        Ok(Self { paths })
     }
     pub(super) fn validated(paths: Vec<Vec<u8>>) -> io::Result<Self> {
         let mut unique = BTreeSet::new();
@@ -160,8 +170,15 @@ impl PayloadPaths {
         }
         Ok(files)
     }
-    pub(in crate::engine) fn reject_existing(&self, root: &File) -> io::Result<()> {
-        for path in &self.paths {
+    pub(in crate::engine) fn reject_existing(
+        &self,
+        root: &File,
+        layout: &Layout<'_>,
+    ) -> io::Result<()> {
+        for (path, file) in self.paths.iter().zip(layout.files()) {
+            if file.kind() == FileKind::Padding {
+                continue;
+            }
             if let Some(parent) = optional_parent(root, path)?
                 && stored_name(&parent, path)?.is_some()
             {

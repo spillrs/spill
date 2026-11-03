@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::peer::message::WireMode;
 
 impl Torrent {
     pub(super) fn on_frame(
@@ -23,9 +24,57 @@ impl Torrent {
         let wire_bytes = frame.wire_len();
         let message = frame.message();
         let block_limit = crate::engine::profile::BLOCK_LEN;
+        let mode = self.remotes[position].wire_mode;
+        let limit_to_data_end = mode == WireMode::V2 && self.meta.info_hash().v1().is_none();
+        if mode == WireMode::V2 {
+            if let Message::Request(request) = message
+                && limit_to_data_end
+                && request
+                    .validate(self.meta.layout(), block_limit, false)
+                    .is_ok()
+                && request
+                    .validate(self.meta.layout(), block_limit, true)
+                    .is_err()
+            {
+                self.remotes[position].first_message = false;
+                if let Err(error) = self.remotes[position].unsolicited.charge(wire_bytes) {
+                    self.retire_peer(position, error)?;
+                } else {
+                    self.reject_upload(position, request)?;
+                }
+                return Ok(None);
+            }
+            if let Message::Piece {
+                index,
+                begin,
+                block,
+            } = message
+            {
+                let request = BlockRequest {
+                    index,
+                    begin,
+                    length: block.len() as u32,
+                };
+                if let Some(kept) = self.remotes[position]
+                    .kept
+                    .iter()
+                    .position(|(r, _)| *r == request)
+                {
+                    self.remotes[position].kept.swap_remove(kept);
+                    self.remotes[position].first_message = false;
+                    return Ok(Some(Event::IgnoredBlock { index, begin }));
+                }
+                if !self.remotes[position].asked.contains(&request) {
+                    self.retire_peer(position, invalid_data_text("unsolicited v2 piece"))?;
+                    return Ok(None);
+                }
+            }
+        }
         if let Message::Request(request) | Message::Cancel(request) = message
             && request.length > block_limit
-            && request.validate(self.meta.layout(), u32::MAX).is_ok()
+            && request
+                .validate(self.meta.layout(), u32::MAX, limit_to_data_end)
+                .is_ok()
         {
             // A valid range above our upload block policy is not a bad
             // connection. Fast peers get a reject; legacy peers cannot
@@ -35,14 +84,35 @@ impl Torrent {
                 self.retire_peer(position, error)?;
             } else {
                 self.remotes[position].first_message = false;
-                if matches!(message, Message::Request(_)) && self.remotes[position].fast {
+                if matches!(message, Message::Request(_))
+                    && self.remotes[position].rejects_requests()
+                {
                     self.reject_upload(position, request)?;
                 }
             }
             return Ok(None);
         }
-        if let Err(error) = message.validate_layout(self.meta.layout(), block_limit) {
+        if let Err(error) =
+            message.validate_layout(self.meta.layout(), block_limit, limit_to_data_end)
+        {
             self.retire_peer(position, invalid_data(error))?;
+            return Ok(None);
+        }
+        if matches!(
+            message,
+            Message::HashRequest(_) | Message::Hashes { .. } | Message::HashReject(_)
+        ) && mode != WireMode::V2
+        {
+            self.retire_peer(position, invalid_data_text("hash message outside v2 mode"))?;
+            return Ok(None);
+        }
+        if matches!(message, Message::Hashes { .. } | Message::HashReject(_)) {
+            self.retire_peer(position, invalid_data_text("unsolicited hash response"))?;
+            return Ok(None);
+        }
+        if let Message::HashRequest(request) = message {
+            self.remotes[position].first_message = false;
+            self.request_hashes(position, request, wire_bytes)?;
             return Ok(None);
         }
         if let Message::Extended { id, payload } = message {
@@ -64,6 +134,7 @@ impl Torrent {
                 | Message::SuggestPiece(_)
                 | Message::AllowedFast(_)
         ) && !self.remotes[position].fast
+            && !(matches!(message, Message::Reject(_)) && mode == WireMode::V2)
         {
             self.retire_peer(
                 position,
@@ -132,7 +203,10 @@ impl Torrent {
                 }
             }
             Message::Reject(request) => {
-                if peer.asked.contains(&request) {
+                if let Some(kept) = peer.kept.iter().position(|(r, _)| *r == request) {
+                    peer.kept.swap_remove(kept);
+                    self.mark_all_dirty();
+                } else if peer.asked.contains(&request) {
                     peer.asked.remove_request(&request);
                     let deadline = self.now + crate::engine::profile::REQUEST_TIMEOUT;
                     let primary = self.picker.rejected(request, connection, deadline);
@@ -162,7 +236,7 @@ impl Torrent {
             Message::Choke => {
                 peer.choked = true;
                 let deadline = self.now + crate::engine::profile::REQUEST_TIMEOUT;
-                if !peer.fast {
+                if !peer.rejects_requests() {
                     self.picker.on_peer_gone(connection, deadline, true);
                 }
             }

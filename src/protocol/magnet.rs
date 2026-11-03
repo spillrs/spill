@@ -1,8 +1,8 @@
-//! Bounded v1 magnet inputs. Parsing does not authorize tracker/source access.
+//! Bounded v1/v2 magnet inputs. Parsing does not authorize tracker/source access.
 
 use std::fmt;
 
-use crate::protocol::identity::InfoHashV1;
+use crate::protocol::identity::{InfoHashV1, InfoHashV2, TorrentIdentity};
 
 /// Limits include ignored and repeated parameters. Decoded bytes cannot exceed
 /// the input budget; each key and value additionally has its own byte cap.
@@ -62,7 +62,7 @@ impl Parameter {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Magnet {
-    info_hash: InfoHashV1,
+    info_hash: TorrentIdentity,
     parameters: Vec<Parameter>,
 }
 
@@ -73,9 +73,10 @@ impl Magnet {
     /// Raw spaces, controls, non-ASCII and fragments are rejected; escaped
     /// arbitrary bytes are preserved. Empty/trailing pairs are invalid.
     ///
-    /// Identical repeated btih topics are allowed; conflicting ones fail.
-    /// Any btmh topic rejects the entire URI, including hybrids. Unknown
-    /// topics are retained but cannot substitute for a v1 identity.
+    /// Identical repeated topics are allowed; conflicting hashes of the same
+    /// version fail. Btmh accepts hexadecimal SHA2-256 multihashes (`1220`
+    /// followed by 64 hex digits). Other well-formed multihashes are unsupported.
+    /// Unknown topics are retained but cannot substitute for a known identity.
     pub fn parse(input: &str, limits: Limits) -> Result<Self, Error> {
         if input.len() > limits.max_input_bytes {
             return Err(Error::ResourceLimit);
@@ -111,30 +112,36 @@ impl Magnet {
             let value = unescape(&pair[equals + 1..], limits.max_component_bytes)?;
             parameters.push(Parameter { key, value });
         }
-        // Detect unsupported topics before attempting to interpret v1 hashes.
-        if parameters
-            .iter()
-            .any(|p| p.key == b"xt" && prefix(&p.value, b"urn:btmh:"))
-        {
-            return Err(Error::UnsupportedVersion);
-        }
-        let mut info_hash = None;
+        let mut v1 = None;
+        let mut v2 = None;
         for p in &parameters {
             if p.key == b"xt" && prefix(&p.value, b"urn:btih:") {
                 let hash = parse_hash(&p.value[9..])?;
-                if info_hash.is_some_and(|previous| previous != hash) {
+                if v1.is_some_and(|previous| previous != hash) {
                     return Err(Error::ConflictingHashes);
                 }
-                info_hash = Some(hash);
+                v1 = Some(hash);
+            } else if p.key == b"xt" && prefix(&p.value, b"urn:btmh:") {
+                let hash = parse_multihash(&p.value[9..])?;
+                if v2.is_some_and(|previous| previous != hash) {
+                    return Err(Error::ConflictingHashes);
+                }
+                v2 = Some(hash);
             }
         }
+        let info_hash = match (v1, v2) {
+            (Some(v1), Some(v2)) => TorrentIdentity::Hybrid(v1, v2),
+            (Some(v1), None) => TorrentIdentity::V1(v1),
+            (None, Some(v2)) => TorrentIdentity::V2(v2),
+            (None, None) => return Err(Error::MissingHash),
+        };
         Ok(Self {
-            info_hash: info_hash.ok_or(Error::MissingHash)?,
+            info_hash,
             parameters,
         })
     }
 
-    pub fn info_hash(&self) -> InfoHashV1 {
+    pub fn info_hash(&self) -> TorrentIdentity {
         self.info_hash
     }
 
@@ -200,6 +207,52 @@ fn unescape(input: &[u8], cap: usize) -> Result<Vec<u8>, Error> {
         output.push(byte);
     }
     Ok(output)
+}
+
+fn parse_multihash(input: &[u8]) -> Result<InfoHashV2, Error> {
+    if !input.len().is_multiple_of(2) {
+        return Err(Error::InvalidHash);
+    }
+    let encoded: Vec<u8> = input
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            Ok(hex(pair[0]).ok_or(Error::InvalidHash)? * 16
+                + hex(pair[1]).ok_or(Error::InvalidHash)?)
+        })
+        .collect::<Result<_, Error>>()?;
+    let mut remaining = encoded.as_slice();
+    let code = varint(&mut remaining)?;
+    let length = varint(&mut remaining)?;
+    if length != remaining.len() as u64 {
+        return Err(Error::InvalidHash);
+    }
+    if code != 0x12 || length != 32 {
+        return Err(Error::UnsupportedVersion);
+    }
+    Ok(InfoHashV2::from_bytes(
+        remaining.try_into().expect("SHA-256 multihash length"),
+    ))
+}
+
+fn varint(input: &mut &[u8]) -> Result<u64, Error> {
+    let mut value = 0u64;
+    for shift in (0..64).step_by(7) {
+        let (&byte, rest) = input.split_first().ok_or(Error::InvalidHash)?;
+        *input = rest;
+        if shift == 63 && byte > 1 {
+            return Err(Error::InvalidHash);
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            if shift != 0 && byte == 0 {
+                return Err(Error::InvalidHash);
+            }
+            return Ok(value);
+        }
+    }
+    Err(Error::InvalidHash)
 }
 
 fn parse_hash(input: &[u8]) -> Result<InfoHashV1, Error> {

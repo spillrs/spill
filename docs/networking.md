@@ -158,6 +158,9 @@ connections are accepted from any address.
   one connection is dropped.
 - Peers that send bad data are banned for the torrent; unhelpful peers are
   disconnected to make room for others.
+- Malformed known peer messages disconnect the peer, including malformed BEP 52
+  hash messages on v1 torrents. V2 connections follow stricter rules; see
+  [v2 and hybrid torrents](v2.md#peer-protocol).
 
 ## Privacy notes
 

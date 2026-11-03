@@ -16,6 +16,8 @@ async fn overlapping_uploads_in_opposite_orders_do_not_deadlock() {
         .parse_owned(&bytes)
         .unwrap()
         .info_hash()
+        .v1()
+        .unwrap()
         .as_bytes();
     let root = Temp::new();
     std::fs::create_dir_all(root.0.join("downloads")).unwrap();
@@ -175,6 +177,8 @@ async fn endgame_requests_progress_while_other_duplicates_are_stalled() {
         .parse_owned(&bytes)
         .unwrap()
         .info_hash()
+        .v1()
+        .unwrap()
         .as_bytes();
     let root = Temp::new();
     let mut daemon = Daemon::start(&root.0, "web_seeds=false", None).await;

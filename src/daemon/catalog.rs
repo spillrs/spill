@@ -2,7 +2,10 @@
 use crate::settings::Settings;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use spill::engine::provisioning::DestinationBinding;
+use spill::{
+    engine::{profile::AdmissionError, provisioning::DestinationBinding},
+    protocol::identity::{InfoHashV1, InfoHashV2, TorrentIdentity},
+};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -16,6 +19,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("catalog payload: {0}")]
     Payload(#[from] std::io::Error),
+    #[error("torrent already exists")]
+    Duplicate,
     #[error("unsupported catalog version {0}; use a fresh state directory")]
     Version(i64),
 }
@@ -38,7 +43,7 @@ pub struct Checkpoint {
     pub last_upload_at: Option<u64>,
     pub seed_seconds: f64,
     pub complete: bool,
-    pub completed_announce: Option<bool>,
+    pub completed_announces: Vec<([u8; 20], bool)>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +57,8 @@ pub enum Intent {
 #[derive(Clone)]
 pub struct Row {
     pub id: String,
+    pub v1: Option<String>,
+    pub v2: Option<String>,
     pub metainfo: Option<Vec<u8>>,
     pub parsed: Option<Arc<spill::protocol::metainfo::OwnedMetainfo>>,
     pub magnet: Option<String>,
@@ -66,6 +73,29 @@ pub struct Row {
     pub added_at: u64,
 }
 impl Row {
+    pub fn identity(&self) -> TorrentIdentity {
+        let v1 = self.v1.as_ref().map(|hash| {
+            InfoHashV1::from_bytes(std::array::from_fn(|i| {
+                u8::from_str_radix(&hash[i * 2..i * 2 + 2], 16).expect("catalog v1 hash")
+            }))
+        });
+        let v2 = self.v2.as_ref().map(|hash| {
+            InfoHashV2::from_bytes(std::array::from_fn(|i| {
+                u8::from_str_radix(&hash[i * 2..i * 2 + 2], 16).expect("catalog v2 hash")
+            }))
+        });
+        match (v1, v2) {
+            (Some(v1), Some(v2)) => TorrentIdentity::Hybrid(v1, v2),
+            (Some(v1), None) => TorrentIdentity::V1(v1),
+            (None, Some(v2)) => TorrentIdentity::V2(v2),
+            (None, None) => unreachable!("catalog identity"),
+        }
+    }
+    pub fn hashes(&self) -> impl Iterator<Item = &str> {
+        [self.v1.as_deref(), self.v2.as_deref()]
+            .into_iter()
+            .flatten()
+    }
     pub fn meta(&self) -> std::io::Result<&spill::protocol::metainfo::OwnedMetainfo> {
         self.parsed.as_deref().ok_or_else(|| {
             std::io::Error::new(
@@ -107,13 +137,15 @@ impl Catalog {
                     uploaded INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL,
                     completed_at INTEGER, last_download_at INTEGER, last_upload_at INTEGER,
                     seed_seconds REAL NOT NULL DEFAULT 0, complete INTEGER NOT NULL DEFAULT 0,
-                    completed_announce INTEGER,
+                    completed_announces TEXT NOT NULL CHECK(json_valid(completed_announces)),
+                    v1 TEXT UNIQUE, v2 TEXT UNIQUE,
                     created_files BLOB, last_error TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0,
-                    CHECK(metainfo IS NOT NULL OR magnet IS NOT NULL));
+                    CHECK(metainfo IS NOT NULL OR magnet IS NOT NULL),
+                    CHECK(v1 IS NOT NULL OR v2 IS NOT NULL));
                 CREATE TABLE dht (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node_id BLOB NOT NULL, nodes BLOB NOT NULL);
-                PRAGMA user_version=5; COMMIT;")?;
-        } else if version != 5 {
+                PRAGMA user_version=1; COMMIT;")?;
+        } else if version != 1 {
             return Err(Error::Version(version));
         }
         c.prepare("SELECT settings, resume, uploaded, seed_seconds, complete, created_files, retry_at FROM torrents LIMIT 0")?;
@@ -127,7 +159,7 @@ impl Catalog {
         Ok(self.0.lock().unwrap().rows.clone())
     }
     fn read_rows(c: &Connection) -> Result<Vec<Row>> {
-        let mut query = c.prepare("SELECT id,metainfo,magnet,output_dir,intent,settings,resume,created_files,last_error,retry_count,retry_at,uploaded,seed_seconds,complete,completed_announce,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces FROM torrents ORDER BY rowid")?;
+        let mut query = c.prepare("SELECT id,metainfo,magnet,output_dir,intent,settings,resume,created_files,last_error,retry_count,retry_at,uploaded,seed_seconds,complete,completed_announces,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces,v1,v2 FROM torrents ORDER BY rowid")?;
         let raw = query.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -144,7 +176,7 @@ impl Catalog {
                 r.get(11)?,
                 r.get(12)?,
                 r.get(13)?,
-                r.get(14)?,
+                r.get::<_, String>(14)?,
                 r.get(15)?,
                 r.get(16)?,
                 r.get(17)?,
@@ -152,6 +184,8 @@ impl Catalog {
                 r.get(19)?,
                 r.get(20)?,
                 r.get(21)?,
+                r.get(22)?,
+                r.get(23)?,
             ))
         })?;
         raw.map(|r| {
@@ -170,7 +204,7 @@ impl Catalog {
                 uploaded,
                 seed_seconds,
                 complete,
-                completed_announce,
+                completed_announces,
                 downloaded,
                 added_at,
                 completed_at,
@@ -178,6 +212,8 @@ impl Catalog {
                 last_upload_at,
                 hash_failed_bytes,
                 hash_failed_pieces,
+                v1,
+                v2,
             ) = r?;
             let parsed = metainfo
                 .as_deref()
@@ -192,6 +228,8 @@ impl Catalog {
                 .transpose()?;
             Ok(Row {
                 id,
+                v1,
+                v2,
                 metainfo,
                 parsed,
                 magnet,
@@ -209,7 +247,7 @@ impl Catalog {
                     last_upload_at,
                     seed_seconds,
                     complete,
-                    completed_announce,
+                    completed_announces: serde_json::from_str(&completed_announces)?,
                 },
                 created_files,
                 last_error,
@@ -227,18 +265,18 @@ impl Catalog {
             .unwrap()
             .rows
             .iter()
-            .find(|r| r.id == id)
+            .find(|r| r.hashes().any(|hash| hash == id))
             .cloned())
     }
     pub fn insert(&self, row: &Row) -> Result<()> {
         let mut state = self.0.lock().unwrap();
-        state.connection.execute("INSERT INTO torrents(id,metainfo,magnet,output_dir,intent,settings,resume,uploaded,seed_seconds,complete,completed_announce,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+        state.connection.execute("INSERT INTO torrents(id,metainfo,magnet,output_dir,intent,settings,resume,uploaded,seed_seconds,complete,completed_announces,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces,v1,v2) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             params![row.id,row.metainfo,row.magnet,row.output_dir.to_string_lossy(),serde_json::to_string(&row.intent)?,
                 serde_json::to_string(&row.settings)?,row.checkpoint.resume,row.checkpoint.uploaded,
-                row.checkpoint.seed_seconds,row.checkpoint.complete,row.checkpoint.completed_announce,
+                row.checkpoint.seed_seconds,row.checkpoint.complete,serde_json::to_string(&row.checkpoint.completed_announces)?,
                 row.checkpoint.downloaded,row.added_at,row.checkpoint.completed_at,
                 row.checkpoint.last_download_at,row.checkpoint.last_upload_at,
-                row.checkpoint.hash_failed_bytes,row.checkpoint.hash_failed_pieces])?;
+                row.checkpoint.hash_failed_bytes,row.checkpoint.hash_failed_pieces,row.v1,row.v2])?;
         state.rows.push(Arc::new(row.clone()));
         Ok(())
     }
@@ -301,14 +339,15 @@ impl Catalog {
     }
     pub fn resolved(&self, id: &str, meta: spill::protocol::metainfo::OwnedMetainfo) -> Result<()> {
         self.update(id, |c, row| {
+            let tx = c.unchecked_transaction()?;
+            learn_identity(&tx, row, meta.info_hash())?;
             let bytes = meta.source_bytes();
-            if row.metainfo.as_deref() != Some(bytes) {
-                c.execute(
-                    "UPDATE torrents SET metainfo=?2 WHERE id=?1",
-                    params![id, bytes],
-                )?;
-                row.metainfo = Some(bytes.to_vec());
-            }
+            tx.execute(
+                "UPDATE torrents SET metainfo=?2 WHERE id=?1",
+                params![id, bytes],
+            )?;
+            tx.commit()?;
+            row.metainfo = Some(bytes.to_vec());
             row.parsed = Some(Arc::new(meta));
             Ok(())
         })
@@ -334,10 +373,10 @@ impl Catalog {
             }
             if row.checkpoint != previous {
                 let tx = c.unchecked_transaction()?;
-                if row.checkpoint.completed_announce != previous.completed_announce {
+                if row.checkpoint.completed_announces != previous.completed_announces {
                     tx.execute(
-                        "UPDATE torrents SET completed_announce=?2 WHERE id=?1",
-                        params![id, row.checkpoint.completed_announce],
+                        "UPDATE torrents SET completed_announces=?2 WHERE id=?1",
+                        params![id, serde_json::to_string(&row.checkpoint.completed_announces)?],
                     )?;
                 }
                 // Accounting-only updates must not bind or serialize the resume blob.
@@ -378,15 +417,21 @@ impl Catalog {
             Ok(())
         })
     }
-    pub fn failure(&self, id: &str, error: &str) -> Result<()> {
+    pub fn failure(&self, id: &str, error: &std::io::Error) -> Result<()> {
         self.update(id, |c, row| {
-            row.retry_count = row.retry_count.saturating_add(1);
-            let delay = (5u64.saturating_mul(1u64 << row.retry_count.min(9))).min(1800);
-            row.retry_at = now() + delay;
-            row.last_error = Some(error.into());
+            if AdmissionError::of(error).is_some() {
+                row.intent = Intent::Paused;
+                row.retry_count = 0;
+                row.retry_at = 0;
+            } else {
+                row.retry_count = row.retry_count.saturating_add(1);
+                let delay = (5u64.saturating_mul(1u64 << row.retry_count.min(9))).min(1800);
+                row.retry_at = now() + delay;
+            }
+            row.last_error = Some(error.to_string());
             c.execute(
-                "UPDATE torrents SET last_error=?2,retry_count=?3,retry_at=?4 WHERE id=?1",
-                params![id, error, row.retry_count, row.retry_at],
+                "UPDATE torrents SET last_error=?2,retry_count=?3,retry_at=?4,intent=?5 WHERE id=?1",
+                params![id, row.last_error, row.retry_count, row.retry_at, serde_json::to_string(&row.intent)?],
             )?;
             Ok(())
         })
@@ -436,6 +481,29 @@ impl Catalog {
         Ok(())
     }
 }
+fn learn_identity(c: &Connection, row: &mut Row, identity: TorrentIdentity) -> Result<()> {
+    let v1 = identity.v1().map(|hash| hash.to_string());
+    let v2 = identity.v2().map(|hash| hash.to_string());
+    if row.v1 == v1 && row.v2 == v2 {
+        return Ok(());
+    }
+    let duplicate: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM torrents WHERE id!=?1 AND (v1=?2 OR v2=?3))",
+        params![row.id, v1, v2],
+        |r| r.get(0),
+    )?;
+    if duplicate {
+        return Err(Error::Duplicate);
+    }
+    c.execute(
+        "UPDATE torrents SET v1=?2,v2=?3 WHERE id=?1",
+        params![row.id, v1, v2],
+    )?;
+    row.v1 = v1;
+    row.v2 = v2;
+    Ok(())
+}
+
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

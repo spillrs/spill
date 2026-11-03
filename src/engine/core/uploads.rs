@@ -28,7 +28,7 @@ impl Torrent {
                 };
                 if !has(&self.verified, request.index) {
                     self.remotes[peer].uploads.pop_front();
-                    if self.remotes[peer].fast {
+                    if self.remotes[peer].rejects_requests() {
                         self.reject_upload(peer, request)?;
                     }
                     continue;
@@ -65,7 +65,7 @@ impl Torrent {
                         request,
                         block,
                     });
-                } else if self.remotes[peer].fast {
+                } else if self.remotes[peer].rejects_requests() {
                     self.reject_upload(peer, request)?;
                 }
                 self.remotes[peer].uploads.pop_front();
@@ -82,21 +82,30 @@ impl Torrent {
     ) -> io::Result<()> {
         let peer = &mut self.remotes[position];
         peer.dirty = true;
+        if peer.uploads.contains(&request)
+            || (peer.wire_mode == crate::protocol::peer::message::WireMode::V2
+                && peer.rejects.contains(&request))
+        {
+            return if peer.wire_mode == crate::protocol::peer::message::WireMode::V2 {
+                self.retire_peer(position, invalid_data_text("duplicate v2 request"))
+            } else {
+                self.ignored_upload(position, wire_bytes)
+            };
+        }
         if !peer.upload_granted
             || peer.upload_choked
             || !peer.remote_interested
             || !has(&self.verified, request.index)
         {
-            return if peer.fast {
+            return if peer.rejects_requests() {
                 self.reject_upload(position, request)
             } else {
                 self.ignored_upload(position, wire_bytes)
             };
         }
-        if peer.uploads.contains(&request) {
-            return self.ignored_upload(position, wire_bytes);
-        }
-        if peer.uploads.len() + peer.rejects.len() >= crate::engine::profile::MAX_UPLOAD_REQUESTS {
+        if peer.uploads.len() + peer.rejects.len() + peer.hashes.len()
+            >= crate::engine::profile::MAX_UPLOAD_REQUESTS
+        {
             return self.retire_peer(position, invalid_data_text("upload request limit exceeded"));
         }
         peer.uploads.push_back(request);
@@ -109,7 +118,7 @@ impl Torrent {
         wire_bytes: usize,
     ) -> io::Result<()> {
         if self.remotes[position].uploads.remove_request(&request) {
-            if self.remotes[position].fast {
+            if self.remotes[position].rejects_requests() {
                 self.reject_upload(position, request)?;
             }
             Ok(())
@@ -125,7 +134,7 @@ impl Torrent {
         }
         peer.remote_interested = interested;
         if !interested {
-            if peer.fast {
+            if peer.rejects_requests() {
                 peer.rejects.extend(peer.uploads.drain(..));
             } else {
                 peer.uploads.clear();
@@ -138,10 +147,12 @@ impl Torrent {
         request: BlockRequest,
     ) -> io::Result<()> {
         let peer = &mut self.remotes[position];
-        if peer.uploads.len() + peer.rejects.len() >= crate::engine::profile::MAX_UPLOAD_REQUESTS {
+        if peer.uploads.len() + peer.rejects.len() + peer.hashes.len()
+            >= crate::engine::profile::MAX_UPLOAD_REQUESTS
+        {
             return self.retire_peer(
                 position,
-                invalid_data_text("Fast reject queue limit exceeded"),
+                invalid_data_text("upload reject queue limit exceeded"),
             );
         }
         peer.rejects.push_back(request);
@@ -154,12 +165,6 @@ impl Torrent {
         Ok(())
     }
     pub(super) fn pump_upload_control(&mut self, peer: usize) -> io::Result<()> {
-        while let Some(request) = self.remotes[peer].rejects.front().copied() {
-            if !self.send(peer, Message::Reject(request))? {
-                return Ok(());
-            }
-            self.remotes[peer].rejects.pop_front();
-        }
         if self.remotes[peer].upload_choked == self.remotes[peer].upload_granted {
             let unchoke = self.remotes[peer].upload_granted;
             if self.send(
@@ -172,6 +177,12 @@ impl Torrent {
             )? {
                 self.remotes[peer].upload_choked = !unchoke;
             }
+        }
+        while let Some(request) = self.remotes[peer].rejects.front().copied() {
+            if !self.send(peer, Message::Reject(request))? {
+                return Ok(());
+            }
+            self.remotes[peer].rejects.pop_front();
         }
         Ok(())
     }

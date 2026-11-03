@@ -26,12 +26,14 @@ then open <http://127.0.0.1:8080> locally.
   Private metainfo always disables DHT and PEX.
 - Pause, resume, recheck, reannounce and remove (optionally deleting payload).
 - A resizable bottom inspector with Overview, Files, Peers and Sources tabs.
-  Overview groups lifetime accounting, selected progress, completion, UTC dates,
-  settings and current-run diagnostics. Ratio uses uploaded bytes / full size.
+  Overview shows the stable ID, format, full SHA-1/SHA-256 hashes, metadata
+  readiness, per-swarm completion delivery, lifetime accounting, selected
+  progress, UTC dates, settings and current-run diagnostics. Long hashes wrap
+  without truncation. Ratio uses uploaded bytes / full size.
 - A dense peer table: one line per peer, no direction/connection IDs or prose
   annotations. Hover over peer state for additional diagnostic counters/flags.
-- Source tables include tracker URLs, announce timing, peer counts and errors,
-  plus available DHT and web-seed observations.
+- Source tables include tracker URLs, swarm keys, announce timing, peer counts
+  and errors, plus per-swarm DHT and available web-seed observations.
 - Editable file priorities, rate limits and seeding goals. Values use monospace.
 
 Downloaded totals include corrupt payload and re-downloads, not adopted files.
@@ -81,7 +83,10 @@ with daemon defaults and are validated before saving. See the
 The `get` response includes `transfer.peers[].transport`: `"tcp"`, `"utp"`
 or `"http"` (web seed), just like the Unix control API. The same diagnostics
 include per-peer and owner-total `utp_retransmits`, and `pending_contacts`;
-see [Command line](cli.md#commands) for their meaning.
+see [Command line](cli.md#commands) for their meaning. The same stable-ID and
+full-hash alias lookup applies over HTTP, including 64-digit v2 hashes. See
+[Identity and discovery in JSON](cli.md#identity-and-discovery-in-json) for
+format, metadata readiness, and per-swarm completion/tracker/DHT fields.
 
 ### `POST /api/upload`
 

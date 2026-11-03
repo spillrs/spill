@@ -56,6 +56,8 @@ async fn utp_inbound_respects_pending_handshake_caps() {
         .parse_owned(&meta)
         .unwrap()
         .info_hash()
+        .v1()
+        .unwrap()
         .as_bytes();
     {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -115,6 +117,8 @@ async fn utp_mux_capacity_is_reclaimed_and_does_not_poison_contacts() {
         .parse_owned(&meta)
         .unwrap()
         .info_hash()
+        .v1()
+        .unwrap()
         .as_bytes();
     // Self-connection rejection leaves FINs waiting for ACKs, filling the small mux budget.
     let mut frame = [0; 68];

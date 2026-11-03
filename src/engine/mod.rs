@@ -29,6 +29,23 @@ pub mod torrent;
 mod transfer_stats;
 mod webseed;
 
+pub(in crate::engine) async fn next_ready<F: std::future::Future>(
+    futures: impl Iterator<Item = F>,
+) -> F::Output {
+    use std::{future::poll_fn, task::Poll};
+
+    let mut futures: Vec<_> = futures.map(Box::pin).collect();
+    poll_fn(|cx| {
+        for future in &mut futures {
+            if let Poll::Ready(result) = future.as_mut().poll(cx) {
+                return Poll::Ready(result);
+            }
+        }
+        Poll::Pending
+    })
+    .await
+}
+
 /// Run blocking work owned by `slot`: if this future is dropped, the running job
 /// stays in the slot so cleanup can still join it with `join_blocking`.
 pub(in crate::engine) async fn run_blocking<T: Send + 'static>(

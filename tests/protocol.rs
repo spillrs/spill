@@ -1,3 +1,9 @@
+// Exercise private proof construction without widening the library API.
+mod protocol {
+    #[path = "../../src/protocol/merkle.rs"]
+    pub mod merkle;
+}
+
 #[path = "protocol/bencode.rs"]
 mod bencode;
 #[path = "protocol/codecs.rs"]
@@ -18,3 +24,5 @@ mod resume;
 mod upnp;
 #[path = "protocol/utp.rs"]
 mod utp;
+#[path = "protocol/v2.rs"]
+mod v2;

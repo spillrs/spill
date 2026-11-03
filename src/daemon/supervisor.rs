@@ -91,7 +91,7 @@ impl Supervisor {
                 self.running.insert(id.to_owned(), running);
                 if first {
                     let error = result.as_ref().expect_err("unproven cleanup must fail");
-                    self.db.failure(id, &error.to_string()).map_err(io_error)?;
+                    self.db.failure(id, error).map_err(io_error)?;
                 }
                 return result;
             }
@@ -103,7 +103,7 @@ impl Supervisor {
                 self.db.intent(id, Intent::Paused).map_err(io_error)?;
             }
             if let Err(error) = result {
-                self.db.failure(id, &error.to_string()).map_err(io_error)?;
+                self.db.failure(id, &error).map_err(io_error)?;
             }
         }
         Ok(())
@@ -241,6 +241,7 @@ impl Supervisor {
                     })
                     .map_or(0, |p| p.verified_bytes)
             });
+        let acquisition = running.map(|r| r.handle.snapshot().progress);
         let meta = row.meta().ok();
         let (uploaded, seed_seconds) = running
             .map(|r| (r.uploaded, r.seed_seconds))
@@ -276,11 +277,24 @@ impl Supervisor {
             "completed":completed,"wanted_bytes":wanted_bytes,"wanted_verified_bytes":wanted_verified_bytes,
             "added_at":row.added_at,"completed_at":row.checkpoint.completed_at,
             "last_download_at":last_download_at,"last_upload_at":last_upload_at,
-            "completed_announce":row.checkpoint.completed_announce,
+            "format":match (row.v1.is_some(), row.v2.is_some()) {
+                (true, true) => "hybrid", (true, false) => "v1", (false, true) => "v2",
+                (false, false) => unreachable!("catalog identity"),
+            },
+            "v1":row.v1,"v2":row.v2,"metadata_ready":row.parsed.is_some(),
+            "info_validated":row.parsed.is_some() || acquisition.as_ref().is_some_and(|p| p.info_validated),
+            "hash_bytes":acquisition.as_ref().map_or(0, |p| p.hash_bytes),
+            "hash_total_bytes":acquisition.as_ref().map_or(0, |p| p.hash_total_bytes),
+            "layers_pending":meta.is_some_and(|meta| meta.layers_pending()),
+            "completed_announces":row.checkpoint.completed_announces.iter().map(|(key, delivered)|
+                json!({"swarm":crate::observation::swarm_key(*key),"delivered":delivered})).collect::<Vec<_>>(),
             "last_error":row.last_error.as_ref().or(tracker_error),
             "tracker_message":tracker_message,"retry_at":row.retry_at,"transfer":transfer})
     }
-    pub async fn reannounce(&self, hash: spill::protocol::identity::InfoHashV1) -> io::Result<()> {
+    pub async fn reannounce(
+        &self,
+        hash: spill::protocol::identity::TorrentIdentity,
+    ) -> io::Result<()> {
         let observer = self
             .session
             .torrent(hash)
@@ -291,7 +305,7 @@ impl Supervisor {
     fn failure(&self, id: &str, error: io::Error) {
         if self.running.get(id).is_some_and(|r| r.quarantined) {
             eprintln!("torrent {id}: {error}");
-        } else if let Err(e) = self.db.failure(id, &error.to_string()) {
+        } else if let Err(e) = self.db.failure(id, &error) {
             eprintln!("torrent {id}: {error}; recording failure: {e}");
         }
     }
@@ -462,7 +476,7 @@ impl Supervisor {
                     binding: binding.clone(),
                     resume: (!row.checkpoint.resume.is_empty())
                         .then(|| row.checkpoint.resume.clone()),
-                    completed_announce: row.checkpoint.completed_announce,
+                    completed_announces: row.checkpoint.completed_announces.clone(),
                 },
             },
             None => Destination::Open(row.output_dir.clone()),
@@ -486,7 +500,14 @@ impl Supervisor {
         let announce_id = row.id.clone();
         options.persistence = Persistence {
             resolved: Some(Box::new(move |meta| {
-                resolved_db.resolved(&resolved_id, meta).map_err(io_error)
+                resolved_db
+                    .resolved(&resolved_id, meta)
+                    .map_err(|error| match error {
+                        catalog::Error::Duplicate => {
+                            spill::engine::profile::AdmissionError::Duplicate.into()
+                        }
+                        _ => io_error(error),
+                    })
             })),
             binding: Some(Box::new(move |binding| {
                 binding_db.bind(&binding_id, &binding).map_err(io_error)
@@ -496,9 +517,19 @@ impl Supervisor {
                     .checkpoint(&checkpoint_id, |c| c.resume = resume)
                     .map_err(io_error)
             })),
-            completion_announce: Some(Box::new(move |delivered| {
+            completion_announce: Some(Box::new(move |key, delivered| {
                 announce_db
-                    .checkpoint(&announce_id, |c| c.completed_announce = Some(delivered))
+                    .checkpoint(&announce_id, |c| {
+                        if let Some((_, state)) = c
+                            .completed_announces
+                            .iter_mut()
+                            .find(|(swarm, _)| *swarm == key)
+                        {
+                            *state = delivered;
+                        } else {
+                            c.completed_announces.push((key, delivered));
+                        }
+                    })
                     .map_err(io_error)
             })),
         };

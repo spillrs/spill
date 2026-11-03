@@ -7,7 +7,6 @@ use std::{fmt, net::SocketAddr};
 use crate::protocol::{
     bencode::{self, Limits, Node, Value},
     compact::{self, PEER_V4_LENGTH, PEER_V6_LENGTH, PeersV4, PeersV6},
-    identity::InfoHashV1,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,7 +215,7 @@ impl std::error::Error for QueryError {}
 /// No IP override, random identity/key generation or event inference is added.
 #[derive(Clone, Debug)]
 pub struct AnnounceRequest<'a> {
-    pub info_hash: InfoHashV1,
+    pub info_hash: [u8; 20],
     pub peer_id: [u8; 20],
     pub port: u16,
     pub uploaded: u64,
@@ -270,7 +269,7 @@ impl AnnounceRequest<'_> {
                 "event",
             ],
         )?;
-        query.pair("info_hash", self.info_hash.as_bytes())?;
+        query.pair("info_hash", &self.info_hash)?;
         query.pair("peer_id", &self.peer_id)?;
         query.pair("compact", b"1")?;
         if let Some(key) = self.key {

@@ -115,7 +115,9 @@ impl Response {
             Err(e) => Self {
                 code: match e {
                     Error::Missing(_) => 3,
-                    Error::Invalid(_) | Error::Json(_) => 2,
+                    Error::Invalid(_)
+                    | Error::Json(_)
+                    | Error::Catalog(crate::catalog::Error::Duplicate) => 2,
                     Error::Io(ref error)
                         if matches!(
                             error.kind(),
@@ -135,13 +137,17 @@ impl Response {
 #[derive(Clone)]
 pub struct Control(pub Arc<Mutex<Supervisor>>);
 fn find(db: &Catalog, id: &str) -> Result<Arc<Row>, Error> {
+    let id = id.to_ascii_lowercase();
+    if let Some(row) = db.row(&id)? {
+        return Ok(row);
+    }
     let rows: Vec<_> = db
         .rows()?
         .into_iter()
-        .filter(|r| r.id.starts_with(id))
+        .filter(|r| r.hashes().any(|hash| hash.starts_with(&id)))
         .collect();
     match rows.len() {
-        0 => Err(Error::Missing(id.into())),
+        0 => Err(Error::Missing(id)),
         1 => Ok(rows.into_iter().next().unwrap()),
         _ => Err(Error::Invalid("ambiguous ID".into())),
     }
@@ -210,6 +216,8 @@ impl Control {
                 let parsed = Default::default();
                 let mut row = Row {
                     id: String::new(),
+                    v1: None,
+                    v2: None,
                     metainfo,
                     parsed,
                     magnet,
@@ -224,7 +232,7 @@ impl Control {
                     retry_at: 0,
                     added_at: crate::catalog::now(),
                 };
-                let id = match (&row.metainfo, &row.magnet) {
+                let identity = match (&row.metainfo, &row.magnet) {
                     (Some(bytes), None) if bytes.len() <= spill::engine::profile::MAX_META => {
                         let meta = supervisor
                             .config
@@ -235,27 +243,32 @@ impl Control {
                             row.settings.dht = false;
                             row.settings.pex = false;
                         }
-                        let id = meta.info_hash().to_string();
+                        let identity = meta.info_hash();
                         row.parsed = Some(Arc::new(meta));
-                        id
+                        identity
                     }
                     (None, Some(uri)) => {
-                        spill::protocol::magnet::Magnet::parse(uri, Default::default())
-                            .map_err(|e| Error::Invalid(e.to_string()))?
-                            .info_hash()
-                            .to_string()
+                        let magnet =
+                            spill::protocol::magnet::Magnet::parse(uri, Default::default())
+                                .map_err(|e| Error::Invalid(e.to_string()))?;
+                        magnet.info_hash()
                     }
                     (Some(_), None) => {
                         return Err(Error::Invalid("metainfo exceeds 16 MiB".into()));
                     }
                     _ => unreachable!("add source validated before dispatch"),
                 };
+                let id = identity.to_string();
+                row.id = id.clone();
+                row.v1 = identity.v1().map(|hash| hash.to_string());
+                row.v2 = identity.v2().map(|hash| hash.to_string());
                 validate_settings(&row, &row.settings)?;
-                if supervisor.db.row(&id)?.is_some() {
-                    return Err(Error::Invalid("torrent already exists".into()));
+                for hash in row.hashes() {
+                    if supervisor.db.row(hash)?.is_some() {
+                        return Err(crate::catalog::Error::Duplicate.into());
+                    }
                 }
                 std::fs::create_dir_all(&row.output_dir)?;
-                row.id = id.clone();
                 supervisor.db.insert(&row)?;
                 supervisor.reconcile().await?;
                 Ok(json!({"id":id}))
@@ -265,7 +278,7 @@ impl Control {
                 if !row.settings.trackers {
                     return Err(Error::Invalid("trackers are disabled".into()));
                 }
-                supervisor.reannounce(row.meta()?.info_hash()).await?;
+                supervisor.reannounce(row.identity()).await?;
                 Ok(json!({}))
             }
             Request::Get { id } => {

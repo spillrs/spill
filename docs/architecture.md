@@ -11,7 +11,7 @@ The `spill` Cargo package contains a library and the `spill` binary.
 
 | Layer | Responsibility |
 |---|---|
-| `spill::protocol` | Pure wire codecs and validated BitTorrent v1 metainfo. No I/O. |
+| `spill::protocol` | Pure wire codecs and validated BitTorrent v1/v2 and hybrid metainfo. No I/O. |
 | `spill::engine` | Sessions, torrent lifecycles, peers, discovery, storage, and observations. |
 | Daemon | CLI, configuration, SQLite catalog, supervisor, Unix control socket, and local web interface. |
 

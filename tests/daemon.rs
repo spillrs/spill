@@ -1,10 +1,15 @@
 mod common;
+#[allow(dead_code)]
+#[path = "common/metadata_peer.rs"]
+mod metadata_peer;
 #[path = "common/payload.rs"]
 mod payload;
+#[allow(dead_code)]
+#[path = "common/v2_peer.rs"]
+mod v2_peer;
 
 #[path = "daemon/accounting.rs"]
 mod accounting;
-
 #[path = "daemon/cli.rs"]
 mod cli;
 #[path = "daemon/config.rs"]
@@ -15,6 +20,8 @@ mod create;
 mod dht_ipv6;
 #[path = "daemon/discovery.rs"]
 mod discovery;
+#[path = "daemon/hybrid_magnets.rs"]
+mod hybrid_magnets;
 #[path = "daemon/lifecycle.rs"]
 mod lifecycle;
 #[path = "daemon/peers.rs"]
@@ -35,6 +42,8 @@ mod transport;
 mod udp_trackers;
 #[path = "daemon/urls.rs"]
 mod urls;
+#[path = "daemon/v2.rs"]
+mod v2;
 #[path = "daemon/web.rs"]
 mod web;
 #[path = "daemon/web_seeds.rs"]

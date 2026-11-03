@@ -102,7 +102,7 @@ async fn ipv6_restart_keeps_dht_enabled_for_saved_torrents() {
 }
 
 #[tokio::test]
-async fn restart_resumes_from_verified_checkpoint_and_rejects_old_catalogs() {
+async fn restart_resumes_from_verified_checkpoint_and_rejects_unsupported_catalogs() {
     let root = Temp::new();
     let source = WebSeed::new().await;
     let bytes = metainfo(Some(&source.url));
@@ -120,7 +120,7 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_old_catalogs() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        1
     );
     let resume: Vec<u8> = db
         .query_row("SELECT resume FROM torrents", [], |r| r.get(0))
@@ -157,7 +157,7 @@ async fn restart_resumes_from_verified_checkpoint_and_rejects_old_catalogs() {
     daemon.call(json!({"op":"recheck","id":id})).await;
     daemon.state(&id, "paused").await;
     daemon.stop().await;
-    db.execute_batch("PRAGMA user_version=3").unwrap();
+    db.execute_batch("PRAGMA user_version=2").unwrap();
     drop(db);
     let status = tokio::process::Command::new(BIN)
         .arg("serve")

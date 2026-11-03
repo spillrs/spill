@@ -61,6 +61,12 @@ impl Torrent {
             self.peer_cursor = position;
         }
         for peer in &mut self.remotes {
+            if peer.wire_mode == crate::protocol::peer::message::WireMode::V2 {
+                for &request in peer.asked.iter().filter(|r| r.index == index) {
+                    peer.kept
+                        .push((request, self.now + crate::engine::profile::REQUEST_TIMEOUT));
+                }
+            }
             peer.asked.retain(|request| request.index != index);
         }
         self.picker.on_hash_result(index, false, self.now)

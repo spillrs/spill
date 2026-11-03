@@ -71,11 +71,7 @@ pub(in crate::engine) enum Command {
     },
     Probe(SocketAddr),
     Closest(bool, NodeId, oneshot::Sender<Vec<Contact>>),
-    Peers(
-        crate::protocol::identity::InfoHashV1,
-        bool,
-        oneshot::Sender<Vec<SocketAddr>>,
-    ),
+    Peers([u8; 20], bool, oneshot::Sender<Vec<SocketAddr>>),
     Stats(bool, oneshot::Sender<Stats>),
 }
 struct Pending {
@@ -276,7 +272,7 @@ impl Node {
                             routing.touch(target, now);
                             let _ = reply.send(routing.lookup_candidates(target, now));
                         }
-                        Some(Command::Peers(hash, ipv6, reply)) => { let _ = reply.send(self.peers.get(hash.as_bytes(), ipv6, Instant::now())); }
+                        Some(Command::Peers(hash, ipv6, reply)) => { let _ = reply.send(self.peers.get(&hash, ipv6, Instant::now())); }
                         Some(Command::Probe(address)) => {
                             if self.bootstrapped[usize::from(address.is_ipv6())] { self.probe(address).await?; }
                             else if self.hints.len() < self.limits.command_queue && !self.hints.contains(&address) { self.hints.push(address); }
@@ -573,7 +569,7 @@ impl Node {
         let mut raw_peers = Vec::new();
         let target = match query {
             WireQuery::FindNode { target, want } => Some((target, want)),
-            WireQuery::GetPeers { info_hash, want } => Some((NodeId(*info_hash.as_bytes()), want)),
+            WireQuery::GetPeers { info_hash, want } => Some((NodeId(info_hash), want)),
             _ => None,
         };
         if let Some((target, want)) = target {
@@ -613,11 +609,11 @@ impl Node {
         let error = match query {
             WireQuery::Ping | WireQuery::FindNode { .. } => None,
             WireQuery::GetPeers { info_hash, .. } => {
-                token = self.tokens.issue(source.ip(), info_hash.as_bytes());
+                token = self.tokens.issue(source.ip(), &info_hash);
                 fields.insert(b"token", bytes(&token));
                 raw_peers = self
                     .peers
-                    .get(info_hash.as_bytes(), source.is_ipv6(), now)
+                    .get(&info_hash, source.is_ipv6(), now)
                     .into_iter()
                     .map(|p| match p {
                         SocketAddr::V4(p) => compact::encode_v4(p).to_vec(),
@@ -634,11 +630,11 @@ impl Node {
                 token,
             } => {
                 let peer = SocketAddr::new(source.ip(), port.unwrap_or(source.port()));
-                if !self.tokens.valid(token, source.ip(), info_hash.as_bytes()) {
+                if !self.tokens.valid(token, source.ip(), &info_hash) {
                     Some((203, b"invalid token".as_slice()))
                 } else if !crate::engine::network::peer(peer, self.allow_local_network) {
                     Some((203, b"peer endpoint blocked by network policy".as_slice()))
-                } else if !self.peers.put(*info_hash.as_bytes(), peer, now) {
+                } else if !self.peers.put(info_hash, peer, now) {
                     Some((202, b"peer store full or invalid port".as_slice()))
                 } else {
                     None

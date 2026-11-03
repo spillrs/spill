@@ -19,6 +19,8 @@ include = [
     "README.md",
     "src/**",
     "tests/**/*.rs",
+    "tests/protocol/fixtures/*.torrent",
+    "tests/protocol/fixtures/*.md",
     "tests/interop/*.py",
     "tests/interop/*.md",
     "tests/interop/baselines/*.json",
@@ -54,6 +56,7 @@ required-features = ["daemon"]
 base64 = { version = "0.23.1", optional = true }
 clap = { version = "4.6.7", features = ["derive"], optional = true }
 sha1 = { version = "0.11", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # Optional-to-observe structured diagnostics; no subscriber, payload or endpoint logging.

@@ -20,20 +20,28 @@ Pass `--socket` if your config sets a different `control_socket`.
 `--json` prints the daemon's raw JSON response data instead of text, one
 document per line. Use it for scripts. `--socket` and `--json` can appear
 before or after the client command. For `create`, `--json` prints the output path,
-`info_hash`, `total_bytes`, and `piece_count`; progress stays on stderr.
+`info_hash` (stable ID), `format` (`v1`, `v2` or `hybrid`), `v1` and `v2`
+(lowercase hex or null), `total_bytes`, and `piece_count`; progress stays on stderr.
 
 ## IDs
 
-A torrent's ID is its info hash as 40 hex characters. Commands accept any
-prefix that matches exactly one torrent; an ambiguous prefix is an input error.
+A metainfo torrent's stable ID is its 40-digit SHA-1 hash for v1 and hybrid
+torrents, or its full 64-digit SHA-256 hash for v2-only torrents. A magnet keeps
+its supplied primary ID after resolution. Commands accept the stable ID or any
+known full-hash alias, case-insensitively, and any prefix matching exactly one
+torrent. Exact matches take precedence; an ambiguous prefix is an input error.
+Both hashes of a hybrid address the same torrent, destination and accounting.
+Adding metainfo or a magnet with an already-known hash is a duplicate, even if
+the other hash or destination differs. `list`, `get` and `--json` output
+preserve full IDs; use prefixes when entering commands.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `create TARGET [OPTIONS]` | Create a BitTorrent v1 `.torrent` from a file or directory, without a daemon. See below. |
+| `create TARGET [OPTIONS]` | Create a v1, v2 or hybrid `.torrent` from a file or directory, without a daemon. See below. |
 | `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the new ID. Adding a torrent that already exists is an error. |
-| `list [--watch]` | All torrents: ID prefix, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
+| `list [--watch]` | All torrents: full ID, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
 | `status` | Same data as `list`, plus daemon health. Most useful with `--json`. |
 | `get ID` | Everything about one torrent: settings, state, progress, lifetime downloaded/uploaded bytes, timestamps, seeding time, errors, tracker messages, and live transfer details (rates, peers, trackers). |
 | `set ID KEY=JSON ...` | Change per-torrent settings. Values are JSON: numbers, `true`/`false`, or arrays. See below. |
@@ -41,7 +49,7 @@ prefix that matches exactly one torrent; an ambiguous prefix is an input error.
 | `pause ID` | Stop the torrent and keep it paused across restarts. |
 | `resume ID` | Allow a paused torrent to run again (it may wait for a free slot). |
 | `recheck ID` | Verify every piece against the data on disk, then leave the torrent paused. Use after moving or editing files, or after an unclean power loss. |
-| `reannounce ID` | Announce to the tracker again as soon as the tracker's `min interval` allows. Fails if trackers are disabled for the torrent. |
+| `reannounce ID` | Announce to the tracker again as soon as the tracker's `min interval` allows. Fails if trackers are disabled or the torrent is not running. A magnet still resolving metadata announces again once resolution finishes. |
 | `remove ID [--delete-payload]` | Remove the torrent. Files are kept unless `--delete-payload` is given; see [Torrents](torrents.md#removing-torrents). |
 | `health` | Daemon process ID, number of running torrents, listen address, port mapping and `admission_closed`. See [Troubleshooting](troubleshooting.md#torrents-stay-queued-after-an-internal-failure). |
 | `shutdown` | Stop the daemon cleanly. |
@@ -69,6 +77,7 @@ The options follow mktorrent's conventions:
 | `-a`, `--announce URL[,URL]` | Tracker tier. Comma-separated URLs are alternatives; repeating the option adds backup tiers. HTTP(S) and UDP are supported. Optional for trackerless torrents. |
 | `-c`, `--comment TEXT` | Comment outside the info hash. |
 | `-d`, `--no-date` | Omit the creation date, making unchanged input and options reproducible across worker counts. |
+| `-F`, `--format v1\|v2\|hybrid` | Torrent format; default v1. |
 | `-l`, `--piece-length N` | Piece size is **2^N bytes**, not N bytes. Range 15–28 (32 KiB–256 MiB); default 18 (256 KiB). |
 | `-n`, `--name NAME` | Torrent root name; defaults to the target basename. |
 | `-o`, `--output PATH` | Output path; default `NAME.torrent` in the current directory. Existing files, directories and symlinks are never replaced. Parent directory must exist. |
@@ -78,7 +87,10 @@ The options follow mktorrent's conventions:
 | `-v`, `--verbose` | Show piece progress even when stderr is not a terminal. Progress is otherwise automatic on terminals. |
 | `-w`, `--web-seed URL[,URL]` | HTTP(S) web seeds. May be repeated. For directory torrents, use a directory URL ending in `/`. |
 
-Files are sorted by their relative path bytes. Hidden and zero-length files are
+V1 sorts whole relative path bytes to match mktorrent. V2 and hybrid use BEP 52
+file-tree order (byte-sorted path components) and piece-aligned files; hybrids
+add BEP 47 padding entries. Hybrid creation refuses a source directory with a
+top-level `.pad` entry. Hidden and zero-length files are
 included; empty directories are omitted. Symlinks to files and directories are
 followed, including links outside the target tree; ancestor cycles, dangling
 links and special files are errors. Keep the source unchanged until creation
@@ -88,18 +100,47 @@ filesystem snapshot.
 Unlike mktorrent, spill rejects a directory containing no files, matching its
 supported metainfo format. [Limits](limits.md) apply; if a payload needs too many
 pieces, select a larger piece length. Paths are limited to 32 levels including
-the torrent root. This creates v1 torrents, not v2 or hybrid torrents.
+the torrent root.
 
 Creation only reads the source; it does not add or start seeding the torrent.
 Afterward, use `spill add FILE.torrent --output /absolute/parent` to verify and
 seed files already at the expected destination. A directory torrent expects
-`PARENT/NAME/`; a single-file torrent expects `PARENT/NAME`. A name override or
+`PARENT/NAME/`; a single-file torrent, including v2 and hybrid, expects
+`PARENT/NAME`. A name override or
 spill's [filesystem name sanitization](torrents.md#adding-torrents) can make those
 paths differ from the original source paths. Source symlinks are followed during
 creation, but are not adopted as payload paths when seeding.
 
 Without `--json`, `get ID` prints the complete torrent details as formatted JSON;
 `set ID ...` prints the resulting settings as `key=value` lines.
+
+## Identity and discovery in JSON
+
+`get`, `list` and `status` expose `id`, `format` (`"v1"`, `"v2"` or `"hybrid"`),
+`v1` (40-digit SHA-1 or `null`), and `v2` (64-digit SHA-256 or `null`).
+`metadata_ready` means validated metainfo sufficient for payload verification
+is available; it is independent of payload recovery or completion.
+`info_validated` means the info dictionary and all supplied magnet topics have
+passed validation. `hash_bytes` and `hash_total_bytes` report authenticated v2
+layer acquisition, excluding proof siblings and repeated roots, not payload
+progress. These counters are zero when no acquisition is needed at startup.
+V2-only magnets acquire layers before payload preparation; partial acquisition
+is discarded on stop. `layers_pending` identifies hybrids using SHA-1 while v2
+layers are absent. They rebuild layers from verified payload at full completion;
+the next start uses both swarms. See [v2 and hybrid torrents](v2.md).
+
+`completed_announces` is an array of `{ "swarm": "40 hex digits", "delivered":
+true }` records. `false` means pending; an absent record means no completion
+event was recorded for that swarm. Delivery is persisted independently for each
+hybrid swarm.
+
+`transfer.trackers[]` and `transfer.dht[]` identify their swarm with the same
+`swarm` key: SHA-1 for v1, the 20-byte SHA-256 prefix for v2. DHT observations
+are an array, empty when disabled. Hybrids with authenticated layers have
+independent tracker/DHT state for both keys but shared payload progress and
+budgets. Pending-layer hybrids use only the v1 swarm. Each tracker swarm
+receives the same torrent-wide upload/download counters, not per-swarm traffic;
+summing tracker accounting across both swarms can double-count bytes.
 
 ## Accounting in JSON
 

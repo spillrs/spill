@@ -90,6 +90,15 @@ impl Torrent {
         Ok(())
     }
     pub(super) fn expire_requests(&mut self) -> io::Result<()> {
+        for peer in 0..self.remotes.len() {
+            if self.remotes[peer]
+                .kept
+                .iter()
+                .any(|(_, at)| *at <= self.now)
+            {
+                self.retire_peer(peer, request_timeout())?;
+            }
+        }
         while let Some(connection) = self.picker.tick(self.now) {
             let position = *self
                 .remote_slots
@@ -121,7 +130,10 @@ impl Torrent {
                     remote.extensions.request_queue,
                 )
             };
-            if self.remotes[peer].asked.len() >= window {
+            if self.remotes[peer].asked.len() >= window
+                || self.remotes[peer].asked.len() + self.remotes[peer].kept.len()
+                    >= peer::MAX_REQUESTS
+            {
                 continue;
             }
             // Reuse the bounded candidate buffer for this peer's whole window.
@@ -133,12 +145,19 @@ impl Torrent {
                     .filter(|p| {
                         !p.hashing
                             && eligible(&self.remotes[peer], p.index)
+                            && !self.remotes[peer]
+                                .kept
+                                .iter()
+                                .any(|(r, _)| r.index == p.index)
                             && self.picker.accepts_peer(p.index, connection)
                     })
                     .map(|p| (p.source != Some(connection), p.index)),
             );
             self.request_candidates.sort_unstable();
-            while self.remotes[peer].asked.len() < window {
+            while self.remotes[peer].asked.len() < window
+                && self.remotes[peer].asked.len() + self.remotes[peer].kept.len()
+                    < peer::MAX_REQUESTS
+            {
                 let request = self
                     .request_candidates
                     .iter()
@@ -151,12 +170,18 @@ impl Torrent {
                     request
                 } else {
                     let remote = &self.remotes[peer];
-                    let available = if remote.choked {
+                    let available = if remote.choked || !remote.kept.is_empty() {
                         self.request_available.clone_from(&remote.pieces);
-                        for (bits, allowed) in
-                            self.request_available.iter_mut().zip(&remote.allowed_fast)
-                        {
-                            *bits &= allowed;
+                        if remote.choked {
+                            for (bits, allowed) in
+                                self.request_available.iter_mut().zip(&remote.allowed_fast)
+                            {
+                                *bits &= allowed;
+                            }
+                        }
+                        for (request, _) in &remote.kept {
+                            self.request_available[request.index as usize / 8] &=
+                                !(0x80 >> (request.index % 8));
                         }
                         self.request_available.as_slice()
                     } else {
@@ -228,7 +253,10 @@ impl Torrent {
                 crate::engine::profile::BLOCK_LEN,
                 remote.extensions.request_queue,
             );
-            while self.remotes[peer].asked.len() < window {
+            while self.remotes[peer].asked.len() < window
+                && self.remotes[peer].asked.len() + self.remotes[peer].kept.len()
+                    < peer::MAX_REQUESTS
+            {
                 let remote = &self.remotes[peer];
                 let request = self
                     .picker
@@ -238,6 +266,7 @@ impl Torrent {
                             && eligible(remote, p.request.index)
                             && !self.picker.piece(p.request.index).expect("piece").isolated
                             && !remote.asked.contains(&p.request)
+                            && !remote.kept.iter().any(|(r, _)| *r == p.request)
                             && self
                                 .remotes
                                 .iter()

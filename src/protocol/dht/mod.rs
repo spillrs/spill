@@ -19,9 +19,9 @@ pub struct Contact {
 pub enum OwnedQuery {
     Ping,
     FindNode(NodeId),
-    GetPeers(crate::protocol::identity::InfoHashV1),
+    GetPeers([u8; 20]),
     AnnouncePeer {
-        hash: crate::protocol::identity::InfoHashV1,
+        hash: [u8; 20],
         port: u16,
         token: Vec<u8>,
     },
@@ -59,11 +59,11 @@ impl OwnedQuery {
                 b"find_node"
             }
             Self::GetPeers(hash) => {
-                arguments.insert(b"info_hash", bytes(hash.as_bytes()));
+                arguments.insert(b"info_hash", bytes(hash));
                 b"get_peers"
             }
             Self::AnnouncePeer { hash, port, token } => {
-                arguments.insert(b"info_hash", bytes(hash.as_bytes()));
+                arguments.insert(b"info_hash", bytes(hash));
                 arguments.insert(b"port", BNode::new(Value::Integer(i64::from(*port))));
                 arguments.insert(b"token", bytes(token));
                 b"announce_peer"

@@ -12,7 +12,7 @@ pub(super) async fn run_socket(
         Stream::Tcp(mut socket) => {
             // Control frames must not wait for Nagle between batches of blocks.
             socket.set_nodelay(true)?;
-            handshake(&mut socket, start, &context.local, connection, events).await?;
+            handshake(&mut socket, start, &context, connection, events).await?;
             let (reader, writer) = socket.into_split();
             run_io_throttled(
                 (reader, context.read_pause),
@@ -29,7 +29,7 @@ pub(super) async fn run_socket(
             .await
         }
         Stream::Utp(mut socket) => {
-            handshake(&mut socket, start, &context.local, connection, events).await?;
+            handshake(&mut socket, start, &context, connection, events).await?;
             let (reader, writer) = socket.split();
             run_io_throttled(
                 (reader, context.read_pause),
@@ -50,23 +50,42 @@ pub(super) async fn run_socket(
 async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut S,
     start: HandshakeStart,
-    local: &Handshake,
+    context: &SocketContext,
     connection: ConnectionId,
     events: &mpsc::Sender<PeerEvent>,
 ) -> io::Result<()> {
     let HandshakeStart { role, deadline } = start;
+    let mut local = context.local.clone();
     if Instant::now() >= deadline {
         return Err(handshake_expired());
     }
     let remote = timeout_at(deadline, async {
-        if matches!(role, Role::Outbound) {
+        if let Role::Outbound(hash) = role {
+            local.info_hash = hash;
             socket.write_all(&local.encode()).await?;
         }
         let mut bytes = [0; HANDSHAKE_LEN];
         socket.read_exact(&mut bytes).await?;
-        let (remote, _) = Handshake::decode(&bytes).map_err(invalid_data)?;
+        let (mut remote, _) = Handshake::decode(&bytes).map_err(invalid_data)?;
         let reply = matches!(role, Role::Inbound);
-        if remote.info_hash != local.info_hash {
+        let addressed = match role {
+            Role::Inbound => context
+                .identity
+                .wire_keys()
+                .any(|key| key == remote.info_hash),
+            Role::Outbound(hash) => {
+                remote.info_hash == hash
+                    || (context
+                        .identity
+                        .v1()
+                        .is_some_and(|v1| *v1.as_bytes() == hash)
+                        && context
+                            .identity
+                            .v2()
+                            .is_some_and(|v2| v2.wire_key() == remote.info_hash))
+            }
+        };
+        if !addressed {
             tracing::debug!(
                 ?connection,
                 reason = "info_hash_mismatch",
@@ -83,6 +102,15 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
             return Err(protocol("self connection"));
         }
         if reply {
+            local.info_hash = remote.info_hash;
+            if let crate::protocol::identity::TorrentIdentity::Hybrid(v1, v2) = context.identity
+                && remote.info_hash == *v1.as_bytes()
+                && local.reserved[7] & 0x10 != 0
+                && remote.reserved[7] & 0x10 != 0
+            {
+                local.info_hash = v2.wire_key();
+            }
+            remote.info_hash = local.info_hash;
             if Instant::now() >= deadline {
                 return Err(handshake_expired());
             }
@@ -103,6 +131,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
             connection,
             reserved: remote.reserved,
             peer_id: remote.peer_id,
+            info_hash: remote.info_hash,
         })
         .await
         .map_err(|_| event_receiver_closed())?;

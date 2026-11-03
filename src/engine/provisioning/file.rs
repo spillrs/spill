@@ -112,22 +112,18 @@ impl FileStorage {
     /// mtime/length track content changes; ctime/link count deliberately do not,
     /// so creating or removing a library hardlink does not invalidate the payload.
     pub(in crate::engine) fn fingerprint_files<'a>(
-        files: impl Iterator<Item = Option<&'a File>>,
+        files: impl Iterator<Item = &'a File>,
     ) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         for file in files {
-            if let Some(file) = file {
-                let m = file.metadata()?;
-                out.extend_from_slice(&m.len().to_le_bytes());
-                out.extend_from_slice(&m.mtime().to_le_bytes());
-                out.extend_from_slice(&m.mtime_nsec().to_le_bytes());
-                // Replacement files must be rechecked even when a copy tool
-                // preserves their size and modification time.
-                out.extend_from_slice(&m.dev().to_le_bytes());
-                out.extend_from_slice(&m.ino().to_le_bytes());
-            } else {
-                out.extend_from_slice(&[0; FINGERPRINT_BYTES]);
-            }
+            let m = file.metadata()?;
+            out.extend_from_slice(&m.len().to_le_bytes());
+            out.extend_from_slice(&m.mtime().to_le_bytes());
+            out.extend_from_slice(&m.mtime_nsec().to_le_bytes());
+            // Replacement files must be rechecked even when a copy tool
+            // preserves their size and modification time.
+            out.extend_from_slice(&m.dev().to_le_bytes());
+            out.extend_from_slice(&m.ino().to_le_bytes());
         }
         Ok(out)
     }
@@ -245,7 +241,7 @@ impl FileStorage {
         Ok(())
     }
     pub(in crate::engine) fn fingerprint(&self) -> io::Result<Vec<u8>> {
-        Self::fingerprint_files(self.files.entries.iter().map(|e| e.file.as_ref()))
+        Self::fingerprint_files(self.files.entries.iter().filter_map(|e| e.file.as_ref()))
     }
     pub(in crate::engine) fn changed_since(&self, old: &[u8]) -> io::Result<PieceSet> {
         let now = self.fingerprint()?;
@@ -253,17 +249,22 @@ impl FileStorage {
             return Ok((0..self.meta.layout().piece_count()).collect());
         }
         let mut changed = vec![false; self.meta.layout().piece_count() as usize];
-        let mut offset = 0;
-        for (i, file) in self.meta.layout().files().iter().enumerate() {
+        for (i, file) in self
+            .meta
+            .layout()
+            .files()
+            .iter()
+            .filter(|file| file.kind() == FileKind::Data)
+            .enumerate()
+        {
             let start = i * FINGERPRINT_BYTES;
             let end = start + FINGERPRINT_BYTES;
             if file.length() > 0 && now[start..end] != old[start..end] {
-                let first = offset / u64::from(self.meta.layout().piece_length());
-                let last =
-                    (offset + file.length() - 1) / u64::from(self.meta.layout().piece_length());
+                let first = file.offset() / u64::from(self.meta.layout().piece_length());
+                let last = (file.offset() + file.length() - 1)
+                    / u64::from(self.meta.layout().piece_length());
                 changed[first as usize..=last as usize].fill(true);
             }
-            offset += file.length();
         }
         Ok(changed
             .iter()

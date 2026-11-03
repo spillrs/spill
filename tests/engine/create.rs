@@ -2,13 +2,13 @@ use crate::payload::Temp;
 use sha1::{Digest, Sha1};
 use spill::{
     engine::{
-        create::{self, Options},
+        create::{self, Format, Options},
         profile::Profile,
         session::{Limits, NetworkOptions, Session},
         settings::TorrentSettings,
         torrent::{Destination, RunPolicy, TorrentOptions, TorrentSource},
     },
-    protocol::bencode::Value,
+    protocol::{bencode::Value, identity::TorrentIdentity},
 };
 use std::{
     ffi::OsString,
@@ -16,6 +16,83 @@ use std::{
     os::unix::{ffi::OsStringExt, fs::symlink},
     time::Duration,
 };
+
+#[test]
+fn created_v2_and_hybrid_match_reference_vectors() {
+    let vectors = [
+        ("vectors/block", 16384),
+        ("vectors/empty", 0),
+        ("vectors/odd", 65659),
+        ("vectors/one", 1),
+        ("vectors/piece", 32768),
+    ];
+    for (format, fixture, name, files) in [
+        (
+            Format::V2,
+            include_bytes!("../protocol/fixtures/v2.torrent").as_slice(),
+            "vectors",
+            vectors.as_slice(),
+        ),
+        (
+            Format::Hybrid,
+            include_bytes!("../protocol/fixtures/hybrid.torrent").as_slice(),
+            "vectors",
+            vectors.as_slice(),
+        ),
+        (
+            Format::V2,
+            include_bytes!("../protocol/fixtures/v2-single.torrent").as_slice(),
+            "single",
+            [("single", 1)].as_slice(),
+        ),
+        (
+            Format::V2,
+            include_bytes!("../protocol/fixtures/v2-copies.torrent").as_slice(),
+            "copies",
+            [
+                ("copies/a", 65659),
+                ("copies/b", 65659),
+                ("copies/c", 65659),
+            ]
+            .as_slice(),
+        ),
+    ] {
+        let root = Temp::new();
+        let source = root.0.join(name);
+        for &(path, length) in files {
+            let path = root.0.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let bytes: Vec<_> = (0..length).map(|i| (i % 251) as u8).collect();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let options = Options {
+            format,
+            piece_length: 1 << 15,
+            creation_date: None,
+            announce: vec![vec!["http://example.invalid/announce".into()]],
+            ..Default::default()
+        };
+        let created = create::create(&source, &options, &mut |_, _| Ok(())).unwrap();
+        let actual = Profile::default().parse_owned(&created.metainfo).unwrap();
+        let expected = Profile::default().parse_owned(fixture).unwrap();
+        assert_eq!(created.info_hash, expected.info_hash());
+        assert_eq!(actual.info_bytes(), expected.info_bytes());
+        assert_eq!(
+            actual.layout().piece_count(),
+            expected.layout().piece_count()
+        );
+        for index in 0..actual.layout().piece_count() {
+            assert_eq!(actual.verification(index), expected.verification(index));
+        }
+        if name == "copies" {
+            let document = actual.decode_document();
+            let Value::Dictionary(layers) = document.get(b"piece layers").unwrap().value() else {
+                panic!("piece layers dictionary")
+            };
+            assert_eq!(layers.len(), 1);
+        }
+    }
+}
 
 #[tokio::test]
 async fn created_directory_is_reproducible_and_transfers_across_file_boundaries() {
@@ -34,92 +111,128 @@ async fn created_directory_is_reproducible_and_transfers_across_file_boundaries(
         std::fs::write(bundle.join(".hidden"), b"h").unwrap();
         std::fs::write(bundle.join("nested/0-empty"), []).unwrap();
         std::fs::write(bundle.join("nested-first"), b"prefix").unwrap();
-        let mut options = Options {
-            piece_length: 1 << 15,
-            threads: 1,
-            creation_date: None,
-            ..Default::default()
-        };
-        let first = create::create(&bundle, &options, &mut |_, _| Ok(())).unwrap();
-        options.threads = 4;
-        let mut progress = Vec::new();
-        let parallel = create::create(&bundle, &options, &mut |done, total| {
-            progress.push((done, total));
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(parallel.metainfo, first.metainfo);
-        assert_eq!(progress, (0..=4).map(|n| (n, 4)).collect::<Vec<_>>());
-        let meta = Profile::default().parse_owned(&parallel.metainfo).unwrap();
-        assert_eq!(parallel.info_hash, meta.info_hash());
-        let stream = [
-            b"h".as_slice(),
-            a.as_slice(),
-            b"prefix".as_slice(),
-            b.as_slice(),
-            b"tail".as_slice(),
-        ]
-        .concat();
-        assert_eq!(parallel.total_length, stream.len() as u64);
-        for (index, chunk) in stream.chunks(1 << 15).enumerate() {
-            assert_eq!(
-                meta.view().piece_hash(index as u32).unwrap().as_slice(),
-                Sha1::digest(chunk).as_slice()
-            );
-        }
-        assert_eq!(meta.layout().files().len(), 7);
-        let network = || NetworkOptions {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            allow_local_network: true,
-            ..Default::default()
-        };
-        let settings = TorrentSettings {
-            trackers: false,
-            dht: false,
-            pex: false,
-            web_seeds: false,
-            ..Default::default()
-        };
-        let seed = Session::bind(network(), Limits::default()).await.unwrap();
-        let mut seed_options = TorrentOptions::new(
-            TorrentSource::Metainfo(meta.clone()),
-            Destination::Adopt(source.0.clone()),
-        );
-        seed_options.settings = settings.clone();
-        seed.admit(seed_options)
-            .unwrap()
-            .wait_complete()
-            .await
+        for format in [Format::V1, Format::V2, Format::Hybrid] {
+            let mut options = Options {
+                format,
+                piece_length: 1 << 15,
+                threads: 1,
+                creation_date: None,
+                ..Default::default()
+            };
+            let first = create::create(&bundle, &options, &mut |_, _| Ok(())).unwrap();
+            options.threads = 4;
+            let mut progress = Vec::new();
+            let parallel = create::create(&bundle, &options, &mut |done, total| {
+                progress.push((done, total));
+                Ok(())
+            })
             .unwrap();
-        let destination = Temp::new();
-        let downloader = Session::bind(network(), Limits::default()).await.unwrap();
-        let mut download = TorrentOptions::new(
-            TorrentSource::Metainfo(meta),
-            Destination::Create(destination.0.clone()),
-        );
-        download.settings = settings;
-        download.peers = vec![seed.local_addr()];
-        download.run = RunPolicy::UntilComplete;
-        let handle = downloader.admit(download).unwrap();
-        handle.join().await.unwrap();
-        handle.wait_complete().await.unwrap();
-        downloader.shutdown().await.unwrap();
-        seed.shutdown().await.unwrap();
-        for relative in [
-            ".hidden",
-            "a",
-            "a-empty",
-            "nested-first",
-            "nested/0-empty",
-            "nested/b",
-            "z",
-        ] {
-            assert_eq!(
-                std::fs::read(destination.0.join("bundle").join(relative)).unwrap(),
-                std::fs::read(bundle.join(relative)).unwrap()
+            assert_eq!(parallel.metainfo, first.metainfo);
+            if format == Format::V1 {
+                assert_eq!(progress, (0..=4).map(|n| (n, 4)).collect::<Vec<_>>());
+            } else {
+                assert_eq!(
+                    progress,
+                    (0..=parallel.piece_count)
+                        .map(|n| (n, parallel.piece_count))
+                        .collect::<Vec<_>>()
+                );
+            }
+            let meta = Profile::default().parse_owned(&parallel.metainfo).unwrap();
+            assert_eq!(parallel.info_hash, meta.info_hash());
+            assert!(matches!(
+                (format, parallel.info_hash),
+                (Format::V1, TorrentIdentity::V1(_))
+                    | (Format::V2, TorrentIdentity::V2(_))
+                    | (Format::Hybrid, TorrentIdentity::Hybrid(..))
+            ));
+            let stream = [
+                b"h".as_slice(),
+                a.as_slice(),
+                b"prefix".as_slice(),
+                b.as_slice(),
+                b"tail".as_slice(),
+            ]
+            .concat();
+            if format == Format::V1 {
+                assert_eq!(parallel.total_length, stream.len() as u64);
+                for (index, chunk) in stream.chunks(1 << 15).enumerate() {
+                    assert_eq!(
+                        meta.view().piece_hash(index as u32).unwrap().as_slice(),
+                        Sha1::digest(chunk).as_slice()
+                    );
+                }
+                assert_eq!(meta.layout().files().len(), 7);
+            }
+            let paths: Vec<_> = meta
+                .layout()
+                .files()
+                .iter()
+                .filter(|f| f.kind() == spill::protocol::metainfo::FileKind::Data)
+                .map(|f| f.path().iter().map(|p| p.as_ref()).collect::<Vec<_>>())
+                .collect();
+            let nested = paths
+                .iter()
+                .position(|p| p == &vec![b"nested".as_slice(), b"b".as_slice()])
+                .unwrap();
+            let prefix = paths
+                .iter()
+                .position(|p| p == &vec![b"nested-first".as_slice()])
+                .unwrap();
+            assert_eq!(nested < prefix, format != Format::V1);
+            let network = || NetworkOptions {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                allow_local_network: true,
+                ..Default::default()
+            };
+            let settings = TorrentSettings {
+                trackers: false,
+                dht: false,
+                pex: false,
+                web_seeds: false,
+                ..Default::default()
+            };
+            let seed = Session::bind(network(), Limits::default()).await.unwrap();
+            let mut seed_options = TorrentOptions::new(
+                TorrentSource::Metainfo(meta.clone()),
+                Destination::Adopt(source.0.clone()),
             );
+            seed_options.settings = settings.clone();
+            seed.admit(seed_options)
+                .unwrap()
+                .wait_complete()
+                .await
+                .unwrap();
+            let destination = Temp::new();
+            let downloader = Session::bind(network(), Limits::default()).await.unwrap();
+            let mut download = TorrentOptions::new(
+                TorrentSource::Metainfo(meta),
+                Destination::Create(destination.0.clone()),
+            );
+            download.settings = settings;
+            download.peers = vec![seed.local_addr()];
+            download.run = RunPolicy::UntilComplete;
+            let handle = downloader.admit(download).unwrap();
+            handle.join().await.unwrap();
+            handle.wait_complete().await.unwrap();
+            downloader.shutdown().await.unwrap();
+            seed.shutdown().await.unwrap();
+            for relative in [
+                ".hidden",
+                "a",
+                "a-empty",
+                "nested-first",
+                "nested/0-empty",
+                "nested/b",
+                "z",
+            ] {
+                assert_eq!(
+                    std::fs::read(destination.0.join("bundle").join(relative)).unwrap(),
+                    std::fs::read(bundle.join(relative)).unwrap()
+                );
+            }
+            assert!(!destination.0.join("bundle/nested/empty-dir").exists());
         }
-        assert!(!destination.0.join("bundle/nested/empty-dir").exists());
     })
     .await
     .expect("created torrent transfer");

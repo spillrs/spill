@@ -1,4 +1,4 @@
-//! File selection projected onto v1's indivisible, hash-verified pieces.
+//! File selection projected onto indivisible, hash-verified pieces.
 //! This is a scheduling plan, not storage authority or a durable checkpoint.
 use crate::protocol::metainfo::{FileKind, Layout};
 use std::io;

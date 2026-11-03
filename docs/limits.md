@@ -9,7 +9,14 @@ Torrents beyond these limits are refused when added.
 | `.torrent` / metadata size | 16 MiB |
 | Pieces per torrent | 1,048,576 |
 | Piece size | 512 MiB |
-| Files per torrent | 100,000 |
+| Data files per torrent (excluding padding) | 100,000 |
+
+V2 expanded piece commitments, cached proof-tree nodes above the piece layer,
+and expanded paths share a separate 16 MiB admission budget. Proof trees are
+cached per file root on first use. For one large file this allows approximately
+262,000 pieces (256K), fewer when expanded paths consume part of the budget.
+Magnet size admission includes its trackers and required piece layers and runs
+before layer acquisition.
 
 Only the first 32 web seeds of a torrent are used.
 
@@ -78,6 +85,9 @@ and per-run notes before drawing comparisons.
 
 - No protocol encryption, so peers that require it can't be reached.
 - Automatic mapping supports NAT-PMP and UPnP IGD, not PCP or IPv6 pinholes.
-- No BitTorrent v2 or hybrid torrents.
+- V2 and hybrid interoperability has been checked only against libtorrent
+  2.1.2.0 on a controlled network; see [Scope](index.md#scope) and
+  [v2 and hybrid torrents](v2.md#compatibility). Web-seed checks do not cover
+  public-swarm capacity or HTTPS certificate interoperability.
 - Files of a running torrent stay open; torrents with very many files are
   costly (see above).

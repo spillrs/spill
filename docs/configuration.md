@@ -11,6 +11,15 @@ Rules that apply to the whole file:
 - `[defaults]` is copied into each torrent when it is added. Changing it later
   does not affect torrents that already exist; use `spill set` for those.
 
+## State directory compatibility
+
+The catalog requires schema version **1**; incompatible catalogs are rejected.
+There is no migration or legacy reader. Use a fresh `state_dir` and
+re-add torrents. Keep the old state directory as a backup: it contains the
+authority to reopen its partial downloads. Complete payload can be adopted from
+the original download directory; partial files are not adopted into a fresh
+catalog. The HTTP/control JSON changes are described in [Command line](cli.md).
+
 ## Daemon keys
 
 The table shows Linux path defaults. On macOS, `state_dir` defaults to

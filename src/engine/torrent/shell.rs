@@ -6,7 +6,7 @@ use crate::engine::{
     profile::Profile,
     storage::writer::{Output, Writer},
 };
-use crate::protocol::{identity::InfoHashV1, metainfo::OwnedMetainfo, peer::Handshake};
+use crate::protocol::{identity::TorrentIdentity, metainfo::OwnedMetainfo, peer::Handshake};
 use std::{collections::VecDeque, io, sync::Arc};
 use tokio::{sync::Notify, time::Instant};
 
@@ -19,9 +19,10 @@ pub(in crate::engine) struct Shell {
     writes: usize,
     events: VecDeque<Event>,
     metadata: Option<OwnedMetainfo>,
+    metadata_progress: Option<(u64, u64)>,
     wake_at: Option<Instant>,
     changes: crate::engine::bandwidth::Changes,
-    peer_hints: Vec<(ConnectionId, Vec<std::net::SocketAddr>)>,
+    peer_hints: Vec<Vec<std::net::SocketAddr>>,
     hint_limit: usize,
     dht_hints: Vec<std::net::SocketAddr>,
     connects: Vec<std::net::SocketAddr>,
@@ -49,11 +50,13 @@ impl Shell {
             verified,
             u64::from_ne_bytes(entropy),
         )?;
-        Self::with_core(core, meta.info_hash(), peer_id, profile, Some(writer))
+        let upgrade =
+            matches!(meta.info_hash(), TorrentIdentity::Hybrid(..)) && !meta.layers_pending();
+        Self::with_core(core, upgrade, peer_id, profile, Some(writer))
     }
     fn with_core(
         mut core: Torrent,
-        hash: InfoHashV1,
+        upgrade: bool,
         peer_id: [u8; 20],
         profile: Profile,
         writer: Option<&Writer>,
@@ -61,7 +64,13 @@ impl Shell {
         core.set_identity(peer_id);
         let capacity_changed =
             writer.map_or_else(|| Arc::new(Notify::new()), Writer::capacity_changed);
-        let peers = Peers::new(hash, peer_id, profile, capacity_changed.clone())?;
+        let peers = Peers::new(
+            core.info_hash(),
+            upgrade,
+            peer_id,
+            profile,
+            capacity_changed.clone(),
+        )?;
         capacity_changed.notify_one();
         let changes = peers.bandwidth.changes();
         Ok(Self {
@@ -73,6 +82,7 @@ impl Shell {
             writes: 0,
             events: VecDeque::new(),
             metadata: None,
+            metadata_progress: None,
             wake_at: None,
             changes,
             peer_hints: Vec::new(),
@@ -88,12 +98,22 @@ impl Shell {
         })
     }
     pub(in crate::engine) fn magnet(
-        hash: InfoHashV1,
+        hash: TorrentIdentity,
         peer_id: [u8; 20],
         profile: Profile,
+        discovery_bytes: usize,
     ) -> io::Result<Self> {
-        let core = Torrent::magnet(Instant::now().into_std(), hash, profile)?;
-        Self::with_core(core, hash, peer_id, profile, None)
+        let core = Torrent::magnet(Instant::now().into_std(), hash, profile, discovery_bytes)?;
+        Self::with_core(
+            core,
+            matches!(hash, TorrentIdentity::Hybrid(..)),
+            peer_id,
+            profile,
+            None,
+        )
+    }
+    pub(in crate::engine) fn take_metadata_progress(&mut self) -> Option<(u64, u64)> {
+        self.metadata_progress.take()
     }
     pub(in crate::engine) fn take_metadata(&mut self) -> Option<OwnedMetainfo> {
         self.metadata.take()
@@ -151,6 +171,10 @@ impl Shell {
                     .read(request.index, request.begin, request.length)?;
                 self.used_write_slot();
             }
+            Action::ReadLeaves { id, request, piece } => {
+                self.writer()?.leaves(id, request, piece)?;
+                self.used_write_slot();
+            }
             Action::Discard { piece } => self.writer()?.discard(piece),
             Action::Flush => {
                 self.writer()?.flush()?;
@@ -160,6 +184,12 @@ impl Shell {
             Action::Completed => self.events.push_back(Event::Complete),
             Action::Stalled(reason) => self.events.push_back(Event::Stalled(reason)),
             Action::Observed(event) => self.events.push_back(event),
+            Action::MetadataProgress {
+                hash_bytes,
+                hash_total_bytes,
+            } => {
+                self.metadata_progress = Some((hash_bytes, hash_total_bytes));
+            }
             Action::MetadataResolved(meta) => {
                 self.metadata = Some(meta);
                 self.events.push_back(Event::Complete);
@@ -171,9 +201,9 @@ impl Shell {
                     self.dht_hints.push(addr);
                 }
             }
-            Action::PeerHints { id, contacts } => {
+            Action::PeerHints { contacts } => {
                 if self.peer_hints.len() < self.hint_limit {
-                    self.peer_hints.push((id, contacts));
+                    self.peer_hints.push(contacts);
                 }
             }
             Action::Failed(error) => return Err(error),
@@ -252,6 +282,7 @@ impl Shell {
                 connection: id,
                 reserved,
                 peer_id,
+                info_hash,
             } => {
                 self.peers.handshake_received(id);
                 self.feed(Input::PeerConnected {
@@ -259,7 +290,7 @@ impl Shell {
                     handshake: Handshake {
                         reserved,
                         peer_id,
-                        info_hash: *self.info_hash().as_bytes(),
+                        info_hash,
                     },
                 })
             }
@@ -302,6 +333,17 @@ impl Shell {
                 index: piece,
                 verified: ok,
             } => self.feed(Input::HashDone { piece, ok })?,
+            Output::Leaves {
+                id,
+                request,
+                leaves,
+            } => {
+                self.feed(Input::LeavesDone {
+                    id,
+                    request,
+                    leaves,
+                })?;
+            }
             Output::Read {
                 index,
                 offset,
@@ -405,8 +447,10 @@ impl Shell {
         &mut self,
         queue: &mut crate::engine::session::dial::Contacts,
     ) {
-        for (id, contacts) in self.peer_hints.drain(..) {
-            let _ = queue.add_pex(id, &contacts);
+        // Hybrid PEX may include v1-only peers even on an upgraded connection.
+        let hash = self.info_hash().wire_key();
+        for contacts in self.peer_hints.drain(..) {
+            let _ = queue.add_pex(hash, &contacts);
         }
     }
     pub(in crate::engine) fn drain_dht(&mut self, node: &crate::engine::session::dht::Handle) {

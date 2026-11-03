@@ -102,6 +102,7 @@ impl Seed {
                 connection,
                 reserved: [0; 8],
                 peer_id: [0; 20],
+                info_hash: self.meta.info_hash().wire_key(),
             })
             .await
             .map_err(closed)?;
@@ -191,7 +192,7 @@ impl Seed {
         match message {
             Message::Request(request) => {
                 message
-                    .validate_layout(self.meta.layout(), crate::engine::profile::BLOCK_LEN)
+                    .validate_layout(self.meta.layout(), crate::engine::profile::BLOCK_LEN, false)
                     .map_err(|_| invalid("invalid web seed request"))?;
                 if pending.len() >= crate::engine::profile::MAX_REQUEST_QUEUE {
                     return Err(invalid("web seed request queue exhausted"));

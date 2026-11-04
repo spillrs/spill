@@ -34,7 +34,6 @@ impl Resources {
 pub(super) struct Context {
     pub bandwidth: crate::engine::bandwidth::Throttle,
     pub networking: Networking,
-    pub metadata_network: Option<metadata::Network>,
     pub rechecks: Arc<Semaphore>,
     pub requests: watch::Receiver<()>,
     pub stop: watch::Receiver<bool>,
@@ -48,7 +47,7 @@ pub(super) struct Context {
 pub(super) async fn run(
     resources: &mut Resources,
     mut options: TorrentOptions,
-    context: Context,
+    mut context: Context,
 ) -> io::Result<()> {
     let stopped = || {
         context
@@ -80,10 +79,10 @@ pub(super) async fn run(
             context
                 .status
                 .send_modify(|s| s.progress.phase = TorrentPhase::ResolvingMetadata);
-            let result = context
-                .metadata_network
-                .as_ref()
-                .expect("online magnet")
+            let Networking::Online(network) = &mut context.networking else {
+                unreachable!("online magnet");
+            };
+            let result = network
                 .resolve(
                     &mut resources.metadata,
                     &magnet,
@@ -105,7 +104,11 @@ pub(super) async fn run(
             };
             drained?;
             assert!(magnet.info_hash().matches_info_bytes(meta.info_bytes()));
-            context.retirement.resolve(&meta)?;
+            let serving = options.run != RunPolicy::Recheck && !context.inspection;
+            if !serving {
+                context.networking = Networking::Recheck;
+            }
+            context.retirement.resolve(&meta, serving)?;
             super::options::selection(&meta, &options.settings)?;
             context
                 .metadata
@@ -281,6 +284,7 @@ pub(super) async fn run(
         metainfo: meta,
         profile: options.profile,
         peers: options.peers,
+        metadata_peers: std::mem::take(&mut resources.metadata.peers),
         dht: None,
         run: options.run,
         log_peer_endpoints: options.log_peer_endpoints,

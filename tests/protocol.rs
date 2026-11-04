@@ -14,6 +14,8 @@ mod compact;
 mod identity;
 #[path = "protocol/krpc.rs"]
 mod krpc;
+#[path = "protocol/lsd.rs"]
+mod lsd;
 #[path = "protocol/metadata.rs"]
 mod metadata;
 #[path = "protocol/mse.rs"]

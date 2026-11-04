@@ -26,6 +26,8 @@ mod encryption;
 mod hybrid;
 #[path = "engine/lifecycle.rs"]
 mod lifecycle;
+#[path = "engine/lsd.rs"]
+mod lsd;
 #[path = "engine/magnets_v2.rs"]
 mod magnets_v2;
 #[path = "engine/outcomes.rs"]

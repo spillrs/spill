@@ -40,7 +40,7 @@ Downloads default to `~/Downloads` on both platforms. If you override
 | `control_socket` | `$XDG_RUNTIME_DIR/spill.sock`, else `~/.local/state/spill/spill.sock` | Unix socket for `spill`. Created with mode `0600`. |
 | `listen` | `"0.0.0.0:6881"` | Address and port for TCP peers and for uTP peers, the DHT and UDP trackers (UDP, same port). Both must be free. `"[::]:6881"` listens on IPv6 and IPv4 (dual-stack). |
 | `web_listen` | unset (off) | Address for the web interface. Must be a loopback address, for example `"127.0.0.1:8080"`. |
-| `allow_local_network` | `false` | Allow outbound connections to private, loopback and link-local addresses (LAN peers, a tracker on your network). Multicast, unspecified and broadcast addresses and port 0 are never allowed. Inbound connections are not filtered. |
+| `allow_local_network` | `false` | Allow outbound connections to private, loopback and link-local addresses (LAN peers, a tracker on your network), and enable BEP 14 local service discovery for torrents with `dht = true`. LSD uses multicast UDP port 6771; peer destinations still cannot be multicast, unspecified, broadcast or port 0. Inbound connections are not filtered. |
 | `utp` | `true` | Accept uTP peers and try uTP before TCP when dialing. Set `false` for TCP-only peers; UDP trackers and the DHT remain available. |
 | `peer_encryption` | `"preferred"` | MSE/PE for TCP and uTP: `"allowed"` tries plaintext first, `"preferred"` tries MSE first, `"required"` permits only RC4 application streams. The first two accept plaintext and allow one alternate-mode retry after a negotiation close/reset. See [Peer encryption](networking.md#peer-encryption). |
 | `port_mapping` | `true` | Ask the IPv4 gateway to forward the listen port for TCP and UDP, using NAT-PMP then UPnP IGD. Failures never stop torrents. The system-service example disables it. |
@@ -146,7 +146,7 @@ interface.
 | `seed_time` | `0` | Pause after this many seconds of active seeding. Paused time and downtime do not count. `0` disables the rule. |
 | `file_priorities` | `[]` | `[]` downloads every file. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in the order `spill files` shows. Only meaningful per torrent. |
 | `trackers` | `true` | Announce to the torrent's trackers. |
-| `dht` | `true` | Use the DHT over the address families supported by `listen`. Always off for private torrents. |
+| `dht` | `true` | Use the DHT over the address families supported by `listen`, and local service discovery when `allow_local_network = true`. Always off for private torrents. |
 | `pex` | `true` | Exchange peers with connected peers. Always off for private torrents. |
 | `web_seeds` | `true` | Download from the torrent's HTTP web seeds. |
 

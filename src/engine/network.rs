@@ -27,7 +27,14 @@ pub(in crate::engine) fn source(address: SocketAddr, allow_local: bool) -> bool 
     }
 }
 
-pub(in crate::engine) fn peer(address: SocketAddr, allow_local: bool) -> bool {
+pub(in crate::engine) fn peer(mut address: SocketAddr, allow_local: bool) -> bool {
+    // LSD learns the interface scope from the kernel for link-local IPv6 peers.
+    if allow_local
+        && let SocketAddr::V6(v6) = &mut address
+        && v6.ip().is_unicast_link_local()
+    {
+        v6.set_scope_id(0);
+    }
     source(address, allow_local) && (allow_local || address.port() >= 1024)
 }
 

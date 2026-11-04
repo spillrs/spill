@@ -716,6 +716,7 @@ async fn udp_exchange(
 }
 
 pub(super) struct Discovery {
+    pub(in crate::engine) lsd: Option<crate::engine::session::lsd::Registration>,
     pub(in crate::engine) dht: Vec<crate::engine::dht::Discovery>,
     pub(in crate::engine) announces: Vec<Announcer>,
     pub(in crate::engine) contacts: Option<crate::engine::session::dial::Contacts>,
@@ -725,6 +726,7 @@ pub(super) struct Discovery {
 impl Discovery {
     pub(in crate::engine) fn empty() -> Self {
         Self {
+            lsd: None,
             dht: Vec::new(),
             announces: Vec::new(),
             contacts: None,
@@ -747,6 +749,11 @@ impl Discovery {
                 ));
             }
         }
+        self.lsd = session
+            .lsd
+            .as_ref()
+            .filter(|_| options.settings.dht)
+            .map(|lsd| lsd.register(crate::engine::core::swarm_identity(&options.metainfo)));
         self.web_seeds = if options.settings.web_seeds && left != 0 {
             Some(crate::engine::webseed::WebSeeds::new(
                 &options.metainfo,
@@ -784,6 +791,11 @@ impl Discovery {
         }
         let (mut contacts, dials) = session.dial_queue.client(options.profile);
         contacts.add_direct(options.metainfo.info_hash().wire_key(), &options.peers)?;
+        // Metadata acquisition closes its sockets; reconnect to those peers without
+        // waiting for discovery to return them again.
+        for &(hash, address, source) in &options.metadata_peers {
+            contacts.add(hash, &[address], source)?;
+        }
         self.contacts = Some(contacts);
         self.dials = Some(dials);
         Ok(())
@@ -792,6 +804,7 @@ impl Discovery {
         &mut self,
         _: crate::engine::torrent::RunPolicy,
     ) -> io::Result<()> {
+        self.lsd = None;
         self.dht.clear();
         let mut result = Ok(());
         for a in &mut self.announces {
@@ -800,6 +813,7 @@ impl Discovery {
         result.and(self.drain().await)
     }
     pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
+        self.lsd = None;
         self.dht.clear();
         let mut announces = Ok(());
         for a in &mut self.announces {

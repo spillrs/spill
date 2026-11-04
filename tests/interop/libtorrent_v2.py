@@ -168,7 +168,7 @@ class Engine:
 
 class Libtorrent:
     def __init__(self, lt, root, torrent, output, host, *, selected=None, expected_corruption=False,
-                 dht=False, pex=False, magnet=None):
+                 dht=False, pex=False, magnet=None, lsd=False, listen=None):
         self.lt, self.root = lt, root
         self.expected_corruption = expected_corruption
         self.hash_failures = 0
@@ -178,7 +178,7 @@ class Libtorrent:
         output.mkdir(parents=True, exist_ok=True)
         self.log = (root / "alerts.jsonl").open("w")
         self.session = lt.session({
-            "listen_interfaces": f"{host}:0", "enable_dht": dht, "enable_lsd": False,
+            "listen_interfaces": listen or f"{host}:0", "enable_dht": dht, "enable_lsd": lsd,
             "dht_bootstrap_nodes": "", "dht_ignore_dark_internet": False,
             "dht_restrict_routing_ips": False, "dht_restrict_search_ips": False,
             "dht_block_ratelimit": 1000, "close_redundant_connections": not pex,
@@ -191,8 +191,11 @@ class Libtorrent:
         })
         params = lt.parse_magnet_uri(magnet) if magnet else lt.load_torrent_file(str(torrent))
         params.save_path = str(output)
-        params.flags |= (lt.torrent_flags.paused | lt.torrent_flags.disable_dht
-                         | lt.torrent_flags.disable_lsd)
+        params.flags |= lt.torrent_flags.paused | lt.torrent_flags.disable_dht
+        if lsd:
+            params.flags &= ~lt.torrent_flags.disable_lsd
+        else:
+            params.flags |= lt.torrent_flags.disable_lsd
         if pex:
             params.flags &= ~lt.torrent_flags.disable_pex
         else:

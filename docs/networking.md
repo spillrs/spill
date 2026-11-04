@@ -2,8 +2,8 @@
 
 ## One port
 
-spill uses a single port number, `listen` (default `6881`), for everything
-inbound:
+spill uses a single port number, `listen` (default `6881`), for peer and tracker
+traffic and the DHT:
 
 - **TCP**: incoming peer connections.
 - **UDP**: uTP peer connections, the DHT and replies from UDP trackers, on the same socket.
@@ -11,6 +11,10 @@ inbound:
 Both must be free when the daemon starts, even with the DHT disabled. Allow
 inbound TCP and UDP through the host firewall. Without inbound reachability,
 spill still downloads and uploads over connections it makes itself.
+
+Local service discovery additionally shares multicast UDP port `6771` with other
+clients when `allow_local_network = true`. Allow that port on the local network
+if using LSD; it does not need router port forwarding.
 
 ## Peer transports
 
@@ -74,10 +78,12 @@ See [Troubleshooting](troubleshooting.md#nobody-can-connect-to-me) if mapping fa
 | Trackers | HTTP, HTTPS and UDP trackers listed in the torrent or magnet. | `trackers` |
 | DHT | The distributed hash table (BEP 5/32), over IPv4 and IPv6. | `dht` |
 | PEX | Peer lists exchanged with connected peers (BEP 11). | `pex` |
+| LSD | Local service discovery on the LAN (BEP 14). | `allow_local_network` and per-torrent `dht` |
 | Web seeds | Plain HTTP(S) servers holding the files (BEP 19). | `web_seeds` |
 
-All four are on by default, configurable per torrent. Private torrents always
-have DHT and PEX off.
+Trackers, DHT, PEX and web seeds are on by default, configurable per torrent.
+LSD is off unless LAN access is enabled and follows the torrent's `dht` setting.
+Private torrents always have DHT, PEX and LSD off.
 
 HTTP connections use HTTP/1 without system proxies. HTTPS verifies certificates
 against bundled Mozilla roots, not the OS trust store; this also applies to
@@ -131,14 +137,54 @@ example with a reachable router). Link-local and scoped DHT endpoints are not
 supported. Outgoing DHT datagrams are limited to 1024 bytes, with at most 40
 peers per reply. Query rate limits group IPv6 sources by /64.
 
+### Local service discovery
+
+BEP 14 finds nearby peers without a tracker or DHT bootstrap, including peers
+that can resolve a trackerless magnet. The daemon enables it with
+`allow_local_network = true`; library sessions must explicitly set both
+`NetworkOptions::lsd` and `allow_local_network`. The per-torrent `dht` setting
+gates LSD independently of whether the session has DHT capability.
+
+spill joins `239.192.152.143:6771` and, for IPv6 or dual-stack listeners,
+`[ff15::efc0:988f]:6771`. A specific listen address selects its interface;
+an unspecified address selects up, multicast-capable interfaces, excluding
+loopback and point-to-point links (such as PPP and many VPN tunnels). A specific
+listen address explicitly selects its interface, including a point-to-point link.
+Announcements go out on each selected interface with TTL/hop limit 1, advertising
+the local listen port rather than a router-mapped port. A specific IPv6 listen
+address is also used as the multicast source, even when that interface has
+other IPv6 addresses. Interface checks run
+every minute off the async executor. Sockets and memberships are rebuilt only
+when the selected interfaces change or after setup or I/O errors. A failed
+join skips only that interface and is retried at the next check; other
+interfaces remain usable. A failed sending interface is left out until the
+rebuild; successful interfaces keep their normal announce cadence. Socket failures are logged; `spill health` under
+`network.lsd` reports errors unless an announce batch succeeds on at least one
+interface. These failures do not stop torrents or make session shutdown fail.
+
+New registrations announce immediately, bypassing the session-wide minute
+limit so a magnet's first announce is not delayed past its metadata deadline.
+Repeat announcements run every five minutes, with at most one repeat batch per
+minute. Bulk registration can send several initial batches back to back, with
+up to 20 hashes per packet. Repeat batches are round-robin scheduled. Stopping
+removes the registration; BEP 14 has no stop message. Peer JSON identifies outbound LSD contacts with `source: "lsd"`.
+Other peers reconnected using listening addresses learned during metadata
+acquisition report `source: "metadata"`.
+Magnets accept inbound peers while resolving metadata, so a LAN peer can answer
+an announcement by connecting immediately. Metadata discovery retains its
+45-second deadline. A peer that neither connects nor announces within that
+window may only be found on a later attempt.
+
 ## Local addresses
 
 By default spill never connects out to private, loopback or link-local
 addresses, whether it got them from a tracker, the DHT, PEX or a web seed URL.
 This keeps a malicious torrent from making spill probe your local network.
 Set `allow_local_network = true` to use LAN peers or trackers. Multicast,
-broadcast, unspecified addresses and port 0 are always refused. Incoming
-connections are accepted from any address.
+broadcast, unspecified peer addresses and port 0 are always refused. LSD is the
+multicast peer-discovery exception, only when enabled (router mapping also uses
+SSDP as described above). Scoped link-local IPv6 peers learned by LSD retain
+their interface scope. Incoming connections are accepted from any address.
 
 ## IPv4 and IPv6
 
@@ -199,7 +245,8 @@ It does not encrypt tracker or DHT traffic or hide IP addresses.
 
 - Trackers, DHT nodes and peers see your IP address and what you download. This
   is inherent to BitTorrent.
-- A magnet link announces its info hash (to the DHT and its trackers) before
+- A magnet link announces its info hash (to the DHT, its trackers and, when
+  enabled, local service discovery) before
   spill knows whether the torrent is private. Use a `.torrent` file for private
   trackers; private metadata from magnets is rejected.
 - Peer encryption is obfuscation, not anonymity or authenticated transport; see

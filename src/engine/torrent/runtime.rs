@@ -172,6 +172,17 @@ async fn serve(
                 tracker_event(hash, event?, network);
                 discovery_dirty = true;
             },
+            (hash, address) = async {
+                match &mut network.lsd {
+                    Some(lsd) => lsd.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(queue) = &mut network.contacts {
+                    let _ = queue.add_lsd(hash, &[address]);
+                }
+                discovery_dirty = true;
+            },
             (hash, result) = dht => {
                 discovery_dirty = true;
                 match result {

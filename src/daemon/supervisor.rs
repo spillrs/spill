@@ -67,6 +67,7 @@ impl Supervisor {
             utp: config.utp,
             peer_encryption: config.peer_encryption,
             allow_local_network: config.allow_local_network,
+            lsd: config.allow_local_network,
             port_mapping: mapping,
             dht: Some(spill::engine::session::DhtOptions {
                 saved: db.load_dht().map_err(io_error)?,

@@ -14,9 +14,10 @@ Transmission 4.1.3 and libtorrent 2.1.2.0.
 
 `baselines/` contains compact records with source revisions, binary/helper hashes
 and artifact paths. Each describes its recorded tree, not necessarily the
-current checkout. Final-tree tiers 0–2 are deferred until after merge. Tier 3
-remains unrun for v2/hybrid support and encrypted swarms and is a release gate
-under `AGENTS.md`.
+current checkout. The LSD record includes a working-tree source manifest and
+local feature/regression checks; it does not revalidate every older matrix.
+Tier 3 remains unrun for v2/hybrid support, encrypted swarms and multicast load,
+and is a release gate under `AGENTS.md`.
 
 | Scope | Record |
 |---|---|
@@ -27,6 +28,7 @@ under `AGENTS.md`.
 | HTTP web seeds and mixed peer/HTTP downloads | [webseeds.json](baselines/webseeds.json) |
 | Created torrents and padding compatibility | [creation.json](baselines/creation.json) |
 | MSE/PE modes, fallback, rejection, magnets and recovery (17 checks) | [encryption.json](baselines/encryption.json) |
+| LSD IPv4/IPv6 magnets and transfers, Transmission batching, discovery/recovery regressions | [lsd.json](baselines/lsd.json) |
 
 The magnet topic record includes both btmh-only hybrid fixtures passing with
 full-identity handshake acceptance, plus btih-only and dual-topic cases. That
@@ -203,6 +205,40 @@ LPD, port mapping, encryption and uTP are disabled. Local-address and per-IP
 restrictions in libtorrent are relaxed for the isolated same-machine network.
 Artifacts are under `target/interop/lt-discovery-*` or `--artifacts PATH`.
 `result.json` and per-case `case.json` retain provenance and partial results.
+
+## Tier 2: local service discovery
+
+```sh
+python3 tests/interop/libtorrent_lsd.py --allow-network --host LAN_IP --release
+```
+
+Runs v1, v2-only and hybrid trackerless magnets and payload transfers in both
+directions, with libtorrent binding port 6771 first. Trackers, DHT bootstrap,
+PEX and port mapping cannot supply peers. Records peer provenance (`lsd`,
+`metadata` or `inbound`), LSD counters and payload hashes under `target/interop/`.
+The reverse direction pauses and resumes the seed after registering the magnet
+to trigger a fresh announce. Use `--format v1`, `v2` or `hybrid` to narrow the run.
+
+`--host` also accepts a numeric LAN IPv6 address. Repeat `--peer-host` to bind
+libtorrent to several local addresses while spill listens on one, for example:
+
+```sh
+python3 tests/interop/libtorrent_lsd.py --allow-network --host SPILL_IPV6 \
+  --peer-host PRIMARY_IPV6 --peer-host SPILL_IPV6
+```
+
+The peer addresses share one port. This covers source-address selection on a
+multi-address interface. On hosts with a DHCPv6 /128 alongside a SLAAC /64,
+bind libtorrent to both: it filters incoming LSD by each listener's subnet,
+while its outgoing connections can use the kernel's preferred source address.
+The [LSD record](baselines/lsd.json) covers libtorrent 2.1.2 in both IP families
+and Transmission 4.1.3 over IPv4, including all 20 headers in one announcement.
+In the recorded IPv6 topology, metadata resolved promptly but first payload
+waited about two minutes for an inbound retry when libtorrent omitted its
+listening port. This remains a latency limitation, not a checksum failure.
+
+macOS, Transmission IPv6 LSD, multiple physical interfaces, cross-user socket
+sharing and interface churn still need separate dev-machine checks.
 
 ## Tier 2: magnets
 

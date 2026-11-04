@@ -11,6 +11,7 @@ pub struct TorrentSettings {
     /// Empty selects every non-padding file at normal priority.
     pub file_priorities: Vec<FilePriority>,
     pub trackers: bool,
+    /// Enable DHT and, when the session permits it, local service discovery.
     pub dht: bool,
     pub pex: bool,
     pub web_seeds: bool,

@@ -741,6 +741,69 @@ async fn large_layers_use_bounded_ranges_proofs_and_a_padded_final_pair() {
 }
 
 #[tokio::test]
+async fn inbound_metadata_peer_is_reused_for_payload_without_tracker_peers() {
+    use crate::v2_peer as raw;
+    use tokio::net::TcpStream;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let source = Temp::new();
+        let destination = Temp::new();
+        std::fs::write(source.0.join("inbound"), b"abc").unwrap();
+        let meta = Profile::default()
+            .parse_owned(&crate::payload::seed_metainfo("inbound", b"abc", None))
+            .unwrap();
+        let seed = session().await;
+        let download = session().await;
+        let mut options = TorrentOptions::new(
+            TorrentSource::Metainfo(meta.clone()),
+            Destination::Open(source.0.clone()),
+        );
+        options.settings = TorrentSettings {
+            trackers: false,
+            ..settings()
+        };
+        seed.admit(options).unwrap().wait_complete().await.unwrap();
+        let (url, tracker) = metadata_peer::tracker(&[]).await;
+        let mut options = TorrentOptions::new(
+            TorrentSource::Magnet(magnet(&meta, "v1", &url)),
+            Destination::Create(destination.0.clone()),
+        );
+        options.settings = settings();
+        options.diagnostics = true;
+        let handle = download.admit(options).unwrap();
+        // Relay a seed-initiated connection; neither discovery nor a direct-peer
+        // option supplies the downloader with the seed's listening address.
+        let mut upstream = TcpStream::connect(seed.local_addr()).await.unwrap();
+        let mut downstream = TcpStream::connect(download.local_addr()).await.unwrap();
+        raw::initiate(&mut upstream, meta.info_hash().wire_key(), 91, false).await;
+        raw::initiate(&mut downstream, meta.info_hash().wire_key(), 92, false).await;
+        let relay = tokio::spawn(async move {
+            let _ = tokio::io::copy_bidirectional(&mut upstream, &mut downstream).await;
+        });
+        handle.wait_complete().await.unwrap();
+        assert_eq!(
+            std::fs::read(destination.0.join("inbound")).unwrap(),
+            b"abc"
+        );
+        assert!(download.network_status().await.inbound_tcp.total > 0);
+        assert!(
+            handle
+                .snapshot()
+                .diagnostics
+                .unwrap()
+                .peers
+                .iter()
+                .any(|p| p.source == "metadata")
+        );
+        relay.await.unwrap();
+        download.shutdown().await.unwrap();
+        seed.shutdown().await.unwrap();
+        tracker.abort();
+    })
+    .await
+    .expect("inbound metadata and payload reconnect");
+}
+
+#[tokio::test]
 async fn stop_during_layers_and_duplicate_learned_alias_never_prepare_payload() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let meta = Profile::default().parse_owned(V2).unwrap();

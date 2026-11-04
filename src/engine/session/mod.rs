@@ -7,6 +7,7 @@ pub mod dht;
 pub(in crate::engine) mod dial;
 pub(in crate::engine) mod incoming;
 mod listener;
+pub(in crate::engine) mod lsd;
 pub(in crate::engine) mod metadata;
 pub mod port_map;
 pub(in crate::engine) mod udp;
@@ -63,7 +64,7 @@ impl PeerEncryption {
 }
 
 /// Network permissions and listeners. Defaults use an ephemeral IPv4 port and uTP,
-/// with no LAN access, router mapping, or DHT.
+/// with no LAN access, router mapping, DHT, or local service discovery.
 pub struct NetworkOptions {
     /// Bind TCP and UDP to the same address and port; zero selects a free port.
     pub listen: SocketAddr,
@@ -73,6 +74,11 @@ pub struct NetworkOptions {
     pub peer_encryption: PeerEncryption,
     /// Permit outbound private, loopback, and link-local destinations.
     pub allow_local_network: bool,
+    /// Opt into BEP 14 multicast discovery on UDP port 6771. Requires LAN access;
+    /// each torrent's `dht` setting also gates LSD. Socket failures are nonfatal,
+    /// reported in [`NetworkStatus::lsd`]. Interfaces are checked every minute;
+    /// sockets rebuild only after changes or I/O failures.
+    pub lsd: bool,
     /// Opt into IPv4 NAT-PMP/UPnP mapping.
     pub port_mapping: Option<port_map::Gateway>,
     /// Opt into DHT on the listener's address families, with supplied routers and optional saved state.
@@ -85,6 +91,7 @@ impl Default for NetworkOptions {
             utp: true,
             peer_encryption: PeerEncryption::default(),
             allow_local_network: false,
+            lsd: false,
             port_mapping: None,
             dht: None,
         }
@@ -206,6 +213,7 @@ impl Retirement {
     pub(in crate::engine) fn resolve(
         &self,
         meta: &crate::protocol::metainfo::OwnedMetainfo,
+        serving: bool,
     ) -> io::Result<()> {
         let identity = meta.info_hash();
         let registry = self
@@ -227,6 +235,13 @@ impl Retirement {
             .get_mut(&self.hash.wire_key())
             .expect("registered execution");
         owner.known = identity;
+        if !serving {
+            let mut routes = self.routes.lock().unwrap();
+            for key in owner.known.wire_keys() {
+                routes.remove(&key);
+            }
+            owner.listener = None;
+        }
         if let Some(sender) = &owner.listener {
             let mut routes = self.routes.lock().unwrap();
             for key in owner.known.wire_keys() {
@@ -270,6 +285,20 @@ pub struct InboundStatus {
     pub last_public_ago_secs: Option<u64>,
 }
 
+/// Optional multicast discovery readiness, not proof that the LAN is reachable.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct LsdStatus {
+    pub enabled: bool,
+    /// At least one multicast socket is bound and joined.
+    pub active: bool,
+    /// Announce batches successfully sent on at least one interface since session creation.
+    pub announces: u64,
+    /// Valid announcements received from other sessions, including unregistered swarms.
+    pub received: u64,
+    /// Last startup or I/O failure; cleared after a successful announcement batch.
+    pub last_error: Option<String>,
+}
+
 /// Local transport readiness and passive inbound observations. No probes are sent.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct NetworkStatus {
@@ -281,6 +310,7 @@ pub struct NetworkStatus {
     pub utp_enabled: bool,
     /// DHT permission, including a lazily initialized node that has not started yet.
     pub dht_enabled: bool,
+    pub lsd: LsdStatus,
     pub inbound_tcp: InboundStatus,
     pub inbound_utp: InboundStatus,
 }
@@ -304,6 +334,7 @@ impl Registry {
     }
 }
 struct Tasks {
+    lsd: Option<JoinHandle<()>>,
     mapping: Option<JoinHandle<()>>,
     udp: Option<JoinHandle<io::Result<()>>>,
     utp: Option<JoinHandle<()>>,
@@ -345,6 +376,8 @@ struct Shared {
     pending: Pending,
     registry: Arc<Mutex<Registry>>,
     dht: Option<Arc<dht::Dht>>,
+    lsd: Option<lsd::Handle>,
+    lsd_status: watch::Receiver<LsdStatus>,
     allow_local_network: bool,
     tasks: AsyncMutex<Tasks>,
     stop: watch::Sender<bool>,
@@ -375,6 +408,24 @@ impl Session {
             network.peer_encryption,
             Some(listener),
         );
+        if network.lsd && network.allow_local_network {
+            let (status, receiver) = watch::channel(LsdStatus {
+                enabled: true,
+                ..LsdStatus::default()
+            });
+            session.lsd_status = receiver;
+            match lsd::Service::new(address, udp.families, status.clone()).await {
+                Ok(lsd) => {
+                    session.lsd = Some(lsd.handle());
+                    session.tasks.get_mut().lsd =
+                        Some(tokio::spawn(lsd.run(session.stop.subscribe())));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "lsd_disabled");
+                    status.send_modify(|s| s.last_error = Some(error.to_string()));
+                }
+            }
+        }
         session.dht = network.dht.map(|options| {
             Arc::new(dht::Dht::new(
                 options,
@@ -498,8 +549,11 @@ impl Shared {
                 closed: false,
             })),
             dht: None,
+            lsd: None,
+            lsd_status: watch::channel(LsdStatus::default()).1,
             allow_local_network,
             tasks: AsyncMutex::new(Tasks {
+                lsd: None,
                 mapping: None,
                 udp: None,
                 utp: None,
@@ -534,6 +588,7 @@ impl Session {
                 .map(|_| self.shared.address),
             utp_enabled: self.shared.utp_enabled,
             dht_enabled: self.shared.dht.is_some(),
+            lsd: self.shared.lsd_status.borrow().clone(),
             inbound_tcp,
             inbound_utp,
         }
@@ -654,7 +709,8 @@ impl Session {
             shared.bandwidth.clone(),
             crate::engine::bandwidth::Budget::new(options.settings.bandwidth()),
         );
-        let networking = if recheck {
+        let online = !recheck || magnet;
+        let networking = if !online {
             Networking::Recheck
         } else {
             Networking::Online(Network {
@@ -666,6 +722,7 @@ impl Session {
                 tracker_udp: shared.tracker_udp.clone().expect("online session"),
                 allow_local_network: shared.allow_local_network,
                 dht: shared.dht.clone(),
+                lsd: shared.lsd.clone(),
             })
         };
         let identity = Arc::new(());
@@ -675,24 +732,15 @@ impl Session {
             hash,
             identity: identity.clone(),
         };
-        let metadata = magnet.then(|| metadata::Network {
-            port: shared.advertised_port.subscribe(),
-            dial_queue: shared.dial_queue.clone(),
-            tracker_http: shared.tracker_http.clone().expect("online session"),
-            tracker_udp: shared.tracker_udp.clone().expect("online session"),
-            allow_local_network: shared.allow_local_network,
-            dht: shared.dht.clone(),
-        });
         let (handle, start) = TorrentHandle::spawn(
             options,
             bandwidth,
             networking,
-            metadata,
             shared.rechecks.clone(),
             retirement,
             inspection,
         );
-        if !magnet && !recheck && !inspection {
+        if online {
             let mut routes = shared.routes.lock().unwrap();
             for key in hash.wire_keys() {
                 routes.insert(key, sender.clone());
@@ -702,7 +750,7 @@ impl Session {
             hash.wire_key(),
             Owner {
                 known: hash,
-                listener: (!recheck && !inspection).then_some(sender),
+                listener: online.then_some(sender),
                 handle: handle.clone(),
                 profile,
                 identity,
@@ -725,6 +773,11 @@ impl Session {
         let mut tasks = shared.tasks.lock().await;
         if tasks.joined {
             return tasks.result();
+        }
+        if let Some(task) = tasks.lsd.as_mut() {
+            let result = task.await.map_err(io::Error::other);
+            tasks.lsd = None;
+            tasks.record(result);
         }
         if let Some(task) = tasks.utp_router.as_mut() {
             let result = task.await.map_err(io::Error::other).and_then(|r| r);

@@ -35,7 +35,11 @@ Metainfo and magnets may be v1, v2-only or hybrid; see
 [v2 and hybrid torrents](v2.md). Private torrents require a `.torrent` file.
 The daemon fetches torrent URLs and checks the file before adding it. A magnet
 link is added right away and resolves its metadata from peers found via its
-`tr=` trackers and the DHT; trackers from the magnet are kept for the download.
+`tr=` trackers, the DHT and, when enabled, local service discovery. Incoming peers
+can supply metadata too. Discovery attempts have a 45-second deadline; trackers
+from the magnet are kept for the download. If a metadata peer does not advertise
+a reusable listening address, payload transfer may wait for peer rediscovery or
+another incoming connection after metadata validates.
 
 Use `spill add SOURCE --paused` to add without starting discovery or payload
 transfer. Set initial overrides atomically with repeated `--set KEY=JSON` options,

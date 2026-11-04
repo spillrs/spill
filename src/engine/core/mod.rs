@@ -64,6 +64,12 @@ pub(in crate::engine) fn swarm_identity(meta: &OwnedMetainfo) -> TorrentIdentity
     }
 }
 
+#[derive(Debug)]
+pub(in crate::engine) struct ResolvedMetadata {
+    pub(in crate::engine) metainfo: OwnedMetainfo,
+    pub(in crate::engine) peers: Vec<([u8; 20], SocketAddr)>,
+}
+
 /// Capacities are reservations available to this single owner, not remote hints.
 pub(in crate::engine) struct Capacity {
     pub(in crate::engine) id: ConnectionId,
@@ -174,7 +180,7 @@ pub(in crate::engine) enum Action {
     Completed,
     Stalled(Stall),
     Observed(Event),
-    MetadataResolved(OwnedMetainfo),
+    MetadataResolved(ResolvedMetadata),
     MetadataProgress {
         hash_bytes: u64,
         hash_total_bytes: u64,

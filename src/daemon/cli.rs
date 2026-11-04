@@ -305,6 +305,21 @@ fn health_text(data: &Value) {
             );
         }
     }
+    let lsd = &data["network"]["lsd"];
+    println!(
+        "{:<26} {}",
+        "Local discovery:",
+        if lsd["enabled"] != true {
+            "disabled"
+        } else if lsd["active"] == true {
+            "listening"
+        } else {
+            "unavailable"
+        }
+    );
+    if let Some(error) = lsd["last_error"].as_str() {
+        println!("{:<26} {}", "Local discovery error:", clean(error));
+    }
     let mapping = &data["port_mapping"];
     println!(
         "{:<26} {}",

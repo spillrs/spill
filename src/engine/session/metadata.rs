@@ -4,7 +4,6 @@ use crate::engine::{
     discovery::{AnnounceOptions, Announcer},
     next_ready,
     profile::Profile,
-    session::dht::Dht,
     torrent::shell::Shell,
 };
 use crate::protocol::{magnet::Magnet, metainfo::OwnedMetainfo};
@@ -14,18 +13,9 @@ use tokio::{
     time::{Duration, Instant},
 };
 
-/// Shared network authority obtained from a live Session. Each attempt uses the
-/// same shell/core as payload transfer and joins its peers and pending dials.
-pub(in crate::engine) struct Network {
-    pub(in crate::engine) port: watch::Receiver<u16>,
-    pub(in crate::engine) dial_queue: crate::engine::session::dial::Queue,
-    pub(in crate::engine) tracker_http: reqwest::Client,
-    pub(in crate::engine) tracker_udp: crate::engine::session::udp::Transport,
-    pub(in crate::engine) allow_local_network: bool,
-    pub(in crate::engine) dht: Option<Arc<Dht>>,
-}
 #[derive(Default)]
 pub(in crate::engine) struct Resources {
+    pub(in crate::engine) peers: Vec<([u8; 20], SocketAddr, &'static str)>,
     shell: Option<Shell>,
     dials: Option<crate::engine::session::dial::Client>,
     managers: Vec<([u8; 20], Announcer)>,
@@ -50,9 +40,9 @@ impl Resources {
         dials.and(peers).and(announces)
     }
 }
-impl Network {
+impl crate::engine::torrent::Network {
     pub(in crate::engine) async fn resolve(
-        &self,
+        &mut self,
         resources: &mut Resources,
         magnet: &Magnet,
         settings: &crate::engine::settings::TorrentSettings,
@@ -79,6 +69,11 @@ impl Network {
         };
         let peer_id = crate::engine::identity::generate_peer_id()?;
         let identity = magnet.info_hash();
+        let mut lsd = self
+            .lsd
+            .as_ref()
+            .filter(|_| settings.dht)
+            .map(|lsd| lsd.register(identity));
 
         let discovery_bytes = if magnet.trackers().next().is_some() {
             20 + magnet
@@ -90,7 +85,8 @@ impl Network {
         };
         resources.shell = Some(Shell::magnet(identity, peer_id, profile, discovery_bytes)?);
         let shell = resources.shell.as_mut().expect("metadata shell");
-        shell.set_advertised_port(self.port.clone());
+        shell.set_advertised_port(self.advertised_port.clone());
+        shell.set_incoming(self.incoming.clone());
         let (mut contacts, dials) = self.dial_queue.client(profile);
         resources.dials = Some(dials);
         let dials = resources.dials.as_mut().expect("metadata dials");
@@ -101,7 +97,7 @@ impl Network {
                     AnnounceOptions {
                         hash: key,
                         peer: peer_id,
-                        port: self.port.clone(),
+                        port: self.advertised_port.clone(),
                         left: 1,
                         allow_local_network: self.allow_local_network,
                         client: self.tracker_http.clone(),
@@ -120,7 +116,7 @@ impl Network {
             }
         }
         let managers = &mut resources.managers;
-        if managers.is_empty() && node.is_none() {
+        if managers.is_empty() && node.is_none() && lsd.is_none() {
             return Err(invalid("no metadata discovery sources are enabled"));
         }
         let (sender, mut incoming) = tokio::sync::mpsc::channel(crate::engine::profile::MAX_QUEUED);
@@ -177,6 +173,12 @@ impl Network {
                     }
                     result=&mut lookup=>{result?;return Err(invalid("metadata lookup ended"));}
                     Some((key,address))=incoming.recv()=>{let _=contacts.add_dht(key,&[address]);}
+                    (key,address)=async { match &mut lsd { Some(lsd) => lsd.next().await, None => std::future::pending().await } }=>{
+                        let _=contacts.add_lsd(key,&[address]);
+                        if resources.peers.len() < crate::engine::profile::MAX_QUEUED && !resources.peers.iter().any(|&(hash, peer, _)| (hash,peer) == (key,address)) {
+                            resources.peers.push((key,address,"lsd"));
+                        }
+                    }
                     event=dials.next(),if dials.has_work()=>{
                         if let Some(event)=event? {
                             let key = dial_keys.remove(&event.address).expect("metadata dial key");
@@ -197,6 +199,19 @@ impl Network {
                             }
                         }
                     }
+                    Some(socket)=self.sockets.recv()=>{
+                        let (socket, prepared) = match socket {
+                            super::Inbound::Tcp(socket, prepared) => match tokio::net::TcpStream::from_std(socket) {
+                                Ok(socket) => (crate::engine::peer_io::Stream::Tcp(socket), prepared),
+                                Err(error) => { tracing::trace!(%error, "metadata_peer_register_failed"); continue; },
+                            },
+                            super::Inbound::Utp(socket, prepared) => (crate::engine::peer_io::Stream::Utp(socket), prepared),
+                        };
+                        if let Err(error) = shell.attach_peer(socket, crate::engine::peer_io::Role::Inbound, Some(prepared)) {
+                            if crate::engine::core::fault::is_local(&error) { return Err(error); }
+                            tracing::trace!(%error, "metadata_peer_rejected");
+                        }
+                    }
                     event=shell.next()=>{
                         event?;
                         let resolved = shell.take_metadata();
@@ -211,7 +226,14 @@ impl Network {
                                 changed
                             });
                         }
-                        if let Some(meta)=resolved{return retain_trackers(meta,magnet,profile);}
+                        if let Some(crate::engine::core::ResolvedMetadata { metainfo: meta, peers })=resolved {
+                            for (hash, address) in peers {
+                                if !resources.peers.iter().any(|&(key, peer, _)| (key,peer) == (hash,address)) {
+                                    resources.peers.push((hash,address,"metadata"));
+                                }
+                            }
+                            return retain_trackers(meta,magnet,profile);
+                        }
                     }
                     _=maintenance.tick()=>{},
                 }

@@ -74,13 +74,17 @@ or negotiating discovery contacts, not established peers. These diagnostics are 
 stays JSON. Existing fields include `version` (the running daemon's version),
 `pid`, `running`, `listen`, `advertised_port`,
 `port_mapping` and `admission_closed`.
-The `network` object adds:
+The text output includes local discovery readiness and its last error. LSD
+failures do not stop the daemon. Interfaces are checked every minute; sockets
+are rebuilt only on changes or errors, including retrying unavailable interfaces
+or port 6771. The `network` object adds:
 
 | Field | Meaning |
 |---|---|
 | `tcp_listen`, `udp_listen` | Local address while the listener/receiver task is running; `null` offline or stopped. Not proof of external reachability. |
 | `utp_enabled`, `dht_enabled` | Configured session permissions. DHT can be enabled without its lazy node having started. |
 | `inbound_tcp`, `inbound_utp` | Separate passive observations for each peer transport, with the fields below. |
+| `lsd` | Local discovery: `enabled` permission, `active` multicast socket readiness, `announces` batches sent on at least one interface, `received` valid announcements from other sessions, and `last_error` (or `null`). Counters reset on daemon restart. Any successful interface send clears `last_error`, even if another interface failed in the same batch; those partial failures remain in the logs. |
 
 | Inbound field | Meaning |
 |---|---|

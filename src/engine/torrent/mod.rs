@@ -114,6 +114,7 @@ pub(in crate::engine) struct Network {
     pub(in crate::engine) tracker_udp: crate::engine::session::udp::Transport,
     pub(in crate::engine) allow_local_network: bool,
     pub(in crate::engine) dht: Option<Arc<crate::engine::session::dht::Dht>>,
+    pub(in crate::engine) lsd: Option<crate::engine::session::lsd::Handle>,
 }
 
 /// Fully constructed runtime inputs; no builder placeholders or consumed storage.
@@ -126,6 +127,7 @@ pub(in crate::engine) struct RuntimeOptions {
     pub(in crate::engine) metainfo: OwnedMetainfo,
     pub(in crate::engine) profile: Profile,
     pub(in crate::engine) peers: Vec<SocketAddr>,
+    pub(in crate::engine) metadata_peers: Vec<([u8; 20], SocketAddr, &'static str)>,
     pub(in crate::engine) dht: Option<crate::engine::session::dht::Handle>,
     run: RunPolicy,
     log_peer_endpoints: bool,
@@ -460,7 +462,6 @@ impl TorrentHandle {
         options: TorrentOptions,
         bandwidth: crate::engine::bandwidth::Throttle,
         networking: Networking,
-        metadata_network: Option<crate::engine::session::metadata::Network>,
         rechecks: Arc<tokio::sync::Semaphore>,
         retirement: crate::engine::session::Retirement,
         inspection: bool,
@@ -509,7 +510,6 @@ impl TorrentHandle {
                     lifecycle::Context {
                         bandwidth,
                         networking,
-                        metadata_network,
                         rechecks,
                         requests,
                         stop: stopping,

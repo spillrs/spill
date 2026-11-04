@@ -63,7 +63,25 @@ impl Torrent {
             for id in fetch.attached.keys().chain(fetch.peers.keys()) {
                 self.actions.push(Action::Disconnect { id: *id });
             }
-            self.actions.push(Action::MetadataResolved(meta));
+            let identity = meta.info_hash();
+            let peers = fetch
+                .peers
+                .values()
+                .filter_map(|peer| {
+                    let endpoint = peer.endpoint.filter(|address| address.port() != 0)?;
+                    let key = if peer.v2 {
+                        identity.v2().expect("v2 metadata peer").wire_key()
+                    } else {
+                        identity.wire_key()
+                    };
+                    Some((key, endpoint))
+                })
+                .collect();
+            self.actions
+                .push(Action::MetadataResolved(ResolvedMetadata {
+                    metainfo: meta,
+                    peers,
+                }));
             self.failed = true;
         } else {
             self.metadata = Some(fetch);
@@ -437,6 +455,12 @@ impl Peer {
                 let hello = extension::Handshake::parse(payload, extensions::limits())
                     .map_err(invalid_data)?;
                 self.remote.apply(&hello).map_err(invalid_data)?;
+                if let Some(endpoint) = &mut self.endpoint
+                    && endpoint.port() == 0
+                    && let Some(port) = hello.port().filter(|port| *port != 0)
+                {
+                    endpoint.set_port(port);
+                }
                 if let Some(size) = hello.metadata_size() {
                     metadata::piece_range(0, size, cap).map_err(invalid_data)?;
                     if self.size.is_some_and(|old| old != size) {

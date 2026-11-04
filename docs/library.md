@@ -137,16 +137,22 @@ Use `Session::bind(NetworkOptions, Limits)`, then
 metadata resolution and destination preparation happen asynchronously.
 
 - `NetworkOptions` defaults to an ephemeral IPv4 listener, uTP enabled, no port
-  mapping, no LAN permission, and no DHT. Set `dht = Some(DhtOptions { ... })`
+  mapping, no LAN permission, no DHT and no LSD. Set `dht = Some(DhtOptions { ... })`
   to permit DHT discovery. Unlike `download()`, reusable sessions do not enable
-  DHT implicitly.
+  DHT implicitly. Local service discovery requires both `lsd = true` and
+  `allow_local_network = true`; it follows each torrent's `dht` setting and
+  uses an additional shared multicast UDP port, 6771. LSD startup and I/O errors
+  are nonfatal; interfaces are checked every minute, with socket rebuilds only
+  on change or error. Failures appear in `network_status().await.lsd`; a batch
+  counts as successful if at least one interface sends it.
 - `Limits` bounds aggregate resources; each torrent has a `Profile` and
   `TorrentSettings`. See [Limits](limits.md) and the API reference.
 - `RunPolicy::Persistent` keeps serving after completion; `UntilComplete` stops
   after selected-content completion. `Recheck` verifies metainfo against disk
   without peer or discovery I/O. Offline sessions accept only metainfo rechecks.
 - `Session::network_status().await` reports local listener-task readiness and
-  passive inbound TCP/uTP handshake counts, public subsets and last-public ages.
+  passive inbound TCP/uTP handshake counts, public subsets and last-public ages,
+  plus LSD readiness, announce/receive counts and its last error.
   Counts are shared across clones and retained after disconnects and torrent
   removal; a new session resets them. Offline/stopped listeners report no
   addresses. This sends no probes and does not assert firewall reachability.

@@ -74,7 +74,7 @@ getrandom = { version = "0.4.3", features = ["std"] }
 # Established URL syntax/host parser; no resolver or HTTP client (MIT/Apache-2.0).
 url = "2.5.8"
 # One dual-stack session UDP socket for tracker exchanges.
-socket2 = "0.6"
+socket2 = { version = "0.6", features = ["all"] }
 # HTTP/1 + rustls/ring with bundled Mozilla roots; no system TLS, proxies or compression.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
 # Explicit TLS configuration preserves ring and bundled roots without global state.
@@ -94,6 +94,8 @@ tokio = { version = "1", features = ["process"] }
 rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"], optional = true }
 # Platform errno constants only; no unsafe syscall wrappers.
 libc = "0.2"
+# std/socket2 lack safe interface enumeration and per-datagram IPv6 source selection.
+nix = { version = "0.31", default-features = false, features = ["net", "uio"] }
 # Safe descriptor-relative filesystem operations and advisory locks.
 rustix = { version = "1.1", features = ["fs"] }
 serde_json = { version = "1", optional = true }

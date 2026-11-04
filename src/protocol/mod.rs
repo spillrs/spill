@@ -4,6 +4,7 @@ pub mod bencode;
 pub mod compact;
 pub mod dht;
 pub mod identity;
+pub mod lsd;
 pub mod magnet;
 pub mod merkle;
 pub mod metainfo;

@@ -18,7 +18,7 @@ pub(in crate::engine) struct Shell {
     ready: Vec<Capacity>,
     writes: usize,
     events: VecDeque<Event>,
-    metadata: Option<OwnedMetainfo>,
+    metadata: Option<core::ResolvedMetadata>,
     metadata_progress: Option<(u64, u64)>,
     wake_at: Option<Instant>,
     changes: crate::engine::bandwidth::Changes,
@@ -122,7 +122,7 @@ impl Shell {
     pub(in crate::engine) fn take_metadata_progress(&mut self) -> Option<(u64, u64)> {
         self.metadata_progress.take()
     }
-    pub(in crate::engine) fn take_metadata(&mut self) -> Option<OwnedMetainfo> {
+    pub(in crate::engine) fn take_metadata(&mut self) -> Option<core::ResolvedMetadata> {
         self.metadata.take()
     }
     pub(in crate::engine) fn attach_writer(&mut self, writer: Writer) {
@@ -197,8 +197,8 @@ impl Shell {
             } => {
                 self.metadata_progress = Some((hash_bytes, hash_total_bytes));
             }
-            Action::MetadataResolved(meta) => {
-                self.metadata = Some(meta);
+            Action::MetadataResolved(resolved) => {
+                self.metadata = Some(resolved);
                 self.events.push_back(Event::Complete);
             }
             Action::Connect { addr } => self.connects.push(addr),

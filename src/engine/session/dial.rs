@@ -208,7 +208,7 @@ impl Contacts {
             .encrypted
             .then(|| self.encryption.methods())
     }
-    fn add(
+    pub(in crate::engine) fn add(
         &mut self,
         hash: [u8; 20],
         peers: &[SocketAddr],
@@ -278,6 +278,13 @@ impl Contacts {
         peers: &[SocketAddr],
     ) -> io::Result<()> {
         self.add(hash, peers, "dht")
+    }
+    pub(in crate::engine) fn add_lsd(
+        &mut self,
+        hash: [u8; 20],
+        peers: &[SocketAddr],
+    ) -> io::Result<()> {
+        self.add(hash, peers, "lsd")
     }
     pub(in crate::engine) fn add_pex(
         &mut self,

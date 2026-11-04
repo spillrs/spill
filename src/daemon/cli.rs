@@ -247,6 +247,7 @@ fn text(data: &Value) {
     }
 }
 fn health_text(data: &Value) {
+    println!("{:<26} {}", "Version:", data["version"].as_str().unwrap());
     println!("{:<26} {}", "PID:", data["pid"]);
     println!("{:<26} {}", "Running torrents:", data["running"]);
     println!(

@@ -2,7 +2,7 @@ use crate::common::{Daemon, DaemonConfig, WebSeed, http, metainfo};
 use crate::payload::Temp;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use serde_json::json;
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{io::Write, sync::atomic::Ordering, time::Duration};
 
 #[tokio::test]
 async fn web_smoke_dispatches_in_process_with_csrf_protection() {
@@ -22,9 +22,11 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
     let index = http(address, "GET", "/", None, b"").await;
     assert!(index.starts_with("HTTP/1.1 200"));
     assert!(index.contains("Selected torrent details"));
+    assert!(index.contains("id=\"daemon-button\""));
+    assert!(index.contains("id=\"daemon-dialog\""));
     assert!(index.contains("data-sort=\"downloaded_bytes\""));
     assert!(index.contains("data-sort=\"uploaded_bytes\""));
-    for asset in ["/app.js", "/details.js"] {
+    for asset in ["/app.js", "/details.js", "/logs.js"] {
         let response = http(address, "GET", asset, None, b"").await;
         assert!(response.starts_with("HTTP/1.1 200"), "{asset}: {response}");
         assert!(response.contains("text/javascript"));
@@ -45,6 +47,8 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
         .next()
         .unwrap();
     let denied = http(address, "POST", "/api", None, b"{\"op\":\"shutdown\"}").await;
+    assert!(denied.starts_with("HTTP/1.1 403"));
+    let denied = http(address, "POST", "/api/logs", None, b"{}").await;
     assert!(denied.starts_with("HTTP/1.1 403"));
     let bytes = metainfo(Some(&source.url));
     let denied = http(address, "POST", "/api/upload", None, &bytes).await;
@@ -93,6 +97,31 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
     );
     let health = http(address, "POST", "/api", Some(token), b"{\"op\":\"health\"}").await;
     assert!(health.contains(&daemon.child.id().unwrap().to_string()));
+    let response: serde_json::Value =
+        serde_json::from_str(health.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(response["data"]["version"], env!("CARGO_PKG_VERSION"));
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.0.join("state/debug.log"))
+        .unwrap();
+    writeln!(
+        log,
+        "old-web-log-marker\n{}\n<recent-web-log-marker>",
+        "x".repeat(70 * 1024)
+    )
+    .unwrap();
+    let logs = http(address, "POST", "/api/logs", Some(token), b"{}").await;
+    assert!(logs.starts_with("HTTP/1.1 200"));
+    assert!(logs.contains("cache-control: no-store"));
+    let response: serde_json::Value =
+        serde_json::from_str(logs.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(response["code"], 0);
+    assert_eq!(response["data"]["enabled"], true);
+    assert_eq!(response["data"]["truncated"], true);
+    let text = response["data"]["text"].as_str().unwrap();
+    assert!(text.len() <= 64 * 1024);
+    assert!(text.contains("<recent-web-log-marker>"));
+    assert!(!text.contains("old-web-log-marker"));
     daemon.stop().await;
 }
 

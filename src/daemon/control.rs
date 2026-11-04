@@ -105,7 +105,7 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 }
 impl Response {
-    fn from_result(result: Result<Value, Error>) -> Self {
+    pub(crate) fn from_result(result: Result<Value, Error>) -> Self {
         match result {
             Ok(data) => Self {
                 code: 0,

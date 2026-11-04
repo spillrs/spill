@@ -2,6 +2,10 @@
 
 ## Where are the logs?
 
+With the [web interface](web.md) enabled, click the footer daemon indicator,
+then **Logs**, for a bounded recent `debug.log` view with follow, refresh and
+copy controls. It does not include journald or early startup output.
+
 `spill serve` writes timestamped operational events to stderr, with color only
 on a terminal. Detailed logs append to `<state_dir>/debug.log`; spill does not
 rotate or limit this file. Retention is managed externally. Client command

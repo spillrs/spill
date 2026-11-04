@@ -7,7 +7,8 @@ Torrents with the `private` flag (BEP 27) are fully supported. Add them from a
 
 - **DHT and PEX are always off.** spill doesn't advertise them in handshakes,
   doesn't send DHT port messages, and refuses `set dht=true` or `pex=true`. The
-  web interface disables those controls.
+  daemon disables them when private metainfo is added, regardless of the web
+  add dialog's DHT and PEX selections.
 - **Peers come only from the torrent's trackers** (and its web seeds, if any).
 - Everything else, including rate limits, file selection and seeding goals,
   works the same as for public torrents.

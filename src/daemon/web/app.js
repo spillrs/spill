@@ -2,6 +2,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const icon = name => `<svg aria-hidden="true"><use href="#${name}"/></svg>`;
+const booleanValue = (value, yes = 'Yes', no = 'No') => `<span class="boolean-value ${value ? 'yes' : 'no'}">${icon(value ? 'check' : 'close')}${esc(value ? yes : no)}</span>`;
 // Refresh dynamic panes without dropping the user's keyboard position.
 function replaceContent(element, html) {
   if (element.spillHTML === html) return;
@@ -27,17 +28,16 @@ const bytes = n => {
 };
 const rate = n => n > 0 ? `${bytes(n)}/s` : '—';
 const progress = t => t.metadata_pending ? null : t.completed ? 100 : Math.min(99.9, 100 * t.wanted_verified_bytes / (t.wanted_bytes || 1));
-const stateClass = t => t.state;
 const filters = [['all','grid','All transfers'],['downloading','down','Downloading'],['seeding','up','Seeding'],['paused','pause','Paused'],['queued','clock','Queued'],['error','alert','Needs attention']];
 let torrents = [], selected = new Set(), focused = null, filter = 'all', query = '', sortKey = 'name', direction = 1, tab = 'overview';
-let online = false, busy = false, refreshPromise;
+let online = false, busy = false, refreshPromise, health = null, lastUpdated = null;
 let filePage = null, fileError = '', fileLoading = null, fileRequest = 0;
-let fileOffset = 0, fileHistory = [], fileUpdated = 0;
+let fileOffset = 0, fileUpdated = 0;
 function resetFiles() {
   filePage = null; fileError = ''; fileLoading = null;
-  fileOffset = 0; fileHistory = []; fileUpdated = 0; fileRequest++;
+  fileOffset = 0; fileUpdated = 0; fileRequest++;
 }
-const matches = (t, key) => key === 'all' || (key === 'error' ? !!t.last_error : stateClass(t) === key);
+const matches = (t, key) => key === 'all' || (key === 'error' ? !!t.last_error : t.state === key);
 const visible = () => torrents.filter(t => matches(t, filter) && t.name.toLowerCase().includes(query.toLowerCase())).sort((a,b) => {
   const x = sortKey === 'size' ? a.total_bytes : sortKey === 'progress' ? progress(a) : a[sortKey];
   const y = sortKey === 'size' ? b.total_bytes : sortKey === 'progress' ? progress(b) : b[sortKey];
@@ -61,18 +61,17 @@ function notify(message) {
 }
 function connection(ok, message) {
   online = ok;
-  $('#sidebar-status').textContent = ok ? 'Connected' : 'Disconnected';
-  $('#connection-status').textContent = message;
-  $('.status-badge').textContent = ok ? 'LIVE · 1s' : 'DISCONNECTED · STALE';
-  $('.table-footer > span:last-child').textContent = ok ? 'Live daemon snapshot' : 'Showing last snapshot; retrying…';
-  $('.bottom-bar .left > span:first-child').textContent = ok ? 'Connected' : 'Disconnected';
+  $('#daemon-button').dataset.connection = ok ? 'connected' : 'disconnected';
+  $('#daemon-button').setAttribute('aria-label',`Daemon status: ${ok ? 'connected' : 'disconnected'}`);
+  $('#daemon-button').title = ok ? 'Connected · View daemon status' : 'Disconnected · View last daemon status';
+  $('#connection-status').textContent = ok ? '' : `Disconnected · ${message}`;
 }
 async function request(path, body, binary = false) {
   const response = await fetch(path, {
-    method: body ? 'POST' : 'GET',
-    headers: {'X-Spill-Token': token, ...(body ? {'Content-Type': binary ? 'application/x-bittorrent' : 'application/json'} : {})},
-    body: body ? (binary ? body : JSON.stringify(body)) : undefined,
-    signal: AbortSignal.timeout(body ? 35000 : 5000)
+    method: 'POST',
+    headers: {'X-Spill-Token': token, 'Content-Type': binary ? 'application/x-bittorrent' : 'application/json'},
+    body: binary ? body : JSON.stringify(body),
+    signal: AbortSignal.timeout(35000)
   });
   const value = await response.json().catch(() => ({error:`HTTP ${response.status}`}));
   if (!response.ok || value.code !== 0) throw new Error(value.error || (response.status === 403 ? 'Daemon restarted; reload this page.' : `HTTP ${response.status}`));
@@ -90,19 +89,22 @@ function refresh() {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     try {
-      const value = await api('list');
+      const value = await api('status');
+      health = value.health;
+      lastUpdated = new Date();
+      $('#daemon-version').textContent = `spill v${health.version}`;
       torrents = value.torrents.map(transferRow);
       const ids = new Set(torrents.map(t => t.id));
       selected = new Set([...selected].filter(id => ids.has(id)));
       if (!ids.has(focused)) focused = null;
-      connection(true, 'Updated ' + new Date().toLocaleTimeString());
+      connection(true);
     } catch (error) { connection(false, error.message); }
     finally { render(); }
   })().finally(() => refreshPromise = null);
   return refreshPromise;
 }
 async function poll() {
-  if (!busy) { await refresh(); await refreshDetail(); }
+  if (!busy) { await refresh(); await refreshFiles(); }
   setTimeout(poll, 1000);
 }
 async function refreshFiles(force = false) {
@@ -127,11 +129,8 @@ async function refreshFiles(force = false) {
     if (request === fileRequest) { fileLoading = null; renderDetail(); }
   }
 }
-async function refreshDetail() {
-  if (tab === 'files') await refreshFiles();
-}
 function policy(t) {
-  return [['trackers','TRK'],['dht','DHT'],['web_seeds','WEB']].map(([key,label]) => `<span class="source-bit ${t.settings[key] ? '' : 'off'}">${label}</span>`).join('');
+  return [['trackers','TRK'],['dht','DHT'],['pex','PEX'],['web_seeds','WEB']].map(([key,label]) => `<span class="source-bit ${t.settings[key] ? '' : 'off'}">${label}</span>`).join('');
 }
 function render() {
   replaceContent($('#navigation'), filters.map(([key,ic,label]) => `<button data-filter="${key}" data-focus-key="filter-${key}" aria-label="${label}" class="${key === filter ? 'active' : ''}" ${key === filter ? 'aria-current="page"' : ''}>${icon(ic)}<span class="label">${label}</span><span class="count">${torrents.filter(t => matches(t,key)).length}</span></button>`).join(''));
@@ -139,18 +138,18 @@ function render() {
   $('#list-title').textContent = `${filters.find(f => f[0] === filter)[2]} · ${rows.length}`;
   replaceContent($('#torrents'), rows.map(t => {
     const p = progress(t);
-    return `<tr data-id="${esc(t.id)}" data-focus-key="row-${esc(t.id)}" class="${selected.has(t.id) ? 'selected ' : ''}${stateClass(t)}" tabindex="0" aria-label="${esc(t.name)}, ${esc(t.state)}">
+    return `<tr data-id="${esc(t.id)}" data-focus-key="row-${esc(t.id)}" class="${selected.has(t.id) ? 'selected ' : ''}${esc(t.state)}" tabindex="0" aria-label="${esc(t.name)}, ${esc(t.state)}">
       <td><input type="checkbox" data-check data-focus-key="select-${esc(t.id)}" aria-label="Select ${esc(t.name)}" ${selected.has(t.id) ? 'checked' : ''}></td>
-      <td><div class="torrent-name"><span class="file-icon">${icon('file')}</span><div class="name-text"><strong title="${esc(t.name)}">${esc(t.name)}</strong><small>${esc(t.id.slice(0,12))}</small></div></div></td>
+      <td><div class="name-text"><strong title="${esc(t.name)}">${esc(t.name)}</strong></div></td>
       <td class="mono">${t.metadata_pending ? '—' : bytes(t.total_bytes)}</td>
       <td><div class="progress-wrap"><div class="progress-meta"><span>${p == null ? '—' : p.toFixed(1)+'%'}</span></div><div class="progress-track"><i style="width:${p || 0}%"></i></div></div></td>
-      <td><span class="status ${stateClass(t)}" title="${esc(t.last_error || t.tracker_message || '')}">${esc(t.state)}</span></td>
+      <td><span class="status ${t.last_error ? 'has-error' : esc(t.state)}" title="${esc(t.tracker_message || '')}">${t.last_error ? icon('alert')+esc(t.last_error) : esc(t.state)}</span></td>
       <td class="mono total" title="${esc(t.downloaded_bytes)} bytes, lifetime">${bytes(t.downloaded_bytes)}</td><td class="mono total" title="${esc(t.uploaded_bytes)} bytes, lifetime">${bytes(t.uploaded_bytes)}</td>
       <td class="mono speed-down">${rate(t.down)}</td><td class="mono speed-up">${rate(t.up)}</td><td class="mono">${t.peers}</td><td class="mono">${esc(t.eta)}</td>
-      <td><span class="discovery-bits" title="Allowed by policy; not activity telemetry">${policy(t)}</span></td><td><button class="icon-button" data-focus-key="inspect-${esc(t.id)}" aria-label="Inspect ${esc(t.name)}">${icon('dots')}</button></td></tr>`;
+      <td><span class="discovery-bits" title="Allowed by policy; not activity telemetry">${policy(t)}</span></td></tr>`;
   }).join(''));
   $('#empty').hidden = rows.length > 0;
-  $('#empty').textContent = online ? 'No transfers match. Add a torrent to get started.' : 'Waiting for daemon. Start spill serve and check the socket path.';
+  $('#empty').textContent = !online ? 'Disconnected. Retrying the daemon connection…' : !torrents.length ? 'No torrents yet. Add a torrent to get started.' : 'No transfers match. Try another filter or search.';
   const hiddenSelected = selected.size - rows.filter(t => selected.has(t.id)).length;
   $('#visible-count').textContent = `${rows.length} transfers · ${selected.size} selected${hiddenSelected ? ` (${hiddenSelected} hidden)` : ''}`;
   $('#select-all').checked = rows.length > 0 && rows.every(t => selected.has(t.id));
@@ -166,10 +165,34 @@ function render() {
   $('#download-stat').textContent = rate(torrents.reduce((s,t) => s+t.down,0));
   $('#upload-stat').textContent = rate(torrents.reduce((s,t) => s+t.up,0));
   $('#peers-stat').textContent = torrents.reduce((s,t) => s+t.peers,0);
-  document.querySelectorAll('[id^="sort-"]').forEach(el => el.textContent = el.id === 'sort-'+sortKey ? (direction === 1 ? '↑' : '↓') : '');
+  document.querySelectorAll('[data-sort]').forEach(button => {
+    const active = button.dataset.sort === sortKey;
+    button.closest('th').setAttribute('aria-sort', active ? (direction === 1 ? 'ascending' : 'descending') : 'none');
+    button.querySelector('span').textContent = active ? (direction === 1 ? '↑' : '↓') : '';
+  });
   renderDetail();
+  if ($('#daemon-dialog').open) renderHealth();
 }
-const detailRow = (label,value) => `<div class="detail-row"><span>${esc(label)}</span><span>${esc(value)}</span></div>`;
+const detailRow = (label,value) => `<div class="detail-row"><span>${esc(label)}</span><span>${typeof value === 'boolean' ? booleanValue(value) : esc(value)}</span></div>`;
+function renderHealth() {
+  let html = detailRow('Connected',online);
+  if (health) {
+    const network = health.network, mapping = health.port_mapping;
+    html += (!online ? telemetryNote('Disconnected. Showing the last daemon snapshot.') : '') + [
+      ['Version',health.version], ['PID',health.pid], ['Last updated',lastUpdated.toLocaleTimeString()],
+      ['Running torrents',health.running], ['Accepting work',!health.admission_closed],
+      ['TCP listener',network.tcp_listen || 'Not running'], ['UDP listener',network.udp_listen || 'Not running'],
+      ['uTP enabled',network.utp_enabled], ['DHT enabled',network.dht_enabled],
+      ['Inbound TCP peers',network.inbound_tcp.active], ['Inbound uTP peers',network.inbound_utp.active],
+      ['Advertised port',health.advertised_port],
+      ['Port mapping active',mapping.enabled && !!mapping.protocol]
+    ].map(([label,value]) => detailRow(label,value)).join('');
+    if (mapping.protocol) html += detailRow('Mapping protocol',mapping.protocol === 'nat-pmp' ? 'NAT-PMP' : 'UPnP');
+  } else html += telemetryNote('No daemon status received yet.');
+  replaceContent($('#daemon-details'),html);
+}
+$('#daemon-button').onclick = () => { renderHealth(); $('#daemon-dialog').showModal(); };
+$('#close-daemon').onclick = () => $('#daemon-dialog').close();
 function renderDetail() {
   const t = torrents.find(t => t.id === focused);
   if (!t) { $('#inspector').hidden = true; return; }
@@ -181,7 +204,7 @@ function renderDetail() {
       if (online && !fileError) void refreshFiles();
     } else {
       replaceContent($('#detail-body'), (fileError ? telemetryNote('File refresh failed: '+fileError) : '') +
-        (!online ? telemetryNote('Disconnected. Showing last file snapshot.') : '') + renderFileManifest(filePage, fileHistory.length > 0));
+        (!online ? telemetryNote('Disconnected. Showing last file snapshot.') : '') + renderFileManifest(filePage));
     }
   }
   else {
@@ -194,7 +217,7 @@ async function mutate(work) {
   busy = true; render();
   try { if (refreshPromise) await refreshPromise; await work(); }
   catch (error) { notify(error.message + ' Refresh to confirm state before retrying.'); }
-  finally { busy = false; await refresh(); await refreshDetail(); render(); }
+  finally { busy = false; await refresh(); await refreshFiles(); render(); }
 }
 async function action(op) {
   const ids = [...selected];
@@ -226,25 +249,38 @@ $('.tabs').onclick = e => {
   tab = b.dataset.tab;
   fileError = '';
   if (tab === 'files') void refreshFiles(true);
-  else if (['peers','sources'].includes(tab)) void refreshDetail();
-  document.querySelectorAll('.tab').forEach(el => { el.classList.toggle('active',el === b); el.setAttribute('aria-selected',String(el === b)); });
+  document.querySelectorAll('.tab').forEach(el => {
+    el.classList.toggle('active',el === b);
+    el.setAttribute('aria-selected',String(el === b));
+    el.tabIndex = el === b ? 0 : -1;
+  });
+  $('#detail-body').setAttribute('aria-labelledby',b.id);
   renderDetail();
+};
+$('.tabs').onkeydown = e => {
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(e.key)) return;
+  e.preventDefault();
+  const tabs = [...document.querySelectorAll('.tab')], index = tabs.indexOf(e.target);
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length-1 : (index+(e.key === 'ArrowRight' ? 1 : -1)+tabs.length)%tabs.length;
+  tabs[next].focus(); tabs[next].click();
 };
 $('#detail-body').onclick = e => {
   const button = e.target.closest('[data-file-page]');
   if (!button || !online || fileLoading) return;
   if (button.dataset.filePage === 'next' && filePage?.next_offset != null) {
-    fileHistory.push(fileOffset); fileOffset = filePage.next_offset;
-  } else if (button.dataset.filePage === 'previous' && fileHistory.length) {
-    fileOffset = fileHistory.pop();
+    fileOffset = filePage.next_offset;
+  } else if (button.dataset.filePage === 'previous') {
+    fileOffset = Math.max(0,fileOffset-100);
   }
   filePage = null; fileError = ''; fileUpdated = 0;
   void refreshFiles(true); renderDetail();
 };
 $('#detail-body').onchange = e => {
   const select = e.target.closest('[data-file-priority]');
-  if (!select || !online || busy || !focused) return;
+  if (!select || !focused) return;
   const id = focused, index = Number(select.dataset.filePriority), priority = select.value;
+  select.value = filePage.files.find(file => file.index === index).priority;
+  if (!online || busy) { notify('File priority not saved. Wait for the daemon to be ready and try again.'); return; }
   void mutate(async () => {
     const files = await api('files', {id});
     const file_priorities = files.files.map(file => file.priority);
@@ -300,19 +336,31 @@ $('#add-form').onsubmit = e => {
     notify('Torrent accepted by daemon.');
   });
 };
+const rangeControls = [['limit-down',10240],['limit-up',10240],['seed-ratio',10],['seed-time',168]];
+function syncRange(id, max) {
+  const range = $('#'+id+'-range');
+  range.max = Math.max(max,Number($('#'+id).value));
+  range.value = $('#'+id).value;
+}
+rangeControls.forEach(([id,max]) => {
+  $('#'+id).oninput = () => syncRange(id,max);
+  $('#'+id+'-range').oninput = e => $('#'+id).value = e.target.value;
+});
 let seedingId = null;
 $('#seeding-button').onclick = () => {
   const t = torrents.find(t => t.id === focused);
   if (!t) return;
   seedingId = t.id;
-  $('#seed-ratio').value = t.settings.seed_ratio; $('#seed-time').value = t.settings.seed_time;
+  $('#seed-ratio').value = t.settings.seed_ratio; $('#seed-time').value = t.settings.seed_time/3600;
+  rangeControls.slice(2).forEach(([id,max]) => syncRange(id,max));
   $('#seeding-dialog').showModal();
 };
 $('#cancel-seeding').onclick = () => $('#seeding-dialog').close();
 $('#seeding-form').onsubmit = e => {
   e.preventDefault();
-  const id = seedingId, seed_ratio = Number($('#seed-ratio').value), seed_time = Number($('#seed-time').value);
-  if (!Number.isFinite(seed_ratio) || seed_ratio < 0 || !Number.isSafeInteger(seed_time) || seed_time < 0) { notify('Use a finite nonnegative ratio and whole nonnegative seconds.'); return; }
+  const id = seedingId, seed_ratio = Number($('#seed-ratio').value), hours = Number($('#seed-time').value);
+  const seed_time = Math.round(hours*3600);
+  if (!Number.isFinite(seed_ratio) || seed_ratio < 0 || hours < 0 || !Number.isSafeInteger(seed_time)) { notify('Use a finite nonnegative ratio and hours that convert to a safe whole-second value.'); return; }
   mutate(async () => {
     await api('set', {id, values:{seed_ratio, seed_time}});
     $('#seeding-dialog').close(); notify('Seeding rules accepted. Paused torrents stay paused until resumed.');
@@ -323,16 +371,18 @@ $('#limits-button').onclick = () => {
   const t = torrents.find(t => t.id === focused);
   if (!t) return;
   limitsId = t.id;
-  $('#limit-down').value = t.settings.download_limit; $('#limit-up').value = t.settings.upload_limit;
+  $('#limit-down').value = t.settings.download_limit/1024; $('#limit-up').value = t.settings.upload_limit/1024;
+  rangeControls.slice(0,2).forEach(([id,max]) => syncRange(id,max));
   $('#limits-dialog').showModal();
 };
 $('#cancel-limits').onclick = () => $('#limits-dialog').close();
 $('#limits-form').onsubmit = e => {
   e.preventDefault();
   const id = limitsId, down = Number($('#limit-down').value), up = Number($('#limit-up').value);
-  if (![down,up].every(n => Number.isSafeInteger(n) && n >= 0)) { notify('Use nonnegative whole bytes/s within the displayed range.'); return; }
+  const download_limit = Math.round(down*1024), upload_limit = Math.round(up*1024);
+  if (![down,up].every(n => n >= 0) || ![download_limit,upload_limit].every(Number.isSafeInteger)) { notify('Use nonnegative KiB/s that convert to safe whole bytes/s values.'); return; }
   mutate(async () => {
-    await api('set', {id, values:{download_limit:down, upload_limit:up}});
+    await api('set', {id, values:{download_limit, upload_limit}});
     $('#limits-dialog').close(); notify('Rate limits accepted.');
   });
 };
@@ -355,7 +405,7 @@ $('#confirm-remove').onclick = () => {
     let count = 0; const errors = [];
     for (const id of ids) {
       try { await api('remove',{id,delete_payload}); count++; }
-      catch (e) { errors.push(e.message); }
+      catch (e) { errors.push(`${id.slice(0,8)}: ${e.message}`); }
     }
     $('#remove-dialog').close(); notify(`${count}/${ids.length} removed; files ${delete_payload ? 'deleted' : 'kept'}. ${errors.join('; ')}`);
   });

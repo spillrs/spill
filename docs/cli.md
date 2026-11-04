@@ -69,9 +69,11 @@ or negotiating discovery contacts, not established peers. These diagnostics are 
 
 ## Health
 
-`spill health` prints readable fields; `spill health --json` returns the complete
-health object. The control/HTTP API stays JSON. Existing fields (`pid`, `running`,
-`listen`, `advertised_port`, `port_mapping`, `admission_closed`) remain available.
+`spill health` prints readable fields, including the running daemon's version;
+`spill health --json` returns the complete health object. The control/HTTP API
+stays JSON. Existing fields include `version` (the running daemon's version),
+`pid`, `running`, `listen`, `advertised_port`,
+`port_mapping` and `admission_closed`.
 The `network` object adds:
 
 | Field | Meaning |

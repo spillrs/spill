@@ -8,8 +8,15 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{get, post},
 };
-use std::{io, net::SocketAddr, path::PathBuf};
-use tokio::sync::watch;
+use std::{
+    io::{self, SeekFrom},
+    net::SocketAddr,
+    path::PathBuf,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt},
+    sync::watch,
+};
 
 static WEB: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 #[derive(Clone)]
@@ -135,6 +142,49 @@ async fn api(
     }
     Ok(Json(app.control.handle(request).await))
 }
+async fn logs(State(app): State<App>, headers: HeaderMap) -> axum::response::Response {
+    if !authorized(&app, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (enabled, path) = {
+        let supervisor = app.control.0.lock().await;
+        (
+            supervisor.config.logging.file_enabled,
+            supervisor.config.state_dir.join("debug.log"),
+        )
+    };
+    let result = async {
+        let (text, truncated) = if enabled {
+            let mut file = tokio::fs::File::open(path).await?;
+            let length = file.metadata().await?.len();
+            let start = length - length.min(64 * 1024);
+            file.seek(SeekFrom::Start(start)).await?;
+            let mut bytes = Vec::new();
+            file.take(length - start).read_to_end(&mut bytes).await?;
+            let first = if start > 0 {
+                bytes
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map_or(bytes.len(), |i| i + 1)
+            } else {
+                0
+            };
+            (
+                String::from_utf8_lossy(&bytes[first..]).into_owned(),
+                start > 0,
+            )
+        } else {
+            (String::new(), false)
+        };
+        Ok(serde_json::json!({"enabled":enabled,"text":text,"truncated":truncated}))
+    }
+    .await;
+    (
+        [("cache-control", "no-store")],
+        Json(Response::from_result(result)),
+    )
+        .into_response()
+}
 pub async fn serve(
     listener: tokio::net::TcpListener,
     control: Control,
@@ -153,6 +203,10 @@ pub async fn serve(
         .route("/", get(index))
         .route("/{*path}", get(asset))
         .route("/api", post(api).layer(DefaultBodyLimit::max(64 * 1024)))
+        .route(
+            "/api/logs",
+            post(logs).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route(
             "/api/upload",
             post(upload).layer(DefaultBodyLimit::max(spill::engine::profile::MAX_META)),

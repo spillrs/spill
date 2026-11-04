@@ -149,13 +149,24 @@ async fn http_trackers_download_each_swarm_and_checkpoint_completion_independent
                     let mut socket = BufReader::new(socket);
                     let mut line = String::new();
                     socket.read_line(&mut line).await.unwrap();
-                    let query = line.split_whitespace().nth(1).unwrap().split_once('?').unwrap().1;
+                    let target = line.split_whitespace().nth(1).unwrap().to_owned();
+                    loop {
+                        line.clear();
+                        socket.read_line(&mut line).await.unwrap();
+                        assert!(!line.to_ascii_lowercase().starts_with("referer:"));
+                        if line == "\r\n" { break; }
+                    }
+                    let (path, query) = target.split_once('?').unwrap();
+                    if path == "/announce" {
+                        socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: /redirected?{query}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                        continue;
+                    }
+                    assert_eq!(path, "/redirected");
                     let fields: BTreeMap<_, _> = query.split('&').map(|pair| pair.split_once('=').unwrap()).collect();
                     let key: [u8; 20] = unescape(fields["info_hash"]).try_into().unwrap();
                     let event = fields.get("event").unwrap_or(&"none").to_string();
                     recorded.lock().unwrap().push((key, event));
                     let address = endpoints[&key];
-                    loop { line.clear(); socket.read_line(&mut line).await.unwrap(); if line == "\r\n" { break; } }
                     let body = [b"d8:intervali60e5:peers6:".as_slice(), &compact(address), b"e"].concat();
                     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
                     socket.write_all(&body).await.unwrap();

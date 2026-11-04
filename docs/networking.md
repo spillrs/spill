@@ -93,8 +93,11 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
 - UDP trackers share the session's UDP socket. A lost request is resent after
   15 seconds, then 30, within a 45-second limit. A silent tracker only delays
   its own torrent.
-- HTTP trackers resolve DNS on every announce, never follow redirects, and
-  ignore system proxies.
+- HTTP trackers resolve DNS on every announce and ignore system proxies.
+  Announces follow up to five HTTP(S) redirects, subject to the same local-network
+  restrictions as the original URL. HTTPS-to-HTTP redirects are refused.
+  Redirects use the supplied `Location` without copying the original query or
+  sending a `Referer` header; stored tracker URLs are unchanged.
 - Tracker failure reasons appear as the torrent's `last_error`; warnings appear
   as `tracker_message`. Both are shown in `get` and on the web page.
 

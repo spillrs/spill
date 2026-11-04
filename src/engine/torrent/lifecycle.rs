@@ -73,8 +73,8 @@ pub(super) async fn run(
             });
             Ok(())
         });
-    let meta = match options.source {
-        TorrentSource::Metainfo(meta) => meta,
+    let meta = match &options.source {
+        TorrentSource::Metainfo(meta) => meta.clone(),
         TorrentSource::Magnet(magnet) => {
             context
                 .status
@@ -85,27 +85,25 @@ pub(super) async fn run(
             let result = network
                 .resolve(
                     &mut resources.metadata,
-                    &magnet,
-                    &options.settings,
-                    options.profile,
+                    magnet,
+                    &options,
+                    context.bandwidth.clone(),
                     context.stop.clone(),
                     &context.status,
                 )
                 .await;
-            let drained = resources.metadata.drain().await;
             let meta = match result {
                 Err(error)
                     if error.kind() == io::ErrorKind::Interrupted && *context.stop.borrow() =>
                 {
-                    drained?;
                     return stopped();
                 }
                 other => other?,
             };
-            drained?;
             assert!(magnet.info_hash().matches_info_bytes(meta.info_bytes()));
             let serving = options.run != RunPolicy::Recheck && !context.inspection;
             if !serving {
+                resources.metadata.drain().await?;
                 context.networking = Networking::Recheck;
             }
             context.retirement.resolve(&meta, serving)?;
@@ -150,7 +148,10 @@ pub(super) async fn run(
         options.settings.pex = false;
     }
     let selection = super::options::selection(&meta, &options.settings)?;
-    let peer_id = crate::engine::identity::generate_peer_id()?;
+    let peer_id = match resources.metadata.peer_id {
+        Some(peer_id) => peer_id,
+        None => crate::engine::identity::generate_peer_id()?,
+    };
     context
         .status
         .send_modify(|s| s.progress.phase = TorrentPhase::PreparingDestination);
@@ -284,7 +285,7 @@ pub(super) async fn run(
         metainfo: meta,
         profile: options.profile,
         peers: options.peers,
-        metadata_peers: std::mem::take(&mut resources.metadata.peers),
+        lsd_peers: std::mem::take(&mut resources.metadata.lsd_peers),
         dht: None,
         run: options.run,
         log_peer_endpoints: options.log_peer_endpoints,
@@ -294,6 +295,8 @@ pub(super) async fn run(
         peer_id,
         bandwidth: context.bandwidth,
     };
+    resources.runtime.transfer = resources.metadata.shell.take();
+    resources.runtime.progress = resources.metadata.progress.take();
     runtime::run(
         &mut resources.runtime,
         runtime_options,

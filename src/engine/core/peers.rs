@@ -138,6 +138,9 @@ impl Torrent {
         })
     }
     pub(in crate::engine) fn has_peer(&self, connection: ConnectionId) -> bool {
+        if let Some(fetch) = &self.metadata {
+            return fetch.has_peer(connection);
+        }
         self.remotes
             .iter()
             .any(|peer| peer.connection == connection)

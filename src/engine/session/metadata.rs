@@ -15,8 +15,10 @@ use tokio::{
 
 #[derive(Default)]
 pub(in crate::engine) struct Resources {
-    pub(in crate::engine) peers: Vec<([u8; 20], SocketAddr, &'static str)>,
-    shell: Option<Shell>,
+    pub(in crate::engine) lsd_peers: Vec<([u8; 20], SocketAddr)>,
+    pub(in crate::engine) shell: Option<Shell>,
+    pub(in crate::engine) progress: Option<crate::engine::torrent::observation::Progress>,
+    pub(in crate::engine) peer_id: Option<[u8; 20]>,
     dials: Option<crate::engine::session::dial::Client>,
     managers: Vec<([u8; 20], Announcer)>,
 }
@@ -36,6 +38,7 @@ impl Resources {
         }
         self.dials = None;
         self.shell = None;
+        self.progress = None;
         self.managers.clear();
         dials.and(peers).and(announces)
     }
@@ -45,11 +48,13 @@ impl crate::engine::torrent::Network {
         &mut self,
         resources: &mut Resources,
         magnet: &Magnet,
-        settings: &crate::engine::settings::TorrentSettings,
-        profile: Profile,
+        options: &crate::engine::torrent::TorrentOptions,
+        bandwidth: crate::engine::bandwidth::Throttle,
         mut stop: watch::Receiver<bool>,
         status: &watch::Sender<crate::engine::torrent::TorrentStatus>,
     ) -> io::Result<OwnedMetainfo> {
+        let settings = &options.settings;
+        let profile = options.profile;
         if *stop.borrow() {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -68,6 +73,11 @@ impl crate::engine::torrent::Network {
             None
         };
         let peer_id = crate::engine::identity::generate_peer_id()?;
+        resources.peer_id = Some(peer_id);
+        resources.progress = Some(crate::engine::torrent::observation::Progress::new(
+            status.clone(),
+        ));
+        let progress = resources.progress.as_mut().expect("metadata progress");
         let identity = magnet.info_hash();
         let mut lsd = self
             .lsd
@@ -85,6 +95,7 @@ impl crate::engine::torrent::Network {
         };
         resources.shell = Some(Shell::magnet(identity, peer_id, profile, discovery_bytes)?);
         let shell = resources.shell.as_mut().expect("metadata shell");
+        shell.set_bandwidth(bandwidth);
         shell.set_advertised_port(self.advertised_port.clone());
         shell.set_incoming(self.incoming.clone());
         let (mut contacts, dials) = self.dial_queue.client(profile);
@@ -155,12 +166,13 @@ impl crate::engine::torrent::Network {
         let result=async {
             loop {
                 if *stop.borrow() {return Err(io::Error::new(io::ErrorKind::Interrupted,"metadata stopped"));}
+                progress.retain_peers(shell);
                 shell.resolve_negotiations(&mut contacts);
                 while shell.can_connect() && dials.ready() {
                     let Some(entry)=contacts.candidate(|a|shell.rejects_contact(a))else{dials.withdraw();break};
                     let Some(address)=shell.contact(entry.address)?else{contacts.dial_completed(entry.address,None,false);break};
                     if dials.admit(address, contacts.try_utp(address), contacts.fallback(address), contacts.methods(address)).is_err() {shell.connect_failed(address)?;contacts.dial_completed(address,None,false);break;}
-                    dial_keys.insert(address, entry.hash);
+                    dial_keys.insert(address, (entry.hash, entry.source));
                 }
                 if !shell.can_connect(){dials.withdraw();}
                 tokio::select! {
@@ -175,23 +187,18 @@ impl crate::engine::torrent::Network {
                     Some((key,address))=incoming.recv()=>{let _=contacts.add_dht(key,&[address]);}
                     (key,address)=async { match &mut lsd { Some(lsd) => lsd.next().await, None => std::future::pending().await } }=>{
                         let _=contacts.add_lsd(key,&[address]);
-                        if resources.peers.len() < crate::engine::profile::MAX_QUEUED && !resources.peers.iter().any(|&(hash, peer, _)| (hash,peer) == (key,address)) {
-                            resources.peers.push((key,address,"lsd"));
+                        if resources.lsd_peers.len() < crate::engine::profile::MAX_QUEUED && !resources.lsd_peers.contains(&(key,address)) {
+                            resources.lsd_peers.push((key,address));
                         }
                     }
                     event=dials.next(),if dials.has_work()=>{
                         if let Some(event)=event? {
-                            let key = dial_keys.remove(&event.address).expect("metadata dial key");
+                            let (key, source) = dial_keys.remove(&event.address).expect("metadata dial key");
                             contacts.dial_completed(event.address,event.transport(),event.utp_failed);
                             match event.result {
                                 Ok(socket)=>{
-                                    if let Err(error) = shell.attach_peer(socket,crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), None) {
-                                        // Only a per-peer rejection may leave acquisition running.
-                                        if crate::engine::core::fault::is_local(&error) {
-                                            return Err(error);
-                                        }
+                                    if !progress.attach_peer(socket, crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), shell, source, options.log_peer_endpoints, None)? {
                                         contacts.negotiated(event.address, crate::engine::session::dial::NegotiationOutcome::Failed);
-                                        tracing::trace!(kind=?error.kind(), "metadata_peer_rejected");
                                         shell.connect_failed(event.address)?;
                                     }
                                 }
@@ -207,10 +214,7 @@ impl crate::engine::torrent::Network {
                             },
                             super::Inbound::Utp(socket, prepared) => (crate::engine::peer_io::Stream::Utp(socket), prepared),
                         };
-                        if let Err(error) = shell.attach_peer(socket, crate::engine::peer_io::Role::Inbound, Some(prepared)) {
-                            if crate::engine::core::fault::is_local(&error) { return Err(error); }
-                            tracing::trace!(%error, "metadata_peer_rejected");
-                        }
+                        progress.attach_peer(socket, crate::engine::peer_io::Role::Inbound, shell, "metadata", options.log_peer_endpoints, Some(prepared))?;
                     }
                     event=shell.next()=>{
                         event?;
@@ -226,12 +230,7 @@ impl crate::engine::torrent::Network {
                                 changed
                             });
                         }
-                        if let Some(crate::engine::core::ResolvedMetadata { metainfo: meta, peers })=resolved {
-                            for (hash, address) in peers {
-                                if !resources.peers.iter().any(|&(key, peer, _)| (key,peer) == (hash,address)) {
-                                    resources.peers.push((hash,address,"metadata"));
-                                }
-                            }
+                        if let Some(meta)=resolved {
                             return retain_trackers(meta,magnet,profile);
                         }
                     }
@@ -239,9 +238,14 @@ impl crate::engine::torrent::Network {
                 }
             }
         }.await;
-        // Never return stopped/success/failure before all admitted socket work joins.
         let dials = dials.shutdown().await;
-        let peers = shell.shutdown().await;
+        // Successful acquisition retains the shell and its bounded socket queues
+        // until storage admission; errors and cancellation still join every peer.
+        let peers = if result.is_err() {
+            shell.shutdown().await
+        } else {
+            Ok(())
+        };
         let mut announces = Ok(());
         for (_, manager) in managers {
             announces = announces.and(manager.shutdown().await);

@@ -390,6 +390,23 @@ impl Peers {
             self.capacity_changed.notify_one();
         }
     }
+    pub(in crate::engine) fn promote(
+        &mut self,
+        identity: crate::protocol::identity::TorrentIdentity,
+        upgrade: bool,
+    ) {
+        self.identity = identity;
+        self.local.info_hash = identity.wire_key();
+        if upgrade {
+            self.local.reserved[7] |= 0x10;
+        } else {
+            self.local.reserved[7] &= !0x10;
+        }
+        for entry in self.entries.values_mut() {
+            entry.capacity = 0;
+        }
+        self.capacity_changed.notify_one();
+    }
     /// Report only changes since the previous grant, net of our own sends.
     pub(in crate::engine) fn capacity_changes(
         &mut self,

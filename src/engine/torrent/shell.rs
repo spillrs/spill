@@ -18,7 +18,7 @@ pub(in crate::engine) struct Shell {
     ready: Vec<Capacity>,
     writes: usize,
     events: VecDeque<Event>,
-    metadata: Option<core::ResolvedMetadata>,
+    metadata: Option<OwnedMetainfo>,
     metadata_progress: Option<(u64, u64)>,
     wake_at: Option<Instant>,
     changes: crate::engine::bandwidth::Changes,
@@ -122,8 +122,33 @@ impl Shell {
     pub(in crate::engine) fn take_metadata_progress(&mut self) -> Option<(u64, u64)> {
         self.metadata_progress.take()
     }
-    pub(in crate::engine) fn take_metadata(&mut self) -> Option<core::ResolvedMetadata> {
+    pub(in crate::engine) fn take_metadata(&mut self) -> Option<OwnedMetainfo> {
         self.metadata.take()
+    }
+    pub(in crate::engine) fn promote(
+        &mut self,
+        meta: OwnedMetainfo,
+        verified: Vec<u8>,
+        selection: crate::engine::selection::FileSelection,
+    ) -> io::Result<()> {
+        let mut entropy = [0; 8];
+        getrandom::fill(&mut entropy).map_err(io::Error::other)?;
+        let identity = meta.info_hash();
+        let upgrade = matches!(identity, TorrentIdentity::Hybrid(..)) && !meta.layers_pending();
+        let actions = self.core.promote(
+            Instant::now().into_std(),
+            meta,
+            verified,
+            u64::from_ne_bytes(entropy),
+            selection,
+        )?;
+        self.peers.promote(identity, upgrade);
+        self.events.clear();
+        self.wake_at = None;
+        for action in actions {
+            self.apply(action)?;
+        }
+        Ok(())
     }
     pub(in crate::engine) fn attach_writer(&mut self, writer: Writer) {
         assert!(self.writer.is_none());
@@ -267,11 +292,18 @@ impl Shell {
         let full = self.writer.as_ref().is_some_and(|w| w.capacity() == 0);
         self.peers.pause_reads(full);
         let at = self.wake_at;
+        let storage_capacity = self.writer.as_ref().map(Writer::capacity_changed);
         tokio::select! {
             biased;
             // notify_one retains a permit even if another branch wins or next()
             // is canceled. No per-sender reservations or boxed waiters are needed.
             () = self.capacity_changed.notified() => self.refresh_capacity()?,
+            () = async {
+                match storage_capacity {
+                    Some(changed) => changed.notified().await,
+                    None => std::future::pending().await,
+                }
+            } => self.refresh_capacity()?,
             event = self.peers.next(), if self.peers.has_work() && !full => {
                 if let Some(event) = event { self.peer_event(event)?; }
             }

@@ -29,6 +29,7 @@ and is a release gate under `AGENTS.md`.
 | Created torrents and padding compatibility | [creation.json](baselines/creation.json) |
 | MSE/PE modes, fallback, rejection, magnets and recovery (17 checks) | [encryption.json](baselines/encryption.json) |
 | LSD IPv4/IPv6 magnets and transfers, Transmission batching, discovery/recovery regressions | [lsd.json](baselines/lsd.json) |
+| Live metadata handoff, IPv6 LSD rerun, full libtorrent matrices and Transmission TCP/uTP/encrypted recovery | [metadata-handoff.json](baselines/metadata-handoff.json) |
 
 The magnet topic record includes both btmh-only hybrid fixtures passing with
 full-identity handshake acceptance, plus btih-only and dual-topic cases. That
@@ -233,9 +234,52 @@ bind libtorrent to both: it filters incoming LSD by each listener's subnet,
 while its outgoing connections can use the kernel's preferred source address.
 The [LSD record](baselines/lsd.json) covers libtorrent 2.1.2 in both IP families
 and Transmission 4.1.3 over IPv4, including all 20 headers in one announcement.
-In the recorded IPv6 topology, metadata resolved promptly but first payload
-waited about two minutes for an inbound retry when libtorrent omitted its
-listening port. This remains a latency limitation, not a checksum failure.
+In the recorded IPv6 topology, metadata resolved in about 50 ms but first
+payload waited about 121 seconds. The saved `lsd-confirmed-libtorrent-v6` artifacts
+predate live-connection handoff; checksums passed. Reviewing those artifacts
+shows the same sequence for v1, v2 and hybrid:
+
+- The metadata core disconnected its peers on resolution. libtorrent's extended
+  handshake omitted `p`, so the inbound connection supplied no redial endpoint.
+- `daemon/state/debug.log` shows the payload runtime exiting with `NoProgress`
+  after 60 seconds. `libtorrent-seed/alerts.jsonl` shows a retry at about
+  60.4 seconds reset by spill, before the replacement runtime starts. The next
+  retry at about 120.4 seconds connects; `daemon/observations.jsonl` records
+  payload at about 121 seconds.
+- The final health snapshots report received LSD packets, but do not identify
+  matching contacts. The saved daemon filters exclude trace-level dial events.
+  They cannot establish whether spill dialed libtorrent's LSD endpoint, which
+  source address it carried, or how that dial failed. Do not infer an IPv6
+  routing failure from the delay alone.
+
+To validate the handoff in that topology, repeat the IPv6 command above with
+`RUST_LOG=warn,spill=debug,spill::engine::torrent=trace` and retain the daemon
+logs alongside the observations and libtorrent alerts. `peer_dial_started`
+records contact provenance and `dial_failed` records the error kind and OS
+code; correlate them by dial ID. `RUST_LOG` affects the captured console log,
+not `state/debug.log`. Endpoint logging is off in the daemon, so determining
+an alternate source address also requires a local packet capture.
+
+The engine now preserves live metadata connections, their negotiated extensions
+and early piece/choke state through storage admission into payload transfer.
+The engine regression uses an inbound peer that omits `p`, has no listener and
+never reconnects, with and without the fast extension. The
+[handoff record](baselines/metadata-handoff.json) reruns the original multi-address
+IPv6 matrix: all three formats completed both directions with matching hashes.
+First payload appeared in status samples about one second after the first sample,
+with one inbound connection per format, rather than the earlier 121-second wait.
+These are local observations including polling delay, not a general latency claim.
+
+The `NoProgress` restart gap remains a separate issue: inbound connections can
+be reset between runtime exit and the supervisor starting its replacement.
+Connection handoff does not remove that general reconnect window.
+
+A tier 3 dev-machine check must also hold destination preparation/recovery open
+on a large existing payload for several minutes, spanning spill's 180-second
+peer idle timeout. Check both connections that survive preparation and peers
+that time out: discovery or subsequent inbound retries must still allow payload
+completion, with matching checksums and clean stop/shutdown during preparation.
+This slow-preparation check has not been run.
 
 macOS, Transmission IPv6 LSD, multiple physical interfaces, cross-user socket
 sharing and interface churn still need separate dev-machine checks.

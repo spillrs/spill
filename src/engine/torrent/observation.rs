@@ -32,7 +32,7 @@ struct Peer {
     downloaded: u64,
     uploaded: u64,
 }
-pub(super) struct Progress {
+pub(in crate::engine) struct Progress {
     status: Status,
     seeding_since: Option<Instant>,
     pub(in crate::engine) active: usize,
@@ -70,6 +70,10 @@ impl Progress {
             downloaded: 0,
             uploaded: 0,
         }
+    }
+    pub(in crate::engine) fn retain_peers(&mut self, transfer: &Shell) {
+        self.endpoints.retain(|id, _| transfer.has_peer(*id));
+        self.active = self.endpoints.len();
     }
     pub(in crate::engine) fn publish_peers(&self, status: &Status) {
         status.send_modify(|s| {
@@ -116,7 +120,7 @@ impl Progress {
         source: &'static str,
         log_endpoint: bool,
         prepared: Option<crate::engine::peer_io::Prepared>,
-    ) -> bool {
+    ) -> io::Result<bool> {
         let address = socket.peer_addr().ok();
         let transport = socket.transport().as_str();
         let retransmits = match &socket {
@@ -144,11 +148,14 @@ impl Progress {
                         uploaded: 0,
                     },
                 );
-                true
+                Ok(true)
             }
             Err(error) => {
+                if crate::engine::core::fault::is_local(&error) {
+                    return Err(error);
+                }
                 trace!(kind=?error.kind(),"peer_rejected");
-                false
+                Ok(false)
             }
         }
     }
@@ -266,7 +273,7 @@ impl Progress {
                     source,
                     options.log_peer_endpoints,
                     None,
-                ) {
+                )? {
                     contacts.negotiated(
                         event.address,
                         crate::engine::session::dial::NegotiationOutcome::Failed,

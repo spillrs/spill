@@ -5,7 +5,7 @@ use spill::engine::{
     profile::Profile,
     provisioning::DestinationBinding,
     selection::FilePriority,
-    session::{Limits, NetworkOptions, Session},
+    session::{Limits, NetworkOptions, PeerEncryption, Session},
     torrent::{Destination, RecoveryState, RunPolicy, TorrentOptions, TorrentSource},
 };
 use std::{
@@ -113,6 +113,7 @@ async fn main() -> io::Result<()> {
             NetworkOptions {
                 listen: config.listen,
                 utp: false,
+                peer_encryption: PeerEncryption::Allowed,
                 allow_local_network: true,
                 ..Default::default()
             },

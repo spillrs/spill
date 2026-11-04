@@ -791,10 +791,8 @@ impl Discovery {
         }
         let (mut contacts, dials) = session.dial_queue.client(options.profile);
         contacts.add_direct(options.metainfo.info_hash().wire_key(), &options.peers)?;
-        // Metadata acquisition closes its sockets; reconnect to those peers without
-        // waiting for discovery to return them again.
-        for &(hash, address, source) in &options.metadata_peers {
-            contacts.add(hash, &[address], source)?;
+        for &(hash, address) in &options.lsd_peers {
+            contacts.add_lsd(hash, &[address])?;
         }
         self.contacts = Some(contacts);
         self.dials = Some(dials);

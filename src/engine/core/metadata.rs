@@ -8,6 +8,10 @@ use std::collections::BTreeMap;
 
 struct Peer {
     endpoint: Option<SocketAddr>,
+    local_ip: Option<IpAddr>,
+    inbound: bool,
+    handshake: Handshake,
+    replay: Vec<Frame>,
     v2: bool,
     remote: extension::ExtensionMap,
     budget: UnsolicitedBudget,
@@ -26,7 +30,7 @@ pub(super) struct Fetch {
     discovery_bytes: usize,
     layers: BTreeMap<[u8; 32], BTreeMap<u32, Vec<u8>>>,
     peers: HashMap<ConnectionId, Peer>,
-    attached: HashMap<ConnectionId, Option<SocketAddr>>,
+    attached: HashMap<ConnectionId, (Option<SocketAddr>, Option<IpAddr>, bool)>,
     dialing: Vec<SocketAddr>,
     stalled: bool,
 }
@@ -50,9 +54,53 @@ impl Torrent {
         });
         Ok(torrent)
     }
+    pub(in crate::engine) fn promote(
+        &mut self,
+        now: Instant,
+        meta: OwnedMetainfo,
+        verified: Vec<u8>,
+        seed: u64,
+        selection: crate::engine::selection::FileSelection,
+    ) -> io::Result<Vec<Action>> {
+        let fetch = self.metadata.take().expect("resolved metadata phase");
+        let mut payload = Self::new(now, meta, self.limits, verified, seed)?;
+        payload.own_peer_id = self.own_peer_id;
+        payload.select_files(selection);
+        for (id, (endpoint, local_ip, inbound)) in fetch.attached {
+            payload.on_attach(id, endpoint, local_ip, inbound, false)?;
+        }
+        for (id, peer) in fetch.peers {
+            payload.on_attach(id, peer.endpoint, peer.local_ip, peer.inbound, false)?;
+            if let Some(event) = payload.on_connect(id, peer.handshake)? {
+                payload.actions.push(Action::Observed(event));
+            }
+            if let Some(&slot) = payload.remote_slots.get(&id) {
+                // Metadata already announced HaveNone to fast peers. Use Have
+                // for recovered pieces rather than sending a second bitfield.
+                payload.remotes[slot].send_bitfield = false;
+            }
+            for msg in peer.replay {
+                if let Some(event) = payload.on_frame(id, msg)? {
+                    payload.actions.push(Action::Observed(event));
+                }
+            }
+            if let Some(&slot) = payload.remote_slots.get(&id) {
+                payload.remotes[slot].unsolicited = peer.budget;
+            }
+        }
+        let actions = std::mem::take(&mut payload.actions);
+        *self = payload;
+        Ok(actions)
+    }
     pub(super) fn handle_metadata(&mut self, input: Input<'_>) -> io::Result<()> {
         let mut fetch = self.metadata.take().expect("metadata phase");
-        let resolved = match fetch.handle(self.now, input, self.limits, &mut self.actions) {
+        let resolved = match fetch.handle(
+            self.now,
+            input,
+            self.limits,
+            self.listen_port,
+            &mut self.actions,
+        ) {
             Ok(resolved) => resolved,
             Err(error) => {
                 self.metadata = Some(fetch);
@@ -60,28 +108,8 @@ impl Torrent {
             }
         };
         if let Some(meta) = resolved {
-            for id in fetch.attached.keys().chain(fetch.peers.keys()) {
-                self.actions.push(Action::Disconnect { id: *id });
-            }
-            let identity = meta.info_hash();
-            let peers = fetch
-                .peers
-                .values()
-                .filter_map(|peer| {
-                    let endpoint = peer.endpoint.filter(|address| address.port() != 0)?;
-                    let key = if peer.v2 {
-                        identity.v2().expect("v2 metadata peer").wire_key()
-                    } else {
-                        identity.wire_key()
-                    };
-                    Some((key, endpoint))
-                })
-                .collect();
-            self.actions
-                .push(Action::MetadataResolved(ResolvedMetadata {
-                    metainfo: meta,
-                    peers,
-                }));
+            self.metadata = Some(fetch);
+            self.actions.push(Action::MetadataResolved(meta));
             self.failed = true;
         } else {
             self.metadata = Some(fetch);
@@ -90,12 +118,15 @@ impl Torrent {
     }
 }
 impl Fetch {
+    pub(super) fn has_peer(&self, id: ConnectionId) -> bool {
+        self.attached.contains_key(&id) || self.peers.contains_key(&id)
+    }
     pub(super) fn can_connect(&self, max: usize) -> bool {
         self.peers.len() + self.attached.len() + self.dialing.len() < max.min(3)
     }
     pub(super) fn rejects_contact(&self, addr: SocketAddr) -> bool {
         self.dialing.contains(&addr)
-            || self.attached.values().any(|a| *a == Some(addr))
+            || self.attached.values().any(|a| a.0 == Some(addr))
             || self.peers.values().any(|p| p.endpoint == Some(addr))
     }
     fn handle(
@@ -103,22 +134,29 @@ impl Fetch {
         now: Instant,
         input: Input<'_>,
         profile: Profile,
+        listen_port: Option<u16>,
         actions: &mut Vec<Action>,
     ) -> io::Result<Option<OwnedMetainfo>> {
         match input {
-            Input::PeerAttached { id, endpoint, .. } => {
+            Input::PeerAttached {
+                id,
+                endpoint,
+                local_ip,
+                inbound,
+                ..
+            } => {
                 if let Some(addr) = endpoint {
                     self.dialing.retain(|old| *old != addr);
                 }
                 if self.attached.len() + self.peers.len() >= profile.peers.min(3) {
                     actions.push(Action::Disconnect { id });
                 } else {
-                    self.attached.insert(id, endpoint);
+                    self.attached.insert(id, (endpoint, local_ip, inbound));
                 }
             }
             Input::PeerConnected { id, handshake } => {
                 let attached = self.attached.remove(&id);
-                let endpoint = attached.flatten();
+                let (endpoint, local_ip, inbound) = attached.unwrap_or((None, None, false));
                 let identity = self
                     .info
                     .as_ref()
@@ -135,6 +173,10 @@ impl Fetch {
                 } else {
                     let mut peer = Peer {
                         endpoint,
+                        local_ip,
+                        inbound,
+                        handshake,
+                        replay: Vec::new(),
                         v2,
                         remote: extensions::remote_map(),
                         budget: UnsolicitedBudget::new(),
@@ -147,10 +189,10 @@ impl Fetch {
                         capacity: 0,
                         deadline: now + crate::engine::profile::REQUEST_TIMEOUT,
                     };
-                    if handshake.reserved[7] & 4 != 0 {
+                    if peer.handshake.reserved[7] & 4 != 0 {
                         peer.queue(Message::HaveNone)?;
                     }
-                    let hello = extensions::handshake(None, None, false)?;
+                    let hello = extensions::handshake(None, listen_port, false)?;
                     peer.queue(Message::Extended {
                         id: 0,
                         payload: &hello,
@@ -536,6 +578,24 @@ impl Peer {
                 }
             }
             _ => self.budget.charge(frame.wire_len())?,
+        }
+        if matches!(
+            frame.message(),
+            Message::Extended { id: 0, .. }
+                | Message::Choke
+                | Message::Unchoke
+                | Message::Interested
+                | Message::NotInterested
+                | Message::Bitfield(_)
+                | Message::Have(_)
+                | Message::HaveAll
+                | Message::HaveNone
+                | Message::AllowedFast(_)
+                | Message::SuggestPiece(_)
+                | Message::Port(_)
+        ) {
+            // Every retained frame has already consumed the bounded unsolicited budget.
+            self.replay.push(frame.clone());
         }
         Ok(None)
     }

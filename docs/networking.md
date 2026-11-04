@@ -168,10 +168,14 @@ Repeat announcements run every five minutes, with at most one repeat batch per
 minute. Bulk registration can send several initial batches back to back, with
 up to 20 hashes per packet. Repeat batches are round-robin scheduled. Stopping
 removes the registration; BEP 14 has no stop message. Peer JSON identifies outbound LSD contacts with `source: "lsd"`.
-Other peers reconnected using listening addresses learned during metadata
-acquisition report `source: "metadata"`.
+Connections opened during metadata acquisition retain their discovery source
+when handed to payload transfer. Incoming metadata peers report
+`source: "metadata"` with `direction: "inbound"`.
 Magnets accept inbound peers while resolving metadata, so a LAN peer can answer
-an announcement by connecting immediately. Metadata discovery retains its
+an announcement by connecting immediately. spill advertises its listening port
+in the metadata-phase extension handshake. Live connections are kept through
+storage admission, without requiring the peer's listening port or another
+BitTorrent handshake. Metadata discovery retains its
 45-second deadline. A peer that neither connects nor announces within that
 window may only be found on a later attempt.
 

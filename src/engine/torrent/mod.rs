@@ -3,7 +3,7 @@
 //! before releasing storage or starting a replacement torrent owner.
 
 mod lifecycle;
-mod observation;
+pub(in crate::engine) mod observation;
 mod options;
 mod runtime;
 pub(in crate::engine) mod shell;
@@ -127,7 +127,7 @@ pub(in crate::engine) struct RuntimeOptions {
     pub(in crate::engine) metainfo: OwnedMetainfo,
     pub(in crate::engine) profile: Profile,
     pub(in crate::engine) peers: Vec<SocketAddr>,
-    pub(in crate::engine) metadata_peers: Vec<([u8; 20], SocketAddr, &'static str)>,
+    pub(in crate::engine) lsd_peers: Vec<([u8; 20], SocketAddr)>,
     pub(in crate::engine) dht: Option<crate::engine::session::dht::Handle>,
     run: RunPolicy,
     log_peer_endpoints: bool,

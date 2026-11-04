@@ -745,62 +745,92 @@ async fn inbound_metadata_peer_is_reused_for_payload_without_tracker_peers() {
     use crate::v2_peer as raw;
     use tokio::net::TcpStream;
     tokio::time::timeout(Duration::from_secs(10), async {
-        let source = Temp::new();
-        let destination = Temp::new();
-        std::fs::write(source.0.join("inbound"), b"abc").unwrap();
-        let meta = Profile::default()
-            .parse_owned(&crate::payload::seed_metainfo("inbound", b"abc", None))
-            .unwrap();
-        let seed = session().await;
-        let download = session().await;
-        let mut options = TorrentOptions::new(
-            TorrentSource::Metainfo(meta.clone()),
-            Destination::Open(source.0.clone()),
-        );
-        options.settings = TorrentSettings {
-            trackers: false,
-            ..settings()
-        };
-        seed.admit(options).unwrap().wait_complete().await.unwrap();
-        let (url, tracker) = metadata_peer::tracker(&[]).await;
-        let mut options = TorrentOptions::new(
-            TorrentSource::Magnet(magnet(&meta, "v1", &url)),
-            Destination::Create(destination.0.clone()),
-        );
-        options.settings = settings();
-        options.diagnostics = true;
-        let handle = download.admit(options).unwrap();
-        // Relay a seed-initiated connection; neither discovery nor a direct-peer
-        // option supplies the downloader with the seed's listening address.
-        let mut upstream = TcpStream::connect(seed.local_addr()).await.unwrap();
-        let mut downstream = TcpStream::connect(download.local_addr()).await.unwrap();
-        raw::initiate(&mut upstream, meta.info_hash().wire_key(), 91, false).await;
-        raw::initiate(&mut downstream, meta.info_hash().wire_key(), 92, false).await;
-        let relay = tokio::spawn(async move {
-            let _ = tokio::io::copy_bidirectional(&mut upstream, &mut downstream).await;
-        });
-        handle.wait_complete().await.unwrap();
-        assert_eq!(
-            std::fs::read(destination.0.join("inbound")).unwrap(),
-            b"abc"
-        );
-        assert!(download.network_status().await.inbound_tcp.total > 0);
-        assert!(
-            handle
+        for fast in [false, true] {
+            let destination = Temp::new();
+            let meta = Profile::default()
+                .parse_owned(&crate::payload::seed_metainfo("inbound", b"abc", None))
+                .unwrap();
+            let download = session().await;
+            let (url, tracker) = metadata_peer::tracker(&[]).await;
+            let mut options = TorrentOptions::new(
+                TorrentSource::Magnet(magnet(&meta, "v1", &url)),
+                Destination::Create(destination.0.clone()),
+            );
+            options.settings = settings();
+            options.diagnostics = true;
+            let handle = download.admit(options).unwrap();
+            // This peer has no listener, advertises no p and never reconnects.
+            let mut socket = TcpStream::connect(download.local_addr()).await.unwrap();
+            raw::initiate(&mut socket, meta.info_hash().wire_key(), 92, fast).await;
+            let (release, ready) = tokio::sync::oneshot::channel();
+            let port = download.local_addr().port();
+            let peer = tokio::spawn(async move {
+                let mut ready = Some(ready);
+                let info = meta.info_bytes();
+                let hello = format!("d1:md11:ut_metadatai3ee13:metadata_sizei{}ee", info.len());
+                raw::send(&mut socket, 5, &[0x80]).await;
+                raw::send(&mut socket, 1, &[]).await;
+                raw::send(&mut socket, 20, &[&[0], hello.as_bytes()].concat()).await;
+                let mut metadata_id = None;
+                while let Ok(body) = raw::frame(&mut socket).await {
+                    match body.as_slice() {
+                        [20, 0, payload @ ..] => {
+                            let doc = spill::protocol::bencode::decode(payload, Default::default())
+                                .unwrap();
+                            assert_eq!(
+                                doc.get(b"p").unwrap().value(),
+                                &spill::protocol::bencode::Value::Integer(i64::from(port))
+                            );
+                            if let spill::protocol::bencode::Value::Integer(id) =
+                                doc.get(b"m").unwrap().get(b"ut_metadata").unwrap().value()
+                            {
+                                metadata_id = Some(*id as u8);
+                            }
+                        }
+                        [20, 3, ..] => {
+                            let mut reply = vec![metadata_id.unwrap()];
+                            reply.extend_from_slice(
+                                format!("d8:msg_typei1e5:piecei0e10:total_sizei{}ee", info.len())
+                                    .as_bytes(),
+                            );
+                            reply.extend_from_slice(info);
+                            raw::send(&mut socket, 20, &reply).await;
+                        }
+                        [6, request @ ..] => {
+                            assert_eq!(request, raw::request(0, 0, 3));
+                            if let Some(ready) = ready.take() {
+                                ready.await.unwrap();
+                            }
+                            raw::send(&mut socket, 7, &[&request[..8], b"abc"].concat()).await;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            while !handle
                 .snapshot()
                 .diagnostics
                 .unwrap()
                 .peers
                 .iter()
                 .any(|p| p.source == "metadata")
-        );
-        relay.await.unwrap();
-        download.shutdown().await.unwrap();
-        seed.shutdown().await.unwrap();
-        tracker.abort();
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            release.send(()).unwrap();
+            handle.wait_complete().await.unwrap();
+            assert_eq!(
+                std::fs::read(destination.0.join("inbound")).unwrap(),
+                b"abc"
+            );
+            assert_eq!(download.network_status().await.inbound_tcp.total, 1);
+            download.shutdown().await.unwrap();
+            peer.await.unwrap();
+            tracker.abort();
+        }
     })
     .await
-    .expect("inbound metadata and payload reconnect");
+    .expect("inbound metadata connection hands off to payload without reconnect");
 }
 
 #[tokio::test]

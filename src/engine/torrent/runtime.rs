@@ -42,6 +42,7 @@ async fn drive(
     network: &mut Discovery,
     stop: &mut watch::Receiver<bool>,
     status: &Status,
+    progress: &mut Progress,
 ) -> io::Result<TorrentExit> {
     transfer.set_bandwidth(options.bandwidth.clone());
     transfer.set_incoming(session.incoming.clone());
@@ -79,7 +80,7 @@ async fn drive(
         s.progress.ready = true;
     });
     let inbound = session.sockets;
-    serve(options, transfer, network, stop, status, inbound).await
+    serve(options, transfer, network, stop, status, inbound, progress).await
 }
 
 async fn serve(
@@ -89,10 +90,10 @@ async fn serve(
     stop: &mut watch::Receiver<bool>,
     status: &Status,
     mut inbound: tokio::sync::mpsc::Receiver<crate::engine::session::Inbound>,
+    progress: &mut Progress,
 ) -> io::Result<TorrentExit> {
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut progress = Progress::new(status.clone());
     let mut dial_tick = tokio::time::interval(Duration::from_millis(250));
     dial_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut reannounce = options.reannounce.clone();
@@ -219,7 +220,7 @@ async fn serve(
                         },
                         crate::engine::session::Inbound::Utp(socket, prepared) => (crate::engine::peer_io::Stream::Utp(socket), prepared),
                     };
-                    progress.attach_peer(socket, Role::Inbound, transfer, "inbound", options.log_peer_endpoints, Some(prepared));
+                    progress.attach_peer(socket, Role::Inbound, transfer, "inbound", options.log_peer_endpoints, Some(prepared))?;
                     discovery_dirty = true;
                     progress.publish_peers(status);
                 } else {
@@ -304,7 +305,8 @@ async fn finish(
 
 pub(super) struct Resources {
     pub(super) writer: Option<crate::engine::storage::writer::Writer>,
-    transfer: Option<Task>,
+    pub(super) transfer: Option<Task>,
+    pub(super) progress: Option<Progress>,
     network: Discovery,
 }
 impl Default for Resources {
@@ -312,6 +314,7 @@ impl Default for Resources {
         Self {
             writer: None,
             transfer: None,
+            progress: None,
             network: Discovery::empty(),
         }
     }
@@ -330,6 +333,7 @@ impl Resources {
             Ok(())
         };
         self.transfer = None;
+        self.progress = None;
         self.writer = None;
         network.and(transfer).and(writer)
     }
@@ -345,6 +349,7 @@ pub(super) async fn run(
     let Resources {
         writer: writer_slot,
         transfer,
+        progress,
         network,
     } = resources;
     let writer = writer_slot.as_mut().expect("startup writer");
@@ -404,18 +409,37 @@ pub(super) async fn run(
         }
         Networking::Online(session) => session,
     };
-    let mut download = Task::new(
-        options.metainfo.clone(),
-        options.peer_id,
-        options.profile,
-        writer,
-        verified,
-    )?;
-    download.select_files(options.selection.clone());
-    *transfer = Some(download);
+    if let Some(download) = transfer {
+        download.promote(
+            options.metainfo.clone(),
+            verified,
+            options.selection.clone(),
+        )?;
+    } else {
+        let mut download = Task::new(
+            options.metainfo.clone(),
+            options.peer_id,
+            options.profile,
+            writer,
+            verified,
+        )?;
+        download.select_files(options.selection.clone());
+        *transfer = Some(download);
+    }
     let transfer = transfer.as_mut().expect("installed shell");
     transfer.attach_writer(writer_slot.take().expect("startup writer"));
-    let result = drive(&mut options, session, transfer, network, &mut stop, &status).await;
+    let progress = progress.get_or_insert_with(|| Progress::new(status.clone()));
+    progress.retain_peers(transfer);
+    let result = drive(
+        &mut options,
+        session,
+        transfer,
+        network,
+        &mut stop,
+        &status,
+        progress,
+    )
+    .await;
     finish(
         transfer,
         network,

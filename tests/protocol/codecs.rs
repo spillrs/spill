@@ -245,6 +245,19 @@ fn magnet_decoding_and_limits() {
     );
     assert_eq!(magnet.display_name(), Some(b"a b\0\xff".as_slice()));
     assert_eq!(magnet.trackers().collect::<Vec<_>>(), [b"udp://x:80"]);
+    let uri = "magnet:?XT.2=urn:btih:000102030405060708090a0b0c0d0e0f10111213&TR.0=http://a/announce&tr=%zz&tr=invalid&WS.1=%zz&DN=first&dn.3=last&tr=http://a/announce&tr=udp://b:80";
+    let parsed = Magnet::parse(uri, Limits::default()).unwrap();
+    assert_eq!(parsed.info_hash(), magnet.info_hash());
+    assert_eq!(parsed.display_name(), Some(b"last".as_slice()));
+    assert_eq!(
+        parsed.trackers().collect::<Vec<_>>(),
+        [
+            b"http://a/announce".as_slice(),
+            b"http://a/announce",
+            b"udp://b:80"
+        ]
+    );
+    assert!(!parsed.parameters().iter().any(|p| p.key() == b"ws"));
     for bad in [
         "magnet:?xt=urn:btih:bad",
         "http://x",
@@ -365,6 +378,8 @@ fn http_tracker_reply_and_query_bounds() {
         port: 6881,
         uploaded: 0,
         downloaded: 0,
+        corrupt: 7,
+        support_crypto: true,
         left: 3,
         event: None,
         numwant: None,
@@ -374,6 +389,15 @@ fn http_tracker_reply_and_query_bounds() {
     let query = request.encode_query(Some("pass=a%2fb"), 4096).unwrap();
     assert!(query.starts_with("pass=a%2fb&info_hash=%00"));
     assert!(query.contains("peer_id=%FF%FF"));
+    assert!(query.contains("&no_peer_id=1&supportcrypto=1&corrupt=7"));
+    let mut keyed = request.clone();
+    keyed.key = Some(0xabcdef);
+    assert!(
+        keyed
+            .encode_query(None, 4096)
+            .unwrap()
+            .contains("&key=00ABCDEF")
+    );
     assert!(request.encode_query(None, 1).is_err());
     assert!(request.encode_query(Some("%69nfo_hash=x"), 4096).is_err());
 }

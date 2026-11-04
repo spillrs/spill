@@ -187,7 +187,7 @@ async fn dual_stack_listener_announces_to_an_ipv4_udp_tracker() {
 }
 
 #[tokio::test]
-async fn udp_trackers_are_independent_and_retry_lost_packets() {
+async fn udp_trackers_are_independent_and_back_off_failed_announces() {
     use spill::protocol::{compact::PeersV4, tracker::udp};
     use tokio::net::UdpSocket;
     async fn tracker(
@@ -199,7 +199,6 @@ async fn udp_trackers_are_independent_and_retry_lost_packets() {
             max_packet_len: 65507,
             max_peers: 200,
         };
-        let mut first = None;
         let mut dropped = false;
         let mut bytes = [0; 4096];
         loop {
@@ -207,12 +206,8 @@ async fn udp_trackers_are_independent_and_retry_lost_packets() {
             let request = udp::Request::decode(&bytes[..len], codec).unwrap();
             if drop_first && !dropped {
                 dropped = true;
-                first = Some(bytes[..len].to_vec());
                 sent.send(false).unwrap();
                 continue;
-            }
-            if let Some(packet) = first.take() {
-                assert_eq!(&bytes[..len], packet, "retry must preserve the transaction");
             }
             let kind = match request.kind {
                 udp::RequestKind::Connect { .. } => udp::ResponseKind::Connect {
@@ -282,12 +277,25 @@ async fn udp_trackers_are_independent_and_retry_lost_packets() {
             .expect("silent tracker must not block another torrent"),
         Some(true)
     );
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(18), slow_events.recv())
-            .await
-            .expect("lost UDP connect must be retransmitted"),
-        Some(true)
-    );
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let row = daemon.call(json!({"op":"get","id":slow_id})).await;
+            let tracker = &row["transfer"]["trackers"][0];
+            if tracker["state"] == "Error" {
+                assert_eq!(tracker["exchanges"], 1);
+                assert_eq!(tracker["failures"], 1);
+                assert!(tracker["next_announce_ms"].as_u64().unwrap() <= 17_000);
+                assert!(
+                    slow_events.try_recv().is_err(),
+                    "no in-exchange retransmission"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("silent UDP connect reaches inactivity timeout and tracker backoff");
     daemon.state(&slow_id, "seeding").await;
     daemon.state(&fast_id, "seeding").await;
     daemon.stop().await;

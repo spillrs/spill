@@ -220,6 +220,8 @@ pub struct AnnounceRequest<'a> {
     pub port: u16,
     pub uploaded: u64,
     pub downloaded: u64,
+    pub corrupt: u64,
+    pub support_crypto: bool,
     pub left: u64,
     pub event: Option<AnnounceEvent>,
     pub numwant: Option<u32>,
@@ -259,6 +261,9 @@ impl AnnounceRequest<'_> {
                 "info_hash",
                 "peer_id",
                 "compact",
+                "no_peer_id",
+                "supportcrypto",
+                "corrupt",
                 "key",
                 "trackerid",
                 "numwant",
@@ -272,8 +277,13 @@ impl AnnounceRequest<'_> {
         query.pair("info_hash", &self.info_hash)?;
         query.pair("peer_id", &self.peer_id)?;
         query.pair("compact", b"1")?;
+        query.pair("no_peer_id", b"1")?;
+        if self.support_crypto {
+            query.pair("supportcrypto", b"1")?;
+        }
+        query.pair("corrupt", self.corrupt.to_string().as_bytes())?;
         if let Some(key) = self.key {
-            query.pair("key", format!("{key:08x}").as_bytes())?;
+            query.pair("key", format!("{key:08X}").as_bytes())?;
         }
         if let Some(id) = self.tracker_id.filter(|id| !id.is_empty()) {
             query.pair("trackerid", id)?;

@@ -16,8 +16,7 @@ use std::{
 use tokio::time::{Instant, timeout};
 use url::Url;
 
-const MIN: Duration = Duration::from_secs(30);
-const MAX: Duration = Duration::from_secs(3600);
+const MIN_INTERVAL: Duration = Duration::from_secs(300);
 const BODY_CAP: usize = 64 * 1024;
 const PEER_CAP: usize = 200;
 const CODEC: udp::Limits = udp::Limits {
@@ -45,6 +44,7 @@ fn random() -> io::Result<u32> {
 #[derive(Clone, Copy)]
 pub(in crate::engine) struct Counters {
     pub(in crate::engine) downloaded: u64,
+    pub(in crate::engine) corrupt: u64,
     pub(in crate::engine) uploaded: u64,
     pub(in crate::engine) left: u64,
 }
@@ -56,6 +56,8 @@ struct Reply {
     leechers: Option<u64>,
     tracker_id: Option<Vec<u8>>,
     warning: Option<String>,
+    error: Option<io::Error>,
+    disabled: bool,
 }
 struct Tracker {
     url: Option<Url>,
@@ -64,6 +66,10 @@ struct Tracker {
     status: TrackerStatus,
     last_reply: Option<Instant>,
     next_allowed: Instant,
+    next_announce: Instant,
+    fails: u8,
+    disabled: bool,
+    pending: Option<(Option<AnnounceEvent>, Pending)>,
 }
 pub(in crate::engine) struct AnnounceOptions {
     pub(in crate::engine) hash: [u8; 20],
@@ -77,7 +83,7 @@ pub(in crate::engine) struct AnnounceOptions {
     pub(in crate::engine) checkpoint: Arc<dyn Fn(bool) -> io::Result<()> + Send + Sync>,
 }
 pub(in crate::engine) struct Announcer {
-    tiers: Vec<Vec<Tracker>>,
+    trackers: Vec<Tracker>,
     pub(in crate::engine) hash: [u8; 20],
     peer: [u8; 20],
     port: tokio::sync::watch::Receiver<u16>,
@@ -86,16 +92,11 @@ pub(in crate::engine) struct Announcer {
     allow_local_network: bool,
     client: reqwest::Client,
     udp: crate::engine::session::udp::Transport,
-    due: Instant,
-    backoff: Duration,
     completed_pending: bool,
     completed_acknowledged: bool,
     checkpoint: Arc<dyn Fn(bool) -> io::Result<()> + Send + Sync>,
     // A select! cancellation must not abandon an in-progress acknowledgement.
     checkpoint_job: Option<(bool, tokio::task::JoinHandle<io::Result<()>>)>,
-    sent_event: Option<AnnounceEvent>,
-    cursor: (usize, usize),
-    pending: Option<Pending>,
 }
 impl Announcer {
     pub(in crate::engine) fn new(
@@ -114,9 +115,11 @@ impl Announcer {
             checkpoint,
         } = options;
         let mut parsed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for (tier, urls) in tiers.into_iter().enumerate() {
-            let mut trackers: Vec<_> = urls
+            let trackers: Vec<_> = urls
                 .into_iter()
+                .filter(|raw| seen.insert(raw.clone()))
                 .enumerate()
                 .map(|(slot, raw)| {
                     let url = std::str::from_utf8(&raw)
@@ -136,6 +139,10 @@ impl Announcer {
                         tracker_id: None,
                         last_reply: None,
                         next_allowed: Instant::now(),
+                        next_announce: Instant::now(),
+                        fails: 0,
+                        disabled: false,
+                        pending: None,
                         status: TrackerStatus {
                             swarm: hash,
                             url: String::from_utf8_lossy(&raw).into_owned(),
@@ -155,40 +162,46 @@ impl Announcer {
                     }
                 })
                 .collect();
-            // Fisher-Yates, independently within each tier (BEP 12).
-            for i in (1..trackers.len()).rev() {
-                trackers.swap(i, random()? as usize % (i + 1));
-            }
-            if !trackers.is_empty() {
-                parsed.push(trackers);
-            }
+            parsed.extend(trackers);
         }
         if parsed.is_empty() {
             return Ok(None);
         }
+        // Prefer UDP on the same host, without announcing to both transports.
+        for i in 0..parsed.len() {
+            let Some(url) = parsed[i].url.as_ref() else {
+                continue;
+            };
+            if url.scheme() != "udp" {
+                continue;
+            }
+            if let Some(j) = (0..i).find(|&j| {
+                parsed[j].url.as_ref().is_some_and(|other| {
+                    other.scheme() != "udp" && other.host_str() == url.host_str()
+                })
+            }) {
+                parsed.swap(i, j);
+            }
+        }
         Ok(Some(Self {
-            tiers: parsed,
+            trackers: parsed,
             hash,
             peer,
             port,
             key: random()?,
             counters: Counters {
                 downloaded: 0,
+                corrupt: 0,
                 uploaded: 0,
                 left,
             },
             allow_local_network,
             client,
             udp,
-            due: Instant::now(),
-            backoff: MIN,
             completed_pending: completed_announce == Some(false),
             completed_acknowledged: completed_announce == Some(true),
             checkpoint,
             checkpoint_job: None,
-            sent_event: None,
-            cursor: (0, 0),
-            pending: None,
         }))
     }
     pub(in crate::engine) fn metainfo(meta: &OwnedMetainfo) -> Vec<Vec<Vec<u8>>> {
@@ -230,9 +243,6 @@ impl Announcer {
             AnnounceEvent::Started => {}
             AnnounceEvent::Stopped => return Ok(()),
         }
-        if self.pending.is_none() {
-            self.due = Instant::now();
-        }
         Ok(())
     }
     fn start_checkpoint(&mut self, delivered: bool) {
@@ -263,23 +273,39 @@ impl Announcer {
         self.completed_pending
     }
     pub(in crate::engine) fn reannounce(&mut self) {
-        if self.pending.is_none() {
-            let (tier, slot) = self.cursor;
-            self.due = Instant::now().max(self.tiers[tier][slot].next_allowed);
+        for tracker in self
+            .trackers
+            .iter_mut()
+            .filter(|t| t.fails == 0 && t.pending.is_none())
+        {
+            tracker.next_announce = Instant::now();
         }
     }
+    fn next_due(&self) -> Instant {
+        let mut earliest = None;
+        for tracker in self.trackers.iter().filter(|t| !t.disabled) {
+            if tracker.pending.is_none() {
+                let due = tracker.next_announce.max(tracker.next_allowed);
+                earliest = Some(earliest.map_or(due, |at: Instant| at.min(due)));
+            }
+            if tracker.fails == 0 {
+                break;
+            }
+        }
+        earliest.unwrap_or_else(|| Instant::now() + Duration::from_secs(60))
+    }
     pub(in crate::engine) fn snapshots(&self) -> Vec<TrackerStatus> {
-        self.tiers
+        self.trackers
             .iter()
-            .flatten()
             .map(|t| {
                 let mut status = t.status.clone();
                 status.last_reply_ago_ms = t.last_reply.map(|at| at.elapsed().as_millis() as u64);
-                status.next_announce_ms = Some(
-                    self.due
+                status.next_announce_ms = (!t.disabled).then(|| {
+                    t.next_announce
+                        .max(t.next_allowed)
                         .saturating_duration_since(Instant::now())
-                        .as_millis() as u64,
-                );
+                        .as_millis() as u64
+                });
                 status
             })
             .collect()
@@ -288,6 +314,7 @@ impl Announcer {
         let url = tracker.url.clone();
         let allow_local_network = self.allow_local_network;
         let tracker_id = tracker.tracker_id.clone();
+        let corrupt = self.counters.corrupt;
         let client = self.client.clone();
         let udp = self.udp.clone();
         let a = udp::Announce {
@@ -305,15 +332,32 @@ impl Announcer {
             },
             ip: Ipv4Addr::UNSPECIFIED,
             key: self.key,
-            num_want: PEER_CAP as i32,
+            num_want: if matches!(event, Some(AnnounceEvent::Stopped)) {
+                0
+            } else {
+                PEER_CAP as i32
+            },
         };
         Box::pin(async move {
-            timeout(crate::engine::profile::TOTAL_TIMEOUT, async {
+            let deadline = if matches!(event, Some(AnnounceEvent::Stopped)) {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_secs(30)
+            };
+            timeout(deadline, async {
                 let url = url.ok_or_else(invalid)?;
                 if url.scheme() == "udp" {
                     udp_announce(url, a, allow_local_network, udp).await
                 } else {
-                    http_announce(url, a, allow_local_network, tracker_id.as_deref(), client).await
+                    http_announce(
+                        url,
+                        a,
+                        corrupt,
+                        allow_local_network,
+                        tracker_id.as_deref(),
+                        client,
+                    )
+                    .await
                 }
             })
             .await
@@ -323,25 +367,58 @@ impl Announcer {
     /// Retain each exchange across select! cancellation; never restart network I/O on a tick.
     pub(in crate::engine) async fn next(&mut self) -> io::Result<Vec<SocketAddr>> {
         self.acknowledge().await?;
-        tokio::time::sleep_until(self.due).await;
         loop {
-            let (tier, slot) = self.cursor;
-            let tracker = &self.tiers[tier][slot];
-            if self.pending.is_none() {
-                let event = if !tracker.started {
-                    Some(AnnounceEvent::Started)
-                } else {
-                    self.completed_pending.then_some(AnnounceEvent::Completed)
-                };
-                if event.is_none() {
-                    tokio::time::sleep_until(tracker.next_allowed).await;
+            let now = Instant::now();
+            for index in 0..self.trackers.len() {
+                let tracker = &self.trackers[index];
+                if tracker.disabled {
+                    continue;
                 }
-                self.sent_event = event;
-                self.pending = Some(self.exchange(tracker, event));
+                let working = tracker.fails == 0;
+                let completing = self.completed_pending && working;
+                if tracker.pending.is_none()
+                    && (completing || now + Duration::from_secs(1) >= tracker.next_announce)
+                    && (completing || now >= tracker.next_allowed)
+                {
+                    let event = if !tracker.started {
+                        Some(AnnounceEvent::Started)
+                    } else {
+                        self.completed_pending.then_some(AnnounceEvent::Completed)
+                    };
+                    let exchange = self.exchange(tracker, event);
+                    self.trackers[index].pending = Some((event, exchange));
+                }
+                // A known failure must not hold up the next working tracker.
+                if working {
+                    break;
+                }
             }
-            let result = self.pending.as_mut().expect("exchange").await;
-            self.pending = None;
-            let tracker = &mut self.tiers[tier][slot];
+            let due = self.next_due();
+            let (index, result) = tokio::select! {
+                reply = std::future::poll_fn(|cx| {
+                    for (index, tracker) in self.trackers.iter_mut().enumerate() {
+                        if let Some((_, exchange)) = &mut tracker.pending
+                            && let std::task::Poll::Ready(reply) = exchange.as_mut().poll(cx)
+                        {
+                            return std::task::Poll::Ready((index, reply));
+                        }
+                    }
+                    std::task::Poll::Pending
+                }) => reply,
+                _ = tokio::time::sleep_until(due) => continue,
+            };
+            let (sent_event, _) = self.trackers[index].pending.take().expect("exchange");
+            let mut retry_interval = Duration::ZERO;
+            let result = match result {
+                Ok(mut reply) if reply.error.is_some() => {
+                    retry_interval = reply.interval;
+                    self.trackers[index].disabled = reply.disabled;
+                    self.trackers[index].status.warning = reply.warning;
+                    Err(reply.error.take().expect("tracker failure"))
+                }
+                result => result,
+            };
+            let tracker = &mut self.trackers[index];
             tracker.status.exchanges = tracker.status.exchanges.saturating_add(1);
             match result {
                 Ok(reply) => {
@@ -357,18 +434,11 @@ impl Announcer {
                     tracker.status.seeders = reply.seeders;
                     tracker.status.leechers = reply.leechers;
                     tracker.next_allowed = Instant::now() + reply.min_interval;
-                    self.due =
-                        Instant::now() + reply.interval.clamp(MIN, MAX).max(reply.min_interval);
-                    self.backoff = MIN;
-                    let successful = self.tiers[tier].remove(slot);
-                    self.tiers[tier].insert(0, successful);
-                    self.cursor = (0, 0);
-                    if matches!(self.sent_event, Some(AnnounceEvent::Completed)) {
+                    tracker.next_announce = Instant::now() + reply.interval;
+                    tracker.fails = 0;
+                    if matches!(sent_event, Some(AnnounceEvent::Completed)) {
                         self.start_checkpoint(true);
                         self.acknowledge().await?;
-                    }
-                    if self.completed_pending {
-                        self.due = Instant::now();
                     }
                     return Ok(reply.peers);
                 }
@@ -377,36 +447,42 @@ impl Announcer {
                     tracker.status.failures = tracker.status.failures.saturating_add(1);
                     tracker.status.peers_returned = Some(0);
                     tracker.status.error = Some(error.to_string());
+                    tracker.fails = (tracker.fails + 1).min(127);
+                    let fails = u64::from(tracker.fails);
+                    let delay = Duration::from_secs((5 + fails * fails * 5 * 250 / 100).min(3600))
+                        .max(retry_interval);
+                    tracker.next_announce = Instant::now() + delay;
+                    let failed = self.trackers.remove(index);
+                    let mut end = index;
+                    while end < self.trackers.len()
+                        && self.trackers[end].status.tier == failed.status.tier
+                    {
+                        end += 1;
+                    }
+                    self.trackers.insert(end, failed);
                 }
-            }
-            self.cursor.1 += 1;
-            if self.cursor.1 == self.tiers[tier].len() {
-                self.cursor = (tier + 1, 0);
-            }
-            if self.cursor.0 == self.tiers.len() {
-                self.cursor = (0, 0);
-                self.due = Instant::now() + self.backoff;
-                self.backoff = (self.backoff * 2).min(Duration::from_secs(1800));
-                return Ok(Vec::new());
             }
         }
     }
     pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
-        self.pending = None;
+        for tracker in &mut self.trackers {
+            tracker.pending = None;
+        }
         self.join_checkpoint().await.map(|_| ())
     }
     pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
         let checkpoint = self.drain().await;
         let exchanges: Vec<_> = self
-            .tiers
+            .trackers
             .iter()
-            .flatten()
-            .filter(|t| t.started)
+            .filter(|t| t.started && !t.disabled)
             .map(|tracker| self.exchange(tracker, Some(AnnounceEvent::Stopped)))
             .collect();
         let _ = timeout(Duration::from_secs(5), async move {
             for exchange in exchanges {
-                let _ = exchange.await;
+                if exchange.await.is_ok_and(|reply| reply.error.is_none()) {
+                    break;
+                }
             }
         })
         .await;
@@ -489,9 +565,24 @@ fn tracker_destination_allowed(url: &Url, allow_local_network: bool) -> bool {
     }
 }
 
+fn failed_reply(error: io::Error, interval: Duration, disabled: bool) -> Reply {
+    Reply {
+        interval,
+        min_interval: Duration::ZERO,
+        peers: Vec::new(),
+        seeders: None,
+        leechers: None,
+        tracker_id: None,
+        warning: None,
+        error: Some(error),
+        disabled,
+    }
+}
+
 async fn http_announce(
     mut url: Url,
     a: udp::Announce,
+    corrupt: u64,
     allow_local_network: bool,
     tracker_id: Option<&[u8]>,
     client: reqwest::Client,
@@ -505,6 +596,8 @@ async fn http_announce(
         port: a.port,
         uploaded: a.uploaded,
         downloaded: a.downloaded,
+        corrupt,
+        support_crypto: true,
         left: a.left,
         event: match a.event {
             udp::EVENT_STARTED => Some(http::AnnounceEvent::Started),
@@ -512,7 +605,7 @@ async fn http_announce(
             udp::EVENT_STOPPED => Some(http::AnnounceEvent::Stopped),
             _ => None,
         },
-        numwant: Some(PEER_CAP as u32),
+        numwant: Some(a.num_want as u32),
         key: Some(a.key),
         tracker_id,
     };
@@ -525,10 +618,16 @@ async fn http_announce(
         .send()
         .await
         .map_err(|e| io::Error::other(e.without_url()))?;
-    if !response.status().is_success()
-        || response
-            .content_length()
-            .is_some_and(|n| n > BODY_CAP as u64)
+    if response.status() != reqwest::StatusCode::OK {
+        return Ok(failed_reply(
+            io::Error::other(format!("tracker HTTP status {}", response.status())),
+            Duration::ZERO,
+            response.status() == reqwest::StatusCode::GONE,
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|n| n > BODY_CAP as u64)
     {
         return Err(invalid());
     }
@@ -553,8 +652,19 @@ async fn http_announce(
     };
     let reply =
         http::AnnounceResponse::parse(&bytes, limits, BODY_CAP / 6).map_err(|_| invalid())?;
+    let interval = Duration::from_secs(u64::from(
+        u32::try_from(reply.interval_secs().unwrap_or(1800)).map_err(|_| invalid())?,
+    ))
+    .max(MIN_INTERVAL);
+    let min_interval = Duration::from_secs(u64::from(
+        u32::try_from(reply.min_interval_secs().unwrap_or(30)).map_err(|_| invalid())?,
+    ));
     if let Some(reason) = reply.failure_reason() {
-        return Err(tracker_failure(reason));
+        let mut failure = failed_reply(tracker_failure(reason), interval, false);
+        failure.warning = reply
+            .warning_message()
+            .map(|m| String::from_utf8_lossy(m).into_owned());
+        return Ok(failure);
     }
     if !reply.peers_v4().remainder().is_empty() || !reply.peers_v6().remainder().is_empty() {
         return Err(invalid());
@@ -567,7 +677,7 @@ async fn http_announce(
         Some(Value::List(entries))
             if reply.dictionary_peers().count() == entries.len()
                 && reply.dictionary_peers().all(|p| p.socket_addr().is_some()) => {}
-        None if document.get(b"peers6").is_some() => {}
+        None if document.get(b"peers6").is_some() || a.event == udp::EVENT_STOPPED => {}
         _ => return Err(invalid()),
     }
     if document
@@ -576,11 +686,6 @@ async fn http_announce(
     {
         return Err(invalid());
     }
-    let interval = Duration::from_secs(reply.interval_secs().ok_or_else(invalid)?);
-    let min_interval = Duration::from_secs(u64::from(
-        u32::try_from(reply.min_interval_secs().unwrap_or(30)).map_err(|_| invalid())?,
-    ))
-    .max(MIN);
     let peers = reply
         .peers_v4()
         .iter()
@@ -597,6 +702,8 @@ async fn http_announce(
         seeders: reply.complete(),
         leechers: reply.incomplete(),
         tracker_id: reply.tracker_id().map(<[u8]>::to_vec),
+        error: None,
+        disabled: false,
         warning: reply
             .warning_message()
             .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
@@ -674,8 +781,8 @@ async fn udp_announce(
                 _ => return Err(invalid()),
             };
             Ok(Reply {
-                interval: Duration::from_secs(interval as u64),
-                min_interval: MIN,
+                interval: Duration::from_secs((interval as i32).max(300) as u64),
+                min_interval: Duration::from_secs(60),
                 peers: peers
                     .into_iter()
                     .filter(|a| crate::engine::network::peer(*a, allow_local_network))
@@ -685,6 +792,8 @@ async fn udp_announce(
                 leechers: Some(leechers as u64),
                 tracker_id: None,
                 warning: None,
+                error: None,
+                disabled: false,
             })
         }
         udp::ResponseKind::Error(message) => Err(tracker_failure(message)),
@@ -705,14 +814,11 @@ async fn udp_exchange(
         }
         _ => endpoint,
     };
-    let mut delay = Duration::from_secs(15);
-    loop {
-        transport.socket.send_to(&packet, destination).await?;
-        match timeout(delay, &mut reply).await {
-            Ok(bytes) => return bytes.map_err(io::Error::other),
-            Err(_) => delay *= 2,
-        }
-    }
+    transport.socket.send_to(&packet, destination).await?;
+    timeout(Duration::from_secs(10), &mut reply)
+        .await
+        .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
+        .map_err(io::Error::other)
 }
 
 pub(super) struct Discovery {

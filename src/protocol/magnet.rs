@@ -42,8 +42,9 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Immutable decoded query data. Values may be non-UTF-8, including display
-/// names. Unknown parameters are retained, not interpreted or acted upon.
+/// Decoded query data with lowercase names and numeric suffixes removed.
+/// Values may be non-UTF-8, including display names. Unknown parameters are
+/// retained, not interpreted or acted upon.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Parameter {
     key: Vec<u8>,
@@ -68,10 +69,13 @@ pub struct Magnet {
 
 impl Magnet {
     /// Require `magnet:?` and key=value pairs separated by `&`. Scheme and
-    /// URN prefixes are ASCII case-insensitive; parameter names are exact.
+    /// URN prefixes and parameter names are ASCII case-insensitive. Numeric
+    /// parameter suffixes are ignored.
     /// Form decoding applies to keys and values: `+` is space, `%2B` is plus.
     /// Raw spaces, controls, non-ASCII and fragments are rejected; escaped
     /// arbitrary bytes are preserved. Empty/trailing pairs are invalid.
+    /// Invalid tracker URLs and malformed escapes in tracker/web-seed hints
+    /// are skipped without discarding other discovery sources.
     ///
     /// Identical repeated topics are allowed; conflicting hashes of the same
     /// version fail. Btmh accepts hexadecimal SHA2-256 multihashes (`1220`
@@ -105,11 +109,34 @@ impl Magnet {
                 .iter()
                 .position(|b| *b == b'=')
                 .ok_or(Error::InvalidUri)?;
-            let key = unescape(&pair[..equals], limits.max_component_bytes)?;
+            let mut key = unescape(&pair[..equals], limits.max_component_bytes)?;
+            if let Some(dot) = key.iter().position(|b| *b == b'.')
+                && key[dot + 1..].iter().all(u8::is_ascii_digit)
+            {
+                key.truncate(dot);
+            }
+            key.make_ascii_lowercase();
             if key.is_empty() {
                 return Err(Error::InvalidUri);
             }
-            let value = unescape(&pair[equals + 1..], limits.max_component_bytes)?;
+            let value = match unescape(&pair[equals + 1..], limits.max_component_bytes) {
+                Err(Error::InvalidEscape) if key == b"tr" || key == b"ws" => continue,
+                result => result?,
+            };
+            if key == b"tr"
+                && !std::str::from_utf8(&value).ok().is_some_and(|value| {
+                    url::Url::parse(value).ok().is_some_and(|url| {
+                        matches!(url.scheme(), "http" | "https" | "udp")
+                            && url.host().is_some()
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                            && url.fragment().is_none()
+                            && url.port_or_known_default().is_some_and(|port| port != 0)
+                    })
+                })
+            {
+                continue;
+            }
             parameters.push(Parameter { key, value });
         }
         let mut v1 = None;
@@ -149,7 +176,7 @@ impl Magnet {
         &self.parameters
     }
 
-    /// All tracker hints, preserving duplicates/order. No URL validation.
+    /// Valid tracker hints, preserving duplicates and link order.
     pub fn trackers(&self) -> impl Iterator<Item = &[u8]> {
         self.parameters
             .iter()
@@ -157,11 +184,11 @@ impl Magnet {
             .map(|p| p.value())
     }
 
-    /// First display name; all repetitions remain in `parameters`.
+    /// Last display name; all repetitions remain in `parameters`.
     pub fn display_name(&self) -> Option<&[u8]> {
         self.parameters
             .iter()
-            .find(|p| p.key == b"dn")
+            .rfind(|p| p.key == b"dn")
             .map(|p| p.value())
     }
 }

@@ -15,11 +15,11 @@ pub(super) async fn utp_tracker(
 
 async fn utp_tracker_gated(
     address: std::net::SocketAddr,
-    mut gate: Option<std::sync::Arc<tokio::sync::Notify>>,
+    gate: Option<std::sync::Arc<tokio::sync::Notify>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
-    use spill::protocol::{compact::PeersV4, tracker::udp};
-    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("udp://{}/announce", socket.local_addr().unwrap());
+    use axum::{Router, routing::get};
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/announce", socket.local_addr().unwrap());
     let address = match address {
         std::net::SocketAddr::V4(a) => a,
         _ => unreachable!(),
@@ -27,42 +27,25 @@ async fn utp_tracker_gated(
     let port = address.port().to_be_bytes();
     let mut peers = address.ip().octets().to_vec();
     peers.extend_from_slice(&port);
-    let task = tokio::spawn(async move {
-        let limits = udp::Limits {
-            max_packet_len: 65507,
-            max_peers: 200,
-        };
-        let mut bytes = [0; 4096];
-        loop {
-            let (n, source) = socket.recv_from(&mut bytes).await.unwrap();
-            let request = udp::Request::decode(&bytes[..n], limits).unwrap();
-            let kind = match request.kind {
-                udp::RequestKind::Connect { .. } => udp::ResponseKind::Connect {
-                    connection_id: 17,
-                    extensions: &[],
-                },
-                udp::RequestKind::Announce { .. } => {
-                    if let Some(gate) = gate.take() {
-                        gate.notified().await;
-                    }
-                    udp::ResponseKind::Announce {
-                        interval: 30,
-                        seeders: 1,
-                        leechers: 1,
-                        peers: udp::Peers::V4(PeersV4::parse(&peers, 1).unwrap()),
-                    }
+    let mut body = b"d8:intervali300e12:min intervali0e5:peers6:".to_vec();
+    body.extend_from_slice(&peers);
+    body.push(b'e');
+    let gate = std::sync::Arc::new(std::sync::Mutex::new(gate));
+    let app = Router::new().route(
+        "/announce",
+        get(move || {
+            let gate = gate.clone();
+            let body = body.clone();
+            async move {
+                let first = gate.lock().unwrap().take();
+                if let Some(gate) = first {
+                    gate.notified().await;
                 }
-                _ => panic!("unexpected tracker request"),
-            };
-            let reply = udp::Response {
-                transaction_id: request.transaction_id,
-                kind,
+                body
             }
-            .encode(limits)
-            .unwrap();
-            socket.send_to(&reply, source).await.unwrap();
-        }
-    });
+        }),
+    );
+    let task = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
     (url, task)
 }
 

@@ -91,14 +91,38 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
 
 ### Trackers
 
-- Trackers are grouped in tiers (BEP 12). spill announces to one working
-  tracker at a time, trying the next in the tier, then the next tier, when one
-  fails. A tracker that answers moves to the front of its tier.
-- Announces follow the tracker's `interval` and `min interval`.
-  `spill reannounce` asks for an early announce within those limits.
-- UDP trackers share the session's UDP socket. A lost request is resent after
-  15 seconds, then 30, within a 45-second limit. A silent tracker only delays
-  its own torrent.
+- Trackers are grouped in tiers (BEP 12). Each valid magnet `tr=` gets its own
+  tier in link order; duplicate URLs keep only their first occurrence, and the
+  retained tracker list has no empty duplicate tiers.
+  `.torrent` tiers retain their listed order without shuffling. UDP is preferred
+  over an earlier HTTP(S) tracker on the same hostname, even across tiers.
+- Working trackers use sequential fallback: try the next in the tier, then the
+  next tier, on failure. Failed trackers move to the back of their tier.
+  When a failed tracker's backoff expires, its retry can run alongside the next
+  eligible working tracker, so the retry's timeout does not delay that tracker.
+  Each tracker has at most one exchange in flight. Selection starts from the
+  beginning again; a working tracker that is not due blocks lower-priority
+  trackers. This is not an announce-to-all-tiers or all-trackers policy.
+- Failed trackers wait before retrying and are skipped while waiting. Consecutive
+  failures use `min(3600, 5 + failures² × 12.5)` seconds, rounded down: 17, 55,
+  117, 205… seconds. A tracker error reply's retry interval can extend that wait.
+  Success resets consecutive failures; diagnostic failure totals remain cumulative.
+  HTTP 410 disables that tracker for the current announce lifecycle.
+- Successful announce intervals have a 300-second minimum and no upper clamp.
+  HTTP replies default to a 1800-second interval and 30-second `min interval`;
+  UDP uses a 60-second minimum interval. Explicit HTTP minimum intervals are
+  respected, including zero. `spill reannounce` can shorten the regular interval,
+  but not a failure backoff or minimum interval. A pending completion event may
+  bypass the successful tracker's minimum interval.
+- Announces have a 30-second completion deadline; UDP connect and announce
+  exchanges each have a 10-second inactivity deadline, without in-exchange
+  retransmissions. UDP trackers share the session's UDP socket. A silent tracker
+  only delays its own torrent. Stopped announces are best-effort within five
+  seconds and select among trackers that acknowledged `started`.
+- HTTP requests use compact peers, `no_peer_id=1`, `supportcrypto=1`, and
+  `corrupt` (hash-failed payload bytes); `downloaded` excludes hash-failed bytes
+  and is floored at zero. Tracker IDs are returned on later requests.
+  Peer requests use `numwant=200`, or zero for stopped announces.
 - HTTP trackers resolve DNS on every announce and ignore system proxies.
   Announces follow up to five HTTP(S) redirects, subject to the same local-network
   restrictions as the original URL. HTTPS-to-HTTP redirects are refused.
@@ -106,6 +130,17 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
   sending a `Referer` header; stored tracker URLs are unchanged.
 - Tracker failure reasons appear as the torrent's `last_error`; warnings appear
   as `tracker_message`. Both are shown in `get` and on the web page.
+
+These choices follow the audited libtorrent 2.1.2 defaults for tracker tiers,
+backoff and request scheduling, not full tracker parity. spill does not announce
+separately per listen address or send private-torrent `ipv4`/`ipv6` overrides.
+Metadata resolution starts a separate announce lifecycle, so failure history,
+tracker IDs and keys are not carried into payload download. Keys are random per
+announcer rather than derived from torrent/session/storage identity. spill does
+not report `redundant` bytes or subtract them from `downloaded`. Input budgets,
+URL validation and destination/redirect restrictions remain spill's own policy;
+HTTP connection pooling, DNS and endpoint failover are not identical to
+libtorrent's transports.
 
 ### DHT
 

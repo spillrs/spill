@@ -51,7 +51,7 @@ pub async fn tracker(contacts: &[std::net::SocketAddr]) -> (String, tokio::task:
                                 break;
                             }
                         }
-                        let mut body = format!("d8:intervali1e5:peers{}:", compact.len()).into_bytes();
+                        let mut body = format!("d8:intervali1e12:min intervali0e5:peers{}:", compact.len()).into_bytes();
                         body.extend_from_slice(&compact);
                         body.push(b'e');
                         let header = format!(

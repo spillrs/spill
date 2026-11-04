@@ -24,7 +24,7 @@ async fn mapping_daemon(root: &std::path::Path, gateway: &str, enabled: bool) ->
 
 #[tokio::test]
 async fn nat_pmp_maps_renews_advertises_and_deletes_on_shutdown() {
-    use spill::protocol::{compact::PeersV4, tracker::udp};
+    use axum::{Router, extract::RawQuery, routing::get};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let root = Temp::new();
     std::fs::create_dir_all(root.0.join("downloads")).unwrap();
@@ -87,48 +87,29 @@ async fn nat_pmp_maps_renews_advertises_and_deletes_on_shutdown() {
     assert_eq!(health["port_mapping"]["external_ip"], "203.0.113.7");
     assert!(health["port_mapping"]["next_renewal"].is_u64());
 
-    let tracker = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("udp://{}/announce", tracker.local_addr().unwrap());
+    let tracker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/announce", tracker.local_addr().unwrap());
     let (announces, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let tracker_task = tokio::spawn(async move {
-        let codec = udp::Limits {
-            max_packet_len: 65507,
-            max_peers: 200,
-        };
-        let mut bytes = [0; 4096];
-        loop {
-            let (n, source) = tracker.recv_from(&mut bytes).await.unwrap();
-            let request = udp::Request::decode(&bytes[..n], codec).unwrap();
-            let kind = match request.kind {
-                udp::RequestKind::Connect { .. } => udp::ResponseKind::Connect {
-                    connection_id: 17,
-                    extensions: &[],
-                },
-                udp::RequestKind::Announce { announce, .. } => {
-                    announces.send((announce.port, announce.event)).unwrap();
-                    udp::ResponseKind::Announce {
-                        interval: 30,
-                        seeders: 1,
-                        leechers: 0,
-                        peers: udp::Peers::V4(PeersV4::parse(&[], 0).unwrap()),
-                    }
-                }
-                _ => panic!("unexpected tracker request"),
-            };
-            tracker
-                .send_to(
-                    &udp::Response {
-                        transaction_id: request.transaction_id,
-                        kind,
-                    }
-                    .encode(codec)
-                    .unwrap(),
-                    source,
-                )
-                .await
-                .unwrap();
-        }
-    });
+    let app = Router::new().route(
+        "/announce",
+        get(move |RawQuery(query): RawQuery| {
+            let announces = announces.clone();
+            async move {
+                let params: std::collections::HashMap<_, _> =
+                    url::form_urlencoded::parse(query.as_ref().unwrap().as_bytes())
+                        .into_owned()
+                        .collect();
+                announces
+                    .send((
+                        params["port"].parse::<u16>().unwrap(),
+                        params.get("event").cloned().unwrap_or_default(),
+                    ))
+                    .unwrap();
+                b"d8:intervali300e12:min intervali2e5:peers0:e".to_vec()
+            }
+        }),
+    );
+    let tracker_task = tokio::spawn(async move { axum::serve(tracker, app).await.unwrap() });
     let bytes = seed_metainfo("x", b"abc", Some(&url));
     let hash = spill::protocol::metainfo::Metainfo::parse(&bytes, Default::default())
         .unwrap()
@@ -141,7 +122,7 @@ async fn nat_pmp_maps_renews_advertises_and_deletes_on_shutdown() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(first, (address.port(), udp::EVENT_STARTED));
+    assert_eq!(first, (address.port(), "started".to_owned()));
     let external = if address.port() == 54321 {
         54322
     } else {
@@ -186,12 +167,13 @@ async fn nat_pmp_maps_renews_advertises_and_deletes_on_shutdown() {
             }
         }
     }).await.unwrap();
-    let next = tokio::time::timeout(Duration::from_secs(35), received.recv())
+    daemon.call(json!({"op":"reannounce","id":id})).await;
+    let next = tokio::time::timeout(Duration::from_secs(5), received.recv())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(next, (external, udp::EVENT_NONE));
-    assert!(started.elapsed() >= Duration::from_secs(29));
+    assert_eq!(next, (external, String::new()));
+    assert!(started.elapsed() >= Duration::from_secs(1));
     drop(peer);
     daemon.stop().await;
     let requests = requests.lock().unwrap();

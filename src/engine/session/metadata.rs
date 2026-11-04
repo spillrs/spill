@@ -88,7 +88,7 @@ impl crate::engine::torrent::Network {
         let discovery_bytes = if magnet.trackers().next().is_some() {
             20 + magnet
                 .trackers()
-                .map(|url| url.len().to_string().len() + 1 + url.len())
+                .map(|url| url.len().to_string().len() + 3 + url.len())
                 .sum::<usize>()
         } else {
             0
@@ -104,12 +104,12 @@ impl crate::engine::torrent::Network {
         let manager = |key| {
             if settings.trackers {
                 Announcer::new(
-                    vec![magnet.trackers().map(|u| u.to_vec()).collect()],
+                    magnet.trackers().map(|u| vec![u.to_vec()]).collect(),
                     AnnounceOptions {
                         hash: key,
                         peer: peer_id,
                         port: self.advertised_port.clone(),
-                        left: 1,
+                        left: 16 * 1024,
                         allow_local_network: self.allow_local_network,
                         client: self.tracker_http.clone(),
                         udp: self.tracker_udp.clone(),
@@ -272,12 +272,15 @@ fn retain_trackers(
     if magnet.trackers().next().is_none() {
         return Ok(meta);
     }
-    let mut bytes = b"d13:announce-listll".to_vec();
-    for tracker in magnet.trackers() {
+    let mut bytes = b"d13:announce-listl".to_vec();
+    let mut seen = std::collections::HashSet::new();
+    for tracker in magnet.trackers().filter(|tracker| seen.insert(*tracker)) {
+        bytes.push(b'l');
         bytes.extend_from_slice(format!("{}:", tracker.len()).as_bytes());
         bytes.extend_from_slice(tracker);
+        bytes.push(b'e');
     }
-    bytes.extend_from_slice(b"ee");
+    bytes.push(b'e');
     bytes.extend_from_slice(&meta.source_bytes()[1..]);
     profile.parse_owned(&bytes).map_err(Into::into)
 }

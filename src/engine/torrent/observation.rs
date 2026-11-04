@@ -89,7 +89,11 @@ impl Progress {
         for manager in &mut discovery.announces {
             let p = transfer.progress()?;
             manager.counters = crate::engine::discovery::Counters {
-                downloaded: p.received_payload_bytes(),
+                // Failed-piece bytes include padding synthesized without receiving it.
+                downloaded: p
+                    .received_payload_bytes()
+                    .saturating_sub(p.hash_failed_bytes()),
+                corrupt: p.hash_failed_bytes(),
                 uploaded: transfer.uploaded_bytes(),
                 left: p.remaining_bytes(),
             };

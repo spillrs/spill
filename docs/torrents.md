@@ -36,10 +36,21 @@ Metainfo and magnets may be v1, v2-only or hybrid; see
 The daemon fetches torrent URLs and checks the file before adding it. A magnet
 link is added right away and resolves its metadata from peers found via its
 `tr=` trackers, the DHT and, when enabled, local service discovery. Incoming peers
-can supply metadata too. Discovery attempts have a 45-second deadline; trackers
-from the magnet are kept for the download. Live metadata connections continue
+can supply metadata too. Tracker announces have a 30-second completion deadline
+and skip failed trackers during their per-tracker retry backoff. Magnet trackers
+are kept for the download, one tier per valid `tr=` in link order, keeping only
+an exact duplicate URL's first occurrence. See [Trackers](networking.md#trackers)
+for ordering, timing and remaining differences from libtorrent.
+Live metadata connections continue
 into payload transfer with their negotiated extensions and piece availability;
 peers need not advertise a listening port or reconnect after metadata validates.
+
+Magnet parameter names are case-insensitive and numeric suffixes such as `tr.1`
+are ignored. Invalid tracker hints and malformed percent escapes in `tr`/`ws`
+values are skipped; input budgets and destination restrictions still apply.
+The last `dn` display name wins. `ws`, `x.pe`, `so` and `xl` do not supply web
+seeds, explicit peers, file selections or size hints. v1/v2 topics can be combined,
+but conflicting hashes of the same version are rejected.
 
 Use `spill add SOURCE --paused` to add without starting discovery or payload
 transfer. Set initial overrides atomically with repeated `--set KEY=JSON` options,

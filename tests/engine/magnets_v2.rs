@@ -574,6 +574,154 @@ async fn raw_magnets_authenticate_layers_download_and_own_learned_aliases() {
 }
 
 #[tokio::test]
+async fn magnet_tracker_tiers_skip_failed_tracker_on_later_announce() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let meta = Profile::default().parse_owned(V2).unwrap();
+        let (address, source) = source(&meta, 0).await;
+        let (url, tracker) = metadata_peer::tracker(&[address]).await;
+        // Reserve a non-listening port so refusal is immediate and cannot race reuse.
+        let dead = tokio::net::TcpSocket::new_v4().unwrap();
+        dead.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let dead_url = format!("http://{}/announce", dead.local_addr().unwrap());
+        let link = magnet(&meta, "v2", &format!("{dead_url}&tr={url}&tr={url}"));
+        let session = session().await;
+        let root = Temp::new();
+        let mut options = TorrentOptions::new(
+            TorrentSource::Magnet(link),
+            Destination::Create(root.0.clone()),
+        );
+        options.settings = settings();
+        options.diagnostics = true;
+        let mut handle = session.admit(options).unwrap();
+        let resolved = handle.wait_metadata().await.unwrap();
+        assert_eq!(resolved.info_bytes(), meta.info_bytes());
+        let document = resolved.decode_document();
+        let spill::protocol::bencode::Value::List(tiers) =
+            document.get(b"announce-list").unwrap().value()
+        else {
+            unreachable!()
+        };
+        assert_eq!(tiers.len(), 2);
+        for (tier, expected) in tiers.iter().zip([&dead_url, &url]) {
+            let spill::protocol::bencode::Value::List(urls) = tier.value() else {
+                unreachable!()
+            };
+            assert_eq!(urls.len(), 1);
+            assert_eq!(
+                urls[0].value(),
+                &spill::protocol::bencode::Value::Bytes(expected.as_bytes())
+            );
+        }
+        handle.wait_complete().await.unwrap();
+        loop {
+            let snapshot = handle.snapshot();
+            let trackers = &snapshot.diagnostics.as_ref().unwrap().trackers;
+            if trackers.iter().any(|t| t.url == url && t.exchanges >= 2) {
+                assert_eq!(trackers.len(), 2);
+                assert_eq!(
+                    trackers
+                        .iter()
+                        .find(|t| t.url == dead_url)
+                        .unwrap()
+                        .exchanges,
+                    1
+                );
+                break;
+            }
+            assert!(handle.changed().await);
+        }
+        let before = handle
+            .snapshot()
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .trackers
+            .iter()
+            .find(|t| t.url == url)
+            .unwrap()
+            .exchanges;
+        handle.reannounce();
+        loop {
+            let snapshot = handle.snapshot();
+            let trackers = &snapshot.diagnostics.as_ref().unwrap().trackers;
+            if trackers
+                .iter()
+                .any(|t| t.url == url && t.exchanges > before)
+            {
+                assert_eq!(
+                    trackers
+                        .iter()
+                        .find(|t| t.url == dead_url)
+                        .unwrap()
+                        .exchanges,
+                    1
+                );
+                break;
+            }
+            assert!(handle.changed().await);
+        }
+        let dead_address = dead.local_addr().unwrap();
+        drop(dead);
+        let stalled = TcpListener::bind(dead_address).await.unwrap();
+        let before = handle
+            .snapshot()
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .trackers
+            .iter()
+            .find(|t| t.url == url)
+            .unwrap()
+            .exchanges;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(18)).await;
+        tokio::time::resume();
+        handle.reannounce();
+        let (_silent, _) = tokio::time::timeout(Duration::from_secs(3), stalled.accept())
+            .await
+            .expect("expired failure backoff starts a retry")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let snapshot = handle.snapshot();
+                let trackers = &snapshot.diagnostics.as_ref().unwrap().trackers;
+                if trackers
+                    .iter()
+                    .any(|t| t.url == url && t.exchanges > before)
+                {
+                    assert_eq!(
+                        trackers
+                            .iter()
+                            .find(|t| t.url == dead_url)
+                            .unwrap()
+                            .exchanges,
+                        1,
+                        "working tracker answers while the failed tracker retry is still pending"
+                    );
+                    break;
+                }
+                assert!(handle.changed().await);
+            }
+        })
+        .await
+        .expect("a failed tracker retry must not delay the working tracker");
+        handle.reannounce();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), stalled.accept())
+                .await
+                .is_err(),
+            "reannounce must not duplicate a tracker's pending retry"
+        );
+        handle.stop().await.unwrap();
+        session.shutdown().await.unwrap();
+        source.abort();
+        tracker.abort();
+    })
+    .await
+    .expect("magnet fallback, backoff and non-blocking failure retry");
+}
+
+#[tokio::test]
 async fn corrupt_metadata_and_bad_hash_peers_do_not_poison_honest_resolution() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let meta = Profile::default().parse_owned(V2).unwrap();

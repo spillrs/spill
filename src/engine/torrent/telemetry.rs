@@ -9,6 +9,9 @@ pub struct PeerStatus {
     pub client: Option<String>,
     pub direction: &'static str,
     pub transport: &'static str,
+    /// Peer application-stream encoding: `plaintext` or `rc4`. None for web seeds
+    /// or when no live negotiated stream is available; not HTTP TLS status.
+    pub encryption: Option<&'static str>,
     pub utp_retransmits: Option<u64>,
     pub source: &'static str,
     /// Present only for HTTP payload connections.

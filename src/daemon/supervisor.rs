@@ -65,6 +65,7 @@ impl Supervisor {
         let network = spill::engine::session::NetworkOptions {
             listen: config.listen,
             utp: config.utp,
+            peer_encryption: config.peer_encryption,
             allow_local_network: config.allow_local_network,
             port_mapping: mapping,
             dht: Some(spill::engine::session::DhtOptions {

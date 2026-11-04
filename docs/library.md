@@ -73,9 +73,17 @@ and peer protocol rules. For library users:
 
 `download()` stops after the selected content completes and joins cleanup before
 returning. It uses an ephemeral IPv4 listener, uTP, public DHT routers, no port
-mapping, and no permission to contact LAN addresses. It keeps no recovery record.
+mapping, preferred MSE peer encryption, and no permission to contact LAN addresses.
+It keeps no recovery record.
 If interrupted, rerunning refuses to overwrite partial files; use persisted
 recovery for resumable transfers.
+
+Explicit sessions select `NetworkOptions::peer_encryption` with
+`spill::engine::session::PeerEncryption::{Allowed, Preferred, Required}`.
+The default is `Preferred`, for both TCP and uTP. See
+[Peer encryption](networking.md#peer-encryption) for policy and security limits.
+`PeerStatus::encryption` reports the negotiated application-stream encoding,
+or `None` for web seeds and unavailable/unnegotiated observations.
 
 Dropping the download future requests stop but cannot await cleanup. For timeouts
 or cancellation that must prove files have been released, use an explicit session.

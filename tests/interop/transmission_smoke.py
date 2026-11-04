@@ -2,7 +2,7 @@
 """Opt-in LAN interop: Spill downloads from a local peer, then seeds back to it.
 
 Requires Transmission 4.1+ (for --preferred-transports), Python 3.11+ and a built daemon.
-No public tracker, DHT, PEX, LPD, NAT mapping or encryption is used.
+No public tracker, DHT, PEX, LPD or NAT mapping is used. Peer encryption is configurable.
 Logs/results are retained; passing runs remove their generated payloads unless --keep.
 """
 import argparse
@@ -130,12 +130,12 @@ def control(path, op, **arguments):
 def write_config(path, *, state, destination, control_socket, host, trackers=True,
                  dht=False, pex=False, web_seeds=False, bootstrap=(), utp=False, rate_limit=0,
                  active_downloads=1, active_seeds=1, download_limit=None,
-                 peers=None, cache_bytes=None, write_queue_bytes=None):
+                 peers=None, cache_bytes=None, write_queue_bytes=None, peer_encryption="allowed"):
     values = {"state_dir": str(state), "download_dir": str(destination),
               "control_socket": str(control_socket), "listen": f"{host}:0",
               "allow_local_network": True, "port_mapping": False,
               "active_downloads": active_downloads, "active_seeds": active_seeds,
-              "dht_bootstrap": list(bootstrap), "utp": utp}
+              "dht_bootstrap": list(bootstrap), "utp": utp, "peer_encryption": peer_encryption}
     values.update({key: value for key, value in {
         "peers": peers, "cache_bytes": cache_bytes, "write_queue_bytes": write_queue_bytes,
     }.items() if value is not None})
@@ -172,7 +172,13 @@ def log_transport(root, result, logs, direction, started, row, seen):
     if count < state["previous"]:
         state["carry"] += state["previous"]
     state["previous"] = count
+    encryptions = {peer["encryption"] for peer in transfer.get("peers", [])
+                   if peer["detail"]["established"] and peer["encryption"] is not None}
+    state.setdefault("encryptions", set()).update(encryptions)
+    if "required" in (result.get("peer_encryption"), result.get("transmission_encryption")):
+        assert encryptions <= {"rc4"}, (direction, transfer)
     sample = {"direction": direction, "elapsed_seconds": round(time.monotonic() - started, 3),
+              "encryptions": sorted(state["encryptions"]),
               "transports": sorted(seen), "live_transports": live,
               "spill_utp_retransmits": state["carry"] + count - state["baseline"],
               "owner_utp_retransmits": count,
@@ -408,7 +414,7 @@ def reference_run(args, root, transmission_bin, settings, torrent, tracker, dige
     try:
         engine.start([transmission_bin, "-f", "-g", str(config), "-w", str(destination),
                       "-p", str(rpc_port), "-P", str(peer_port), "-r", "127.0.0.1",
-                      "-i", args.host, "-T", "-O", "-Y", "-M", "-B", "-et",
+                      "-i", args.host, "-T", "-O", "-Y", "-M", "-B", {"allowed": "-et", "preferred": "-ep", "required": "-er"}[args.transmission_encryption],
                       "--preferred-transports", args.transport, "--log-level", "debug"])
         client = Transmission(rpc_port)
         wait_for("reference RPC", lambda: client.rpc("session-get"), 10)
@@ -448,13 +454,13 @@ def reference_run(args, root, transmission_bin, settings, torrent, tracker, dige
 
 def download(binary, source, destination, root, host, *, run_seconds, stall_seconds=60,
              dht=False, bootstrap=(), trackers=False, web_seeds=False, processes=None,
-             total_seconds=None, utp=False, rate_limit=0):
+             total_seconds=None, utp=False, rate_limit=0, peer_encryption="allowed"):
     """Observe a bounded real daemon/CLI download and require joined shutdown."""
     root.mkdir(mode=0o700)
     socket = root / "control.sock"
     config = root / "spill.toml"
     write_config(config, state=root / "state", destination=destination, control_socket=socket,
-                 host=host, dht=dht, bootstrap=bootstrap, trackers=trackers, web_seeds=web_seeds, utp=utp, rate_limit=rate_limit)
+                 host=host, dht=dht, bootstrap=bootstrap, trackers=trackers, web_seeds=web_seeds, utp=utp, rate_limit=rate_limit, peer_encryption=peer_encryption)
     command = [str(pathlib.Path(binary).resolve()), "serve", "--config", str(config)]
     started = time.monotonic()
     total_seconds = total_seconds if total_seconds is not None else run_seconds + 15
@@ -535,11 +541,18 @@ def main():
     parser.add_argument("--piece-length", type=byte_size, default=32768)
     parser.add_argument("--release", action="store_true", help="build and use target/release/spill")
     parser.add_argument("--transport", choices=("utp", "tcp"), default="tcp", help="preferred peer transport (default: tcp); uTP runs require observed uTP peers")
+    parser.add_argument("--peer-encryption", choices=("allowed", "preferred", "required"), default="allowed", help="spill peer encryption policy (default: allowed, preserving plaintext baselines)")
+    parser.add_argument("--transmission-encryption", choices=("allowed", "preferred", "required"), default="allowed", help="Transmission encryption policy (default: allowed)")
     parser.add_argument("--rate-limit", type=byte_size, default=0, help="Spill payload bytes/s in each direction; 0 is unlimited (use 1MiB for small uTP fixtures)")
     parser.add_argument("--download-only", action="store_true", help="only run Transmission -> Spill; skip reverse seeding")
     parser.add_argument("--kill-at", type=float, help="SIGKILL at this verified fraction, then restart")
     parser.add_argument("--timeout", type=float, default=60, help="seconds allowed per transfer (default: 60)")
     args = parser.parse_args()
+    if (args.peer_encryption == "required" and args.transmission_encryption == "allowed"
+            and not args.download_only):
+        parser.error("spill required / Transmission allowed needs --download-only: "
+                     "Transmission may initiate plaintext, which spill rejects; "
+                     "use Transmission preferred or required for bidirectional transfers")
     if args.reference and args.rate_limit:
         parser.error("--reference requires unlimited --rate-limit 0 for comparable runs")
     if args.private and (not args.http_tracker or args.magnet):
@@ -619,7 +632,7 @@ def main():
     socket_path = root / "control.sock"
     config = root / "spill.toml"
     write_config(config, state=root / "state", destination=root / "downloads",
-                 control_socket=socket_path, host=args.host, utp=args.transport == "utp", rate_limit=args.rate_limit)
+                 control_socket=socket_path, host=args.host, utp=args.transport == "utp", rate_limit=args.rate_limit, peer_encryption=args.peer_encryption)
     transmission = Transmission(rpc_port)
     processes = []
     files = []
@@ -627,12 +640,13 @@ def main():
               "host": args.host, "bytes": args.size, "info_hash": info_hash, "sha256": digest,
               "piece_length": args.piece_length, "format": "hybrid" if args.hybrid else "v1", "artifacts": str(root), "release": args.release,
               "download_only": args.download_only, "transport": args.transport, "rate_limit": args.rate_limit, "filesystem": filesystem,
-              "timing_status": "untraced"}
+              "timing_status": "untraced", "peer_encryption": args.peer_encryption,
+              "transmission_encryption": args.transmission_encryption}
     engine = Engine(args, root, config, files, processes)
     transport_logs = {}
     try:
         for name, command in [
-            ("transmission", [transmission_bin, "-f", "-g", str(settings), "-w", str(seed), "-p", str(rpc_port), "-P", str(peer_port), "-r", "127.0.0.1", "-i", args.host, "-T", "-O", "-Y", "-M", "-B", "-et", "--preferred-transports", args.transport, "--log-level", "debug"]),
+            ("transmission", [transmission_bin, "-f", "-g", str(settings), "-w", str(seed), "-p", str(rpc_port), "-P", str(peer_port), "-r", "127.0.0.1", "-i", args.host, "-T", "-O", "-Y", "-M", "-B", {"allowed": "-et", "preferred": "-ep", "required": "-er"}[args.transmission_encryption], "--preferred-transports", args.transport, "--log-level", "debug"]),
         ]:
             log = (root / f"{name}.log").open("w")
             files.append(log)
@@ -707,6 +721,8 @@ def main():
         elapsed = time.monotonic() - start
         if args.transport == "utp":
             assert "utp" in download_transports, "no uTP peer observed; use a larger fixture if it finished before diagnostics were sampled"
+        if "required" in (args.peer_encryption, args.transmission_encryption):
+            assert result["directions"]["transmission_to_serve"]["encryptions"] == ["rc4"], "no encrypted peer observed; use a larger fixture"
         result["download_transports"] = sorted(download_transports)
         if args.kill_at is not None:
             assert killed, "download completed before kill threshold was sampled"
@@ -763,7 +779,7 @@ def main():
             result["magnet_catalog_restart"] = {"metainfo_retained": True, "refetched": False, "duplicate_rejected": True}
             destination = root / "magnet-download"
             download(args.daemon, magnet, destination, root / "magnet-product", args.host,
-                     run_seconds=int(args.timeout), trackers=True, utp=args.transport == "utp", rate_limit=args.rate_limit)
+                     run_seconds=int(args.timeout), trackers=True, utp=args.transport == "utp", rate_limit=args.rate_limit, peer_encryption=args.peer_encryption)
             cli_payload, = destination.glob("payload.bin")
             assert sha256_file(cli_payload) == digest
             result["magnet_cli"] = {"checksum_matches": True}
@@ -795,6 +811,8 @@ def main():
             complete = wait_for("serve -> Transmission download", upload_ready, args.timeout)
             if args.transport == "utp":
                 assert "utp" in upload_transports, "no uTP peer observed on reverse transfer; use a larger fixture"
+            if "required" in (args.peer_encryption, args.transmission_encryption):
+                assert result["directions"]["serve_to_transmission"]["encryptions"] == ["rc4"], "no encrypted peer observed on reverse transfer; use a larger fixture"
             result["upload_transports"] = sorted(upload_transports)
             elapsed = time.monotonic() - start
             assert sha256_file(fresh / "payload.bin") == digest

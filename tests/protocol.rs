@@ -16,6 +16,8 @@ mod identity;
 mod krpc;
 #[path = "protocol/metadata.rs"]
 mod metadata;
+#[path = "protocol/mse.rs"]
+mod mse;
 #[path = "protocol/nat_pmp.rs"]
 mod nat_pmp;
 #[path = "protocol/resume.rs"]

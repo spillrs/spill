@@ -2,7 +2,7 @@ use crate::{payload::Temp, v2_peer as raw};
 use spill::{
     engine::{
         profile::Profile,
-        session::{DhtOptions, Limits, NetworkOptions, Session, dht::SavedState},
+        session::{DhtOptions, Limits, NetworkOptions, PeerEncryption, Session, dht::SavedState},
         settings::TorrentSettings,
         torrent::{Destination, RunPolicy, TorrentOptions, TorrentSource},
     },
@@ -47,6 +47,7 @@ async fn session(dht: Option<DhtOptions>) -> Session {
         NetworkOptions {
             listen: "127.0.0.1:0".parse().unwrap(),
             utp: false,
+            peer_encryption: PeerEncryption::Allowed,
             allow_local_network: true,
             dht,
             ..Default::default()

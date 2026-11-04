@@ -109,8 +109,9 @@ A client command can't reach the control socket.
   layers from peers. Hybrids can download with layers pending and rebuild them
   locally at full completion.
 - `downloading` with no peers: check `last_error` and the trackers in `get`. If
-  peers are on your LAN, set `allow_local_network = true`. Peers that require
-  protocol encryption can't be reached (see [Limits](limits.md#known-gaps)).
+  peers are on your LAN, set `allow_local_network = true`. If
+  `peer_encryption = "required"`, plaintext-only peers cannot connect; use
+  `"preferred"` for compatibility (see [Peer encryption](networking.md#peer-encryption)).
   For uTP-only peers, check that `utp` is enabled (the default).
 - `retrying`: read `last_error`. Disk full and permission errors are the usual
   causes. `pause` then `resume` retries immediately. Local filesystem failures

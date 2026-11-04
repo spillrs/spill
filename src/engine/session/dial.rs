@@ -1,5 +1,9 @@
 //! One FIFO contact queue and token bucket shared by every session owner.
-use crate::engine::{bandwidth::Bucket, profile::Profile};
+use crate::engine::{
+    bandwidth::Bucket,
+    peer_io::{Stream, Transport},
+    profile::Profile,
+};
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -16,6 +20,7 @@ const COST: u32 = 2048;
 pub(in crate::engine) struct Queue(Arc<Mutex<State>>);
 struct State {
     allow_local_network: bool,
+    encryption: super::PeerEncryption,
     utp: Option<Arc<Mutex<super::utp::Mux>>>,
     next: u64,
     entries: VecDeque<Entry>,
@@ -43,10 +48,15 @@ impl State {
     }
 }
 impl Queue {
-    pub(in crate::engine) fn new(cap: usize, allow_local_network: bool) -> Self {
+    pub(in crate::engine) fn new(
+        cap: usize,
+        allow_local_network: bool,
+        encryption: super::PeerEncryption,
+    ) -> Self {
         assert!(cap > 0);
         Self(Arc::new(Mutex::new(State {
             allow_local_network,
+            encryption,
             utp: None,
             next: 0,
             entries: VecDeque::new(),
@@ -66,6 +76,7 @@ impl Queue {
             queue: self.clone(),
             owner: state.next,
             allow_local_network: state.allow_local_network,
+            encryption: state.encryption,
             known: HashMap::new(),
         };
         let turn = Turn {
@@ -154,17 +165,48 @@ pub(in crate::engine) struct Contacts {
     queue: Queue,
     owner: u64,
     allow_local_network: bool,
+    encryption: super::PeerEncryption,
     known: HashMap<SocketAddr, Known>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContactState {
+    Queued,
+    Negotiating,
+    Idle,
+}
+
+pub(in crate::engine) enum NegotiationOutcome {
+    Success,
+    Closed,
+    Failed,
+}
+
 struct Known {
     source: &'static str,
     hash: [u8; 20],
     utp_failed: bool,
-    queued: bool,
+    state: ContactState,
+    encrypted: bool,
+    retried: bool,
+    transport: Option<Transport>,
 }
 impl Contacts {
     pub(in crate::engine) fn try_utp(&self, address: SocketAddr) -> bool {
-        !self.known[&address].utp_failed
+        let known = &self.known[&address];
+        known
+            .transport
+            .map_or(!known.utp_failed, |transport| transport == Transport::Utp)
+    }
+    pub(in crate::engine) fn fallback(&self, address: SocketAddr) -> bool {
+        !self.known[&address].retried
+    }
+    pub(in crate::engine) fn methods(
+        &self,
+        address: SocketAddr,
+    ) -> Option<crate::protocol::peer::mse::Methods> {
+        self.known[&address]
+            .encrypted
+            .then(|| self.encryption.methods())
     }
     fn add(
         &mut self,
@@ -175,15 +217,17 @@ impl Contacts {
         let mut state = self.queue.0.lock().unwrap();
         for &address in peers {
             if !crate::engine::network::peer(address, self.allow_local_network)
-                || self.known.get(&address).is_some_and(|k| k.queued)
+                || self
+                    .known
+                    .get(&address)
+                    .is_some_and(|k| k.state != ContactState::Idle)
             {
                 continue;
             }
             if !self.known.contains_key(&address) && self.known.len() == 4096 {
-                let retired = self
-                    .known
-                    .iter()
-                    .find_map(|(&address, known)| (!known.queued).then_some(address));
+                let retired = self.known.iter().find_map(|(&address, known)| {
+                    (known.state == ContactState::Idle).then_some(address)
+                });
                 let Some(retired) = retired else {
                     continue;
                 };
@@ -193,11 +237,17 @@ impl Contacts {
                 source,
                 hash,
                 utp_failed: false,
-                queued: false,
+                state: ContactState::Idle,
+                encrypted: false,
+                retried: false,
+                transport: None,
             });
             known.source = source;
             known.hash = hash;
-            known.queued = true;
+            known.state = ContactState::Queued;
+            known.encrypted = self.encryption != super::PeerEncryption::Allowed;
+            known.retried = false;
+            known.transport = None;
             state.entries.push_back(Entry {
                 owner: self.owner,
                 address,
@@ -254,12 +304,50 @@ impl Contacts {
     pub(in crate::engine) fn dial_completed(
         &mut self,
         address: SocketAddr,
-        _: bool,
+        transport: Option<Transport>,
         utp_failed: bool,
     ) {
         let known = self.known.get_mut(&address).expect("dialed contact");
         known.utp_failed |= utp_failed;
+        if let Some(transport) = transport {
+            known.state = ContactState::Negotiating;
+            known.transport = Some(transport);
+        } else {
+            self.retire(address);
+        }
+    }
+    pub(in crate::engine) fn negotiated(
+        &mut self,
+        address: SocketAddr,
+        outcome: NegotiationOutcome,
+    ) {
+        let known = self.known.get_mut(&address).expect("negotiating contact");
+        assert!(known.state == ContactState::Negotiating);
+        if matches!(outcome, NegotiationOutcome::Closed)
+            && !known.retried
+            && self.encryption != super::PeerEncryption::Required
+        {
+            known.retried = true;
+            known.encrypted = !known.encrypted;
+            known.state = ContactState::Queued;
+            self.queue.0.lock().unwrap().entries.push_back(Entry {
+                owner: self.owner,
+                address,
+                due: Instant::now(),
+                source: known.source,
+                hash: known.hash,
+            });
+        } else {
+            self.retire(address);
+        }
+    }
+    fn retire(&mut self, address: SocketAddr) {
+        let known = self.known.get_mut(&address).expect("completed contact");
         if known.source == "direct" {
+            known.state = ContactState::Queued;
+            known.encrypted = self.encryption != super::PeerEncryption::Allowed;
+            known.retried = false;
+            known.transport = None;
             self.queue.0.lock().unwrap().entries.push_back(Entry {
                 owner: self.owner,
                 address,
@@ -268,13 +356,16 @@ impl Contacts {
                 hash: known.hash,
             });
         } else if known.utp_failed {
-            known.queued = false;
+            known.state = ContactState::Idle;
         } else {
             self.known.remove(&address);
         }
     }
     pub(in crate::engine) fn progress(&self) -> usize {
-        self.known.values().filter(|k| k.queued).count()
+        self.known
+            .values()
+            .filter(|k| k.state != ContactState::Idle)
+            .count()
     }
 }
 impl Drop for Contacts {
@@ -294,6 +385,12 @@ pub(in crate::engine) struct ConnectionEvent {
     pub(in crate::engine) address: SocketAddr,
     pub(in crate::engine) result: io::Result<crate::engine::peer_io::Stream>,
     pub(in crate::engine) utp_failed: bool,
+    pub(in crate::engine) methods: Option<crate::protocol::peer::mse::Methods>,
+}
+impl ConnectionEvent {
+    pub(in crate::engine) fn transport(&self) -> Option<Transport> {
+        self.result.as_ref().ok().map(Stream::transport)
+    }
 }
 pub(in crate::engine) struct Client {
     peers: usize,
@@ -324,6 +421,8 @@ impl Client {
         &mut self,
         address: SocketAddr,
         try_utp: bool,
+        fallback: bool,
+        methods: Option<crate::protocol::peer::mse::Methods>,
     ) -> io::Result<DialId> {
         if self.tasks.len() >= self.peers
             || !crate::engine::network::peer(address, self.allow_local_network)
@@ -341,6 +440,9 @@ impl Client {
                     match super::utp::Mux::connect(mux, address).await {
                         Ok(stream) => return Ok(crate::engine::peer_io::Stream::Utp(stream)),
                         Err(error) => {
+                            if !fallback {
+                                return Err(error);
+                            }
                             utp_failed = matches!(
                                 error.kind(),
                                 io::ErrorKind::TimedOut | io::ErrorKind::ConnectionReset
@@ -363,6 +465,7 @@ impl Client {
                     address,
                     result,
                     utp_failed,
+                    methods,
                 },
                 permit,
             )

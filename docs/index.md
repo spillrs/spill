@@ -58,7 +58,8 @@ client compatibility. HTTP(S) web seeds support all three formats. Controlled
 HTTP checks against libtorrent 2.1.2.0 cover v2/hybrid file URLs, short tails,
 padding and combined peer/web-seed downloads; see the
 [web-seed checks](https://github.com/spillrs/spill/blob/main/tests/interop/baselines/webseeds.json).
-Protocol encryption (MSE/PE) and local peer discovery are not supported.
+Peer connections support [MSE/PE obfuscation](networking.md#peer-encryption).
+Local peer discovery is not supported.
 The daemon is single-user; its optional web interface listens only on loopback
 and has no multi-user authentication. Remote access requires an SSH tunnel.
 

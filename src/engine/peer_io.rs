@@ -24,6 +24,7 @@ use tokio::{
 };
 use tracing::Instrument;
 
+pub(in crate::engine) mod encryption;
 mod transport;
 use transport::*;
 
@@ -31,8 +32,26 @@ pub(in crate::engine) use crate::engine::core::{ConnectionId, Frame};
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::engine) enum Role {
-    Outbound([u8; 20]),
+    Outbound(
+        [u8; 20],
+        Option<crate::protocol::peer::mse::Methods>,
+        std::net::SocketAddr,
+    ),
     Inbound,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::engine) enum Transport {
+    Tcp,
+    Utp,
+}
+impl Transport {
+    pub(in crate::engine) fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Utp => "utp",
+        }
+    }
 }
 
 pub(in crate::engine) enum Stream {
@@ -46,29 +65,38 @@ impl Stream {
             Self::Utp(s) => Ok(s.peer_addr()),
         }
     }
-    pub(in crate::engine) fn transport(&self) -> &'static str {
+    pub(in crate::engine) fn transport(&self) -> Transport {
         match self {
-            Self::Tcp(_) => "tcp",
-            Self::Utp(_) => "utp",
+            Self::Tcp(_) => Transport::Tcp,
+            Self::Utp(_) => Transport::Utp,
         }
     }
 }
 pub(in crate::engine) enum PeerSocket {
-    Connected(Stream, Role),
+    Connected(Stream, Role, Option<Prepared>),
     WebSeed(Box<crate::engine::webseed::Seed>),
+}
+pub(in crate::engine) struct Prepared {
+    pub(in crate::engine) negotiated: Option<Box<crate::protocol::peer::mse::Negotiated>>,
+    pub(in crate::engine) deadline: Instant,
 }
 struct HandshakeStart {
     role: Role,
     deadline: Instant,
+    negotiated: Option<Box<crate::protocol::peer::mse::Negotiated>>,
 }
 
 #[derive(Debug)]
 pub(in crate::engine) enum PeerEvent {
+    MseNegotiated {
+        connection: ConnectionId,
+    },
     Handshake {
         connection: ConnectionId,
         reserved: [u8; 8],
         peer_id: [u8; 20],
         info_hash: [u8; 20],
+        encryption: Option<crate::protocol::peer::mse::Method>,
     },
     Frame {
         connection: ConnectionId,
@@ -101,6 +129,7 @@ struct Entry {
     capacity: usize,
     uploaded: u64,
     connected: bool,
+    encryption: Option<crate::protocol::peer::mse::Method>,
     abort: AbortHandle,
     disconnecting: bool,
     closed: Option<io::Result<()>>,
@@ -230,10 +259,21 @@ impl Peers {
             async move {
                 // The socket and both loop futures drop before waiting to report exit.
                 let result = match socket {
-                    PeerSocket::Connected(socket, role) => {
+                    PeerSocket::Connected(socket, role, prepared) => {
+                        let Prepared {
+                            negotiated,
+                            deadline,
+                        } = prepared.unwrap_or(Prepared {
+                            negotiated: None,
+                            deadline,
+                        });
                         run_socket(
                             socket,
-                            HandshakeStart { role, deadline },
+                            HandshakeStart {
+                                role,
+                                deadline,
+                                negotiated,
+                            },
                             context,
                             connection,
                             receiver,
@@ -266,6 +306,7 @@ impl Peers {
                 capacity: 0,
                 uploaded: 0,
                 connected: false,
+                encryption: None,
                 abort,
                 disconnecting: false,
                 closed: None,
@@ -328,9 +369,24 @@ impl Peers {
             }
         });
     }
-    pub(in crate::engine) fn handshake_received(&mut self, connection: ConnectionId) {
+    pub(in crate::engine) fn encryption(&self, connection: ConnectionId) -> Option<&'static str> {
+        // Core observations can outlive joined I/O until the closure is consumed.
+        self.entries
+            .get(&connection)
+            .and_then(|entry| entry.encryption)
+            .map(|method| match method {
+                crate::protocol::peer::mse::Method::Rc4 => "rc4",
+                crate::protocol::peer::mse::Method::Plaintext => "plaintext",
+            })
+    }
+    pub(in crate::engine) fn handshake_received(
+        &mut self,
+        connection: ConnectionId,
+        encryption: Option<crate::protocol::peer::mse::Method>,
+    ) {
         if let Some(entry) = self.entries.get_mut(&connection) {
             entry.connected = true;
+            entry.encryption = encryption;
             self.capacity_changed.notify_one();
         }
     }
@@ -451,7 +507,8 @@ impl Peers {
                 }
             };
             let connection = match &event {
-                PeerEvent::Handshake { connection, .. }
+                PeerEvent::MseNegotiated { connection }
+                | PeerEvent::Handshake { connection, .. }
                 | PeerEvent::Frame { connection, .. }
                 | PeerEvent::Closed { connection, .. } => *connection,
             };

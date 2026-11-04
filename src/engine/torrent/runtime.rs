@@ -120,6 +120,9 @@ async fn serve(
             }
             observation_dirty = false;
         }
+        if let Some(contacts) = &mut network.contacts {
+            transfer.resolve_negotiations(contacts);
+        }
         progress.update_counters(transfer, network).await?;
         if options.run == RunPolicy::UntilComplete && status.borrow().progress.completed {
             if !network.announces.iter().any(|a| a.completion_pending()) {
@@ -191,21 +194,21 @@ async fn serve(
             event = direct, if progress.pending > 0 => {
                 let event = event?;
                 if let Some(event) = &event && let Some(q) = &mut network.contacts {
-                    q.dial_completed(event.address, event.result.is_ok(), event.utp_failed);
+                    q.dial_completed(event.address, event.transport(), event.utp_failed);
                 }
-                progress.direct_event(event, transfer, options)?;
+                progress.direct_event(event, transfer, options, network.contacts.as_mut().expect("online contacts"))?;
                 discovery_dirty = true;
             }
             socket = inbound.recv(), if inbound_open => {
                 if let Some(socket) = socket {
-                    let socket = match socket {
-                        crate::engine::session::Inbound::Tcp(socket) => match tokio::net::TcpStream::from_std(socket) {
-                            Ok(socket) => crate::engine::peer_io::Stream::Tcp(socket),
+                    let (socket, prepared) = match socket {
+                        crate::engine::session::Inbound::Tcp(socket, prepared) => match tokio::net::TcpStream::from_std(socket) {
+                            Ok(socket) => (crate::engine::peer_io::Stream::Tcp(socket), prepared),
                             Err(error) => { debug!(kind = ?error.kind(), "peer_register_failed"); continue; }
                         },
-                        crate::engine::session::Inbound::Utp(socket) => crate::engine::peer_io::Stream::Utp(socket),
+                        crate::engine::session::Inbound::Utp(socket, prepared) => (crate::engine::peer_io::Stream::Utp(socket), prepared),
                     };
-                    progress.attach_peer(socket, Role::Inbound, transfer, "inbound", options.log_peer_endpoints, None);
+                    progress.attach_peer(socket, Role::Inbound, transfer, "inbound", options.log_peer_endpoints, Some(prepared));
                     discovery_dirty = true;
                     progress.publish_peers(status);
                 } else {

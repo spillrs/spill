@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--host", required=True, help="IPv4 address on your LAN interface")
     parser.add_argument("--leecher", choices=("spill", "transmission"), default="spill")
     parser.add_argument("--transport", choices=("utp", "tcp"), default="tcp")
+    parser.add_argument("--peer-encryption", choices=("allowed", "preferred", "required"), default="allowed", help="policy for all swarm members; preferred exercises RC4 for the release soak")
     parser.add_argument("--leechers", type=int, default=8)
     parser.add_argument("--size", type=byte_size, default=256 * 1024**2, help="payload bytes per leecher")
     parser.add_argument("--piece-length", type=byte_size, default=1024**2)
@@ -57,7 +58,7 @@ def main():
         root = pathlib.Path(tempfile.mkdtemp(prefix=f"swarm-{args.leecher}-", dir=parent))
     result = {
         "passed": False, "scenario": "swarm", "scenario_version": 1,
-        "leecher": args.leecher, "transport": args.transport, "leechers": args.leechers, "bytes_per_leecher": args.size,
+        "leecher": args.leecher, "transport": args.transport, "peer_encryption": args.peer_encryption, "leechers": args.leechers, "bytes_per_leecher": args.size,
         "aggregate_bytes": args.size * args.leechers, "piece_length": args.piece_length,
         "host": args.host, "filesystem": filesystem, "artifacts": str(root),
         "transmission": subprocess.check_output([transmission_bin, "--version"], text=True, stderr=subprocess.STDOUT).strip(),
@@ -110,7 +111,7 @@ def main():
         peer_port, rpc_port = free_port(args.host), free_port("127.0.0.1")
         engine.start([transmission_bin, "-f", "-g", str(config), "-w", str(destination),
                       "-p", str(rpc_port), "-P", str(peer_port), "-r", "127.0.0.1", "-i", args.host,
-                      "-T", "-O", "-Y", "-M", "-B", "-et", "--preferred-transports", args.transport, "--log-level", "info"])
+                      "-T", "-O", "-Y", "-M", "-B", {"allowed": "-et", "preferred": "-ep", "required": "-er"}[args.peer_encryption], "--preferred-transports", args.transport, "--log-level", "info"])
         client = Transmission(rpc_port)
         wait_for(f"{name} RPC", lambda: client.rpc("session-get"), 10)
         ports.append(peer_port)
@@ -156,7 +157,7 @@ def main():
             else:
                 socket_path, config = root / name / "control.sock", root / name / "spill.toml"
                 write_config(config, state=root / name / "state", destination=destination,
-                             control_socket=socket_path, host=args.host, utp=args.transport == "utp")
+                             control_socket=socket_path, host=args.host, utp=args.transport == "utp", peer_encryption=args.peer_encryption)
                 engine.start([str(args.daemon.resolve()), "serve", "--config", str(config)])
                 process = engine.process
                 def ready():
@@ -166,7 +167,7 @@ def main():
                 ports.append(int(health["listen"].rsplit(":", 1)[1]))
                 member = {"socket": socket_path}
             members.append(member | {"destination": destination, "first_payload": None, "completed": None,
-                                     "uploaded_bytes": 0, "peak_peers": 0, "utp_seen": False})
+                                     "uploaded_bytes": 0, "peak_peers": 0, "utp_seen": False, "rc4_seen": False})
         started = previous = time.monotonic()
         for member in members:
             if args.leecher == "spill":
@@ -189,6 +190,7 @@ def main():
                     assert row["last_error"] is None, row
                     transfer = row["transfer"] or {}
                     member["utp_seen"] |= any(peer["transport"] == "utp" for peer in transfer.get("peers", []))
+                    member["rc4_seen"] |= any(peer["encryption"] == "rc4" for peer in transfer.get("peers", []))
                     count = transfer.get("active_peers", 0)
                     received = transfer.get("downloaded_bytes", 0)
                     sent = transfer.get("uploaded_bytes", 0)
@@ -203,6 +205,7 @@ def main():
                                            "peers": transfer.get("peers", [])})
                 else:
                     value = torrent(member["client"])
+                    member["rc4_seen"] |= any(peer["isEncrypted"] for peer in value["peers"]) if value else False
                     count = len(value["peers"]) if value else 0
                     received = value["downloadedEver"] if value else 0
                     sent = value["uploadedEver"] if value else 0
@@ -244,6 +247,8 @@ def main():
         elapsed = time.monotonic() - started
         for member in members:
             assert sha256_file(member["destination"] / "payload.bin") == digest
+        if args.peer_encryption != "allowed":
+            assert all(member["rc4_seen"] for member in members), "RC4 was not observed for every leecher; use a larger fixture"
         if args.leechers > 1:
             assert max(member["peak_peers"] for member in members) > 1, "no multi-peer connections observed"
         if args.leecher == "spill":
@@ -260,7 +265,7 @@ def main():
                        "seconds": round(elapsed, 3), "aggregate_mb_per_second": round(args.size * args.leechers / elapsed / 1e6, 3),
                        "seed_uploaded_bytes": seed_status["uploadedEver"],
                        "leecher_uploaded_bytes": sum(member["uploaded_bytes"] for member in members),
-                       "leechers_metrics": [{key: member[key] for key in ("first_payload", "completed", "uploaded_bytes", "peak_peers")} for member in members]})
+                       "leechers_metrics": [{key: member[key] for key in ("first_payload", "completed", "uploaded_bytes", "peak_peers", "rc4_seen")} for member in members]})
         first = min(member["first_payload"] for member in members)
         result["payload_seconds"] = round(elapsed - first, 3)
         result["payload_aggregate_mb_per_second"] = round(args.size * args.leechers / (elapsed - first) / 1e6, 3)

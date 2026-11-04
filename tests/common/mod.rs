@@ -79,6 +79,7 @@ impl DaemonConfig {
                     "port_mapping": self.port_mapping,
                     "port_mapping_gateway": self.port_mapping_gateway,
                     "utp": self.utp,
+                    "peer_encryption": "allowed",
                     "peers": self.peers,
                     "cache_bytes": self.cache_bytes,
                     "write_queue_bytes": self.write_queue_bytes,

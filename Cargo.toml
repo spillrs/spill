@@ -21,6 +21,7 @@ include = [
     "tests/**/*.rs",
     "tests/protocol/fixtures/*.torrent",
     "tests/protocol/fixtures/*.md",
+    "tests/protocol/fixtures/mse_vectors.py",
     "tests/interop/*.py",
     "tests/interop/*.md",
     "tests/interop/baselines/*.json",
@@ -80,6 +81,10 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+# Fixed-width modular exponentiation for the MSE 768-bit DH group.
+crypto-bigint = { version = "0.7", default-features = false }
+# Legacy peer-wire interoperability, not a modern security guarantee.
+rc4 = "0.2"
 
 # Engine port mapping uses /sbin/route for macOS gateway discovery.
 [target.'cfg(target_os = "macos")'.dependencies]

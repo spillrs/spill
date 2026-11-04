@@ -57,12 +57,15 @@ preserve full IDs; use prefixes when entering commands.
 | `shutdown` | Stop the daemon cleanly. |
 
 In `get` JSON, `transfer.peers[].transport` is `"tcp"`, `"utp"` or `"http"`
-(for web seeds). A uTP peer also has `utp_retransmits`, the number of resent
+(for web seeds). `transfer.peers[].encryption` is `"rc4"` or `"plaintext"`
+for peer streams, or `null` for web seeds and unavailable/unnegotiated observations;
+it does not describe web-seed TLS. A uTP peer also has
+`utp_retransmits`, the number of resent
 outgoing uTP datagrams. `transfer.utp_retransmits` totals these over the current
 running owner, including peers that have closed; restarting the owner resets it.
 Counts are sampled while peer I/O is attached; later FIN-linger retransmissions
 are not included. `transfer.pending_contacts` counts queued and currently dialing
-discovery contacts, not established peers. These diagnostics are not wire traces.
+or negotiating discovery contacts, not established peers. These diagnostics are not wire traces.
 
 ## Health
 

@@ -83,7 +83,6 @@ and per-run notes before drawing comparisons.
 
 ## Known gaps
 
-- No protocol encryption, so peers that require it can't be reached.
 - Automatic mapping supports NAT-PMP and UPnP IGD, not PCP or IPv6 pinholes.
 - V2 and hybrid interoperability has been checked only against libtorrent
   2.1.2.0 on a controlled network; see [Scope](index.md#scope) and

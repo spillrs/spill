@@ -2,7 +2,7 @@ use crate::{metadata_peer, payload::Temp};
 use spill::{
     engine::{
         profile::Profile,
-        session::{Limits, NetworkOptions, Session},
+        session::{Limits, NetworkOptions, PeerEncryption, Session},
         settings::TorrentSettings,
         torrent::{Destination, TorrentOptions, TorrentSource},
     },
@@ -20,6 +20,7 @@ async fn session() -> Session {
             listen: "127.0.0.1:0".parse().unwrap(),
             allow_local_network: true,
             utp: false,
+            peer_encryption: PeerEncryption::Allowed,
             ..Default::default()
         },
         Limits::default(),
@@ -386,6 +387,7 @@ async fn metadata_resolution_preserves_pending_dials_and_inflight_handshakes() {
                 listen: "127.0.0.1:0".parse().unwrap(),
                 allow_local_network: true,
                 utp: true,
+                peer_encryption: PeerEncryption::Allowed,
                 ..Default::default()
             },
             Limits::default(),

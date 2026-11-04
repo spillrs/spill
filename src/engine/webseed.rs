@@ -103,6 +103,7 @@ impl Seed {
                 reserved: [0; 8],
                 peer_id: [0; 20],
                 info_hash: self.meta.info_hash().wire_key(),
+                encryption: None,
             })
             .await
             .map_err(closed)?;

@@ -42,6 +42,26 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+/// Peer encryption policy for TCP and uTP. MSE obfuscates traffic; it does not
+/// authenticate peers or provide modern transport security.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeerEncryption {
+    Allowed,
+    #[default]
+    Preferred,
+    Required,
+}
+impl PeerEncryption {
+    pub(in crate::engine) fn methods(self) -> crate::protocol::peer::mse::Methods {
+        if self == Self::Required {
+            crate::protocol::peer::mse::Methods::Rc4
+        } else {
+            crate::protocol::peer::mse::Methods::Both
+        }
+    }
+}
+
 /// Network permissions and listeners. Defaults use an ephemeral IPv4 port and uTP,
 /// with no LAN access, router mapping, or DHT.
 pub struct NetworkOptions {
@@ -49,6 +69,8 @@ pub struct NetworkOptions {
     pub listen: SocketAddr,
     /// Accept uTP and try it before TCP when dialing.
     pub utp: bool,
+    /// Prefer encrypted peers by default, accepting plaintext for compatibility.
+    pub peer_encryption: PeerEncryption,
     /// Permit outbound private, loopback, and link-local destinations.
     pub allow_local_network: bool,
     /// Opt into IPv4 NAT-PMP/UPnP mapping.
@@ -61,6 +83,7 @@ impl Default for NetworkOptions {
         Self {
             listen: SocketAddr::from(([0, 0, 0, 0], 0)),
             utp: true,
+            peer_encryption: PeerEncryption::default(),
             allow_local_network: false,
             port_mapping: None,
             dht: None,
@@ -102,10 +125,34 @@ impl Default for Limits {
     }
 }
 pub(in crate::engine) enum Inbound {
-    Tcp(std::net::TcpStream),
-    Utp(utp::Stream),
+    Tcp(std::net::TcpStream, crate::engine::peer_io::Prepared),
+    Utp(utp::Stream, crate::engine::peer_io::Prepared),
 }
-type Routes = Arc<Mutex<HashMap<[u8; 20], mpsc::Sender<Inbound>>>>;
+#[derive(Default)]
+struct RouteTable {
+    plain: HashMap<[u8; 20], mpsc::Sender<Inbound>>,
+    encrypted: HashMap<[u8; 20], [u8; 20]>,
+}
+impl RouteTable {
+    fn insert(&mut self, key: [u8; 20], sender: mpsc::Sender<Inbound>) {
+        self.encrypted
+            .insert(crate::protocol::peer::mse::torrent_key(key), key);
+        self.plain.insert(key, sender);
+    }
+    fn remove(&mut self, key: &[u8; 20]) {
+        self.encrypted
+            .remove(&crate::protocol::peer::mse::torrent_key(*key));
+        self.plain.remove(key);
+    }
+    fn get(&self, key: &[u8; 20]) -> Option<&mpsc::Sender<Inbound>> {
+        self.plain.get(key)
+    }
+    fn clear(&mut self) {
+        self.plain.clear();
+        self.encrypted.clear();
+    }
+}
+type Routes = Arc<Mutex<RouteTable>>;
 #[derive(Clone)]
 struct Pending {
     counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
@@ -321,7 +368,13 @@ impl Session {
             }
         };
         let client = crate::engine::discovery::http_client(network.allow_local_network)?;
-        let mut session = Shared::new(address, limits, network.allow_local_network, Some(listener));
+        let mut session = Shared::new(
+            address,
+            limits,
+            network.allow_local_network,
+            network.peer_encryption,
+            Some(listener),
+        );
         session.dht = network.dht.map(|options| {
             Arc::new(dht::Dht::new(
                 options,
@@ -345,6 +398,7 @@ impl Session {
             incoming,
             session.routes.clone(),
             limits,
+            network.peer_encryption,
             session.stop.subscribe(),
             session.tasks.get_mut().utp_handshakes.clone(),
         )));
@@ -387,6 +441,7 @@ impl Session {
                 "0.0.0.0:0".parse().expect("fixed address"),
                 limits,
                 false,
+                PeerEncryption::default(),
                 None,
             )),
         }
@@ -397,6 +452,7 @@ impl Shared {
         address: SocketAddr,
         limits: Limits,
         allow_local_network: bool,
+        peer_encryption: PeerEncryption,
         listener: Option<TcpListener>,
     ) -> Self {
         let routes = Routes::default();
@@ -411,6 +467,7 @@ impl Shared {
                 listener,
                 routes.clone(),
                 pending.clone(),
+                peer_encryption,
                 stopping,
                 tcp_handshakes.clone(),
             ))
@@ -425,7 +482,11 @@ impl Shared {
             mapping_status: watch::channel(port_map::Status::default()).1,
             limits,
             routes,
-            dial_queue: dial::Queue::new(limits.pending_dials, allow_local_network),
+            dial_queue: dial::Queue::new(
+                limits.pending_dials,
+                allow_local_network,
+                peer_encryption,
+            ),
             tracker_http: None,
             tracker_udp: None,
             udp_stop: watch::channel(false).0,
@@ -744,6 +805,7 @@ async fn route(
     listener: TcpListener,
     routes: Routes,
     admission: Pending,
+    encryption: PeerEncryption,
     mut stop: watch::Receiver<bool>,
     pending: Arc<AsyncMutex<JoinSet<()>>>,
 ) -> io::Result<()> {
@@ -765,12 +827,29 @@ async fn route(
                 let routes = routes.clone();
                 pending.spawn(async move {
                     let _permit = permit;
-                    if let Ok(Ok((hash, socket))) = tokio::time::timeout(limits.handshake_timeout, peek_hash(socket)).await
-                        && let Some(sender) = routes.lock().unwrap().get(&hash) {
-                        // Deregister from the listener's reactor; the pinned
-                        // torrent registers this nonblocking socket on its shard.
-                        if let Ok(socket) = socket.into_std() {
-                            let _ = sender.try_send(Inbound::Tcp(socket));
+                    let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
+                    let prepare = async {
+                        let (prefix, mut socket) = peek::<20>(socket).await?;
+                        let (hash, negotiated) = if prefix == *b"\x13BitTorrent protocol" {
+                            if encryption == PeerEncryption::Required {
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, "plaintext peer refused"));
+                            }
+                            let (bytes, stream) = peek::<HANDSHAKE_LEN>(socket).await?;
+                            socket = stream;
+                            let (hello, _) = Handshake::decode(&bytes).map_err(io::Error::other)?;
+                            (hello.info_hash, None)
+                        } else {
+                            let codec = crate::engine::peer_io::encryption::responder(encryption.methods())?;
+                            let negotiated = crate::engine::peer_io::encryption::exchange(&mut socket, codec, Vec::new(), |key| routes.lock().unwrap().encrypted.get(&key).copied()).await?;
+                            (negotiated.wire_key, Some(Box::new(negotiated)))
+                        };
+                        Ok::<_, io::Error>((hash, socket, negotiated))
+                    };
+                    if let Ok(Ok((hash, socket, negotiated))) = tokio::time::timeout_at(deadline, prepare).await {
+                        let sender = routes.lock().unwrap().get(&hash).cloned();
+                        if let Some(sender) = sender
+                            && let Ok(socket) = socket.into_std() {
+                            let _ = sender.try_send(Inbound::Tcp(socket, crate::engine::peer_io::Prepared { negotiated, deadline }));
                         }
                     }
                 });
@@ -783,6 +862,7 @@ async fn route_utp(
     mut incoming: mpsc::Receiver<(utp::Stream, HandshakePermit)>,
     routes: Routes,
     limits: Limits,
+    encryption: PeerEncryption,
     mut stop: watch::Receiver<bool>,
     pending: Arc<AsyncMutex<JoinSet<()>>>,
 ) -> io::Result<()> {
@@ -797,19 +877,38 @@ async fn route_utp(
                 }
             },
             accepted = incoming.recv() => {
-                let Some((socket, permit)) = accepted else { break Ok(()); };
+                let Some((mut socket, permit)) = accepted else { break Ok(()); };
                 let routes = routes.clone();
                 pending.spawn(async move {
                     let _permit = permit;
-                    let mut bytes = [0; HANDSHAKE_LEN];
-                    if let Ok(Ok(HANDSHAKE_LEN)) = tokio::time::timeout(limits.handshake_timeout, socket.peek(&mut bytes)).await
-                        && let Ok((handshake, _)) = Handshake::decode(&bytes)
-                    {
-                        let sender = routes.lock().unwrap().get(&handshake.info_hash).cloned();
+                    let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
+                    let prepare = async {
+                        let mut prefix = [0; 20];
+                        if socket.peek(&mut prefix).await? != prefix.len() {
+                            return Err(io::ErrorKind::UnexpectedEof.into());
+                        }
+                        if prefix == *b"\x13BitTorrent protocol" {
+                            if encryption == PeerEncryption::Required {
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, "plaintext peer refused"));
+                            }
+                            let mut bytes = [0; HANDSHAKE_LEN];
+                            if socket.peek(&mut bytes).await? != bytes.len() {
+                                return Err(io::ErrorKind::UnexpectedEof.into());
+                            }
+                            let (hello, _) = Handshake::decode(&bytes).map_err(io::Error::other)?;
+                            Ok((hello.info_hash, None))
+                        } else {
+                            let codec = crate::engine::peer_io::encryption::responder(encryption.methods())?;
+                            let negotiated = crate::engine::peer_io::encryption::exchange(&mut socket, codec, Vec::new(), |key| routes.lock().unwrap().encrypted.get(&key).copied()).await?;
+                            Ok::<_, io::Error>((negotiated.wire_key, Some(Box::new(negotiated))))
+                        }
+                    };
+                    if let Ok(Ok((hash, negotiated))) = tokio::time::timeout_at(deadline, prepare).await {
+                        let sender = routes.lock().unwrap().get(&hash).cloned();
                         if let Some(sender) = sender {
-                            match sender.try_send(Inbound::Utp(socket)) {
+                            match sender.try_send(Inbound::Utp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
                                 Ok(()) => return,
-                                Err(error) => { if let Inbound::Utp(socket) = error.into_inner() { socket.reset(); } return; }
+                                Err(error) => { if let Inbound::Utp(socket, _) = error.into_inner() { socket.reset(); } return; }
                             }
                         }
                     }
@@ -832,7 +931,7 @@ async fn drain_handshakes(pending: &mut JoinSet<()>) -> io::Result<()> {
     }
     result
 }
-async fn peek_hash(socket: TcpStream) -> io::Result<([u8; 20], TcpStream)> {
+async fn peek<const N: usize>(socket: TcpStream) -> io::Result<([u8; N], TcpStream)> {
     // Own the readiness guard while routing: TcpStream::peek retains readable
     // readiness for an unchanged prefix and would spin on fragmented input.
     // Tokio's replacement registration API requires unsafe. The deprecated
@@ -840,7 +939,7 @@ async fn peek_hash(socket: TcpStream) -> io::Result<([u8; 20], TcpStream)> {
     // cannot be replaced or closed while registered, and we never use get_mut.
     #[allow(deprecated)]
     let socket = AsyncFd::new(socket.into_std()?)?;
-    let mut bytes = [0; HANDSHAKE_LEN];
+    let mut bytes = [0; N];
     loop {
         let mut ready = socket.readable().await?;
         let closed = ready.ready().is_read_closed();
@@ -854,11 +953,7 @@ async fn peek_hash(socket: TcpStream) -> io::Result<([u8; 20], TcpStream)> {
             Err(error) => return Err(error),
         };
         if length == bytes.len() {
-            let (handshake, _) = Handshake::decode(&bytes).map_err(io::Error::other)?;
-            return Ok((
-                handshake.info_hash,
-                TcpStream::from_std(socket.into_inner())?,
-            ));
+            return Ok((bytes, TcpStream::from_std(socket.into_inner())?));
         }
         if length == 0 || closed {
             return Err(io::ErrorKind::UnexpectedEof.into());

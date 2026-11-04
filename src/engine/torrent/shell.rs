@@ -32,6 +32,11 @@ pub(in crate::engine) struct Shell {
     dht: Option<u16>,
     pex: bool,
     stopped: bool,
+    negotiating: std::collections::HashMap<ConnectionId, std::net::SocketAddr>,
+    negotiated: Vec<(
+        std::net::SocketAddr,
+        crate::engine::session::dial::NegotiationOutcome,
+    )>,
 }
 impl Shell {
     pub(in crate::engine) fn new(
@@ -95,6 +100,8 @@ impl Shell {
             dht: None,
             pex: false,
             stopped: false,
+            negotiating: std::collections::HashMap::new(),
+            negotiated: Vec::new(),
         })
     }
     pub(in crate::engine) fn magnet(
@@ -276,15 +283,29 @@ impl Shell {
         }
         Ok(self.events.pop_front())
     }
+    fn negotiation_succeeded(&mut self, id: ConnectionId) {
+        if let Some(address) = self.negotiating.remove(&id) {
+            self.negotiated.push((
+                address,
+                crate::engine::session::dial::NegotiationOutcome::Success,
+            ));
+        }
+    }
     fn peer_event(&mut self, event: PeerEvent) -> io::Result<()> {
         match event {
+            PeerEvent::MseNegotiated { connection } => {
+                self.negotiation_succeeded(connection);
+                Ok(())
+            }
             PeerEvent::Handshake {
                 connection: id,
                 reserved,
                 peer_id,
                 info_hash,
+                encryption,
             } => {
-                self.peers.handshake_received(id);
+                self.negotiation_succeeded(id);
+                self.peers.handshake_received(id, encryption);
                 self.feed(Input::PeerConnected {
                     id,
                     handshake: Handshake {
@@ -302,6 +323,25 @@ impl Shell {
                 connection: id,
                 result,
             } => {
+                if let Some(address) = self.negotiating.remove(&id) {
+                    let closed = result.as_ref().err().is_some_and(|error| {
+                        matches!(
+                            error.kind(),
+                            io::ErrorKind::UnexpectedEof
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::ConnectionAborted
+                                | io::ErrorKind::BrokenPipe
+                        )
+                    });
+                    self.negotiated.push((
+                        address,
+                        if closed {
+                            crate::engine::session::dial::NegotiationOutcome::Closed
+                        } else {
+                            crate::engine::session::dial::NegotiationOutcome::Failed
+                        },
+                    ));
+                }
                 if let Err(error) = &result
                     && is_local(error)
                 {
@@ -368,15 +408,31 @@ impl Shell {
         &mut self,
         socket: crate::engine::peer_io::Stream,
         role: Role,
+        prepared: Option<crate::engine::peer_io::Prepared>,
     ) -> io::Result<ConnectionId> {
-        self.attach_socket(PeerSocket::Connected(socket, role))
+        let id = self.attach_socket(PeerSocket::Connected(socket, role, prepared))?;
+        if let Role::Outbound(_, _, address) = role {
+            self.negotiating.insert(id, address);
+        }
+        Ok(id)
+    }
+    pub(in crate::engine) fn resolve_negotiations(
+        &mut self,
+        contacts: &mut crate::engine::session::dial::Contacts,
+    ) {
+        for (address, outcome) in self.negotiated.drain(..) {
+            contacts.negotiated(address, outcome);
+        }
+    }
+    pub(in crate::engine) fn peer_encryption(&self, id: ConnectionId) -> Option<&'static str> {
+        self.peers.encryption(id)
     }
     pub(in crate::engine) fn attach_socket(
         &mut self,
         socket: PeerSocket,
     ) -> io::Result<ConnectionId> {
         let (endpoint, local_ip, inbound, web_seed) = match &socket {
-            PeerSocket::Connected(socket, role) => {
+            PeerSocket::Connected(socket, role, _) => {
                 let mut endpoint = socket.peer_addr()?;
                 let inbound = matches!(role, Role::Inbound);
                 if inbound {

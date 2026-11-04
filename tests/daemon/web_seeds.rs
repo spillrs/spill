@@ -33,5 +33,22 @@ async fn corrupt_piece_is_retried_from_another_web_seed() {
                 .all(|(_, start, end)| (*start, *end) == (0, 2))
         );
     }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let row = daemon.call(serde_json::json!({"op":"get", "id":id})).await;
+            if let Some(peer) = row["transfer"]["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["transport"] == "http")
+            {
+                assert_eq!(peer.get("encryption"), Some(&serde_json::Value::Null));
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("web seed encryption observation");
     daemon.stop().await;
 }

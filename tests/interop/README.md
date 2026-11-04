@@ -15,7 +15,8 @@ Transmission 4.1.3 and libtorrent 2.1.2.0.
 `baselines/` contains compact records with source revisions, binary/helper hashes
 and artifact paths. Each describes its recorded tree, not necessarily the
 current checkout. Final-tree tiers 0–2 are deferred until after merge. Tier 3
-remains unrun for v2/hybrid support and is a release gate under `AGENTS.md`.
+remains unrun for v2/hybrid support and encrypted swarms and is a release gate
+under `AGENTS.md`.
 
 | Scope | Record |
 |---|---|
@@ -25,6 +26,7 @@ remains unrun for v2/hybrid support and is a release gate under `AGENTS.md`.
 | Magnet topics, acquisition, rebuild and restart | [magnets.json](baselines/magnets.json) |
 | HTTP web seeds and mixed peer/HTTP downloads | [webseeds.json](baselines/webseeds.json) |
 | Created torrents and padding compatibility | [creation.json](baselines/creation.json) |
+| MSE/PE modes, fallback, rejection, magnets and recovery (17 checks) | [encryption.json](baselines/encryption.json) |
 
 The magnet topic record includes both btmh-only hybrid fixtures passing with
 full-identity handshake acceptance, plus btih-only and dual-topic cases. That
@@ -36,6 +38,12 @@ long daemon control-socket paths can exceed the Unix-socket path limit. Delete
 run directories when their payloads are no longer needed. These are correctness
 checks, not throughput, latency or public-swarm capacity claims.
 
+Raw plaintext fixtures in the shared daemon harness and protocol-focused engine
+suites explicitly select `allowed`. The default `preferred` negotiation and
+plaintext fallback are exercised in `tests/engine/encryption.rs`; the encryption
+record adds independent Transmission/libtorrent evidence, not general coverage
+of the default policy in every scenario.
+
 ## Tier 2: Transmission
 
 ```sh
@@ -45,6 +53,12 @@ python3 tests/interop/transmission_smoke.py --allow-network --host LAN_IP --rele
 # Observe uTP in both directions; TCP fallback alone cannot pass.
 python3 tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release \
   --transport utp --size 1GiB --piece-length 1MiB
+
+# Require RC4 in both clients, recording encryption from peer diagnostics.
+# Repeat with --transport utp; also exercise --magnet and --kill-at 0.5.
+python3 tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release \
+  --peer-encryption required --transmission-encryption required \
+  --size 16MiB --rate-limit 1MiB
 
 # Hybrid magnet, background layer rebuild and source-free restart.
 python3 tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release \
@@ -73,9 +87,13 @@ waits for background layer publication before checking the catalog and
 restarting. `--private` requires HTTP tracking and cannot be used with a magnet.
 `--restart-check` checks completed-payload restart and mtime-triggered
 revalidation with source discovery disabled. `--download-only` skips reverse
-seeding.
+seeding. Pairing spill `required` with Transmission `allowed` requires this flag:
+Transmission may initiate plaintext, which spill must reject. Use Transmission
+`preferred` or `required` for bidirectional encrypted transfers. Transfer direction
+does not determine which client initiates the connection.
 
-DHT, PEX, LPD, port mapping and encryption are disabled. Automatic public-IP HTTP
+DHT, PEX, LPD and port mapping are disabled. Encryption defaults to `allowed` in
+both clients so plaintext baselines remain available. Automatic public-IP HTTP
 probes are blocked through a closed loopback proxy; LAN and loopback traffic
 bypass it. TCP-only runs disable uTP in both clients. The harness requires
 Transmission 4.1's `--preferred-transports` option.
@@ -281,6 +299,10 @@ python3 tests/interop/swarm.py --allow-network --host LAN_IP --release
 python3 tests/interop/swarm.py --allow-network --host LAN_IP --release --transport utp
 python3 tests/interop/swarm.py --allow-network --host LAN_IP --leecher transmission
 
+# RC4 workload for the pending release check; repeat with --transport utp.
+python3 tests/interop/swarm.py --allow-network --host LAN_IP --release \
+  --peer-encryption preferred --size 1GiB --timeout 600
+
 # Optional isolated Transmission reference timing.
 python3 tests/interop/transmission_smoke.py --allow-network --host LAN_IP --release \
   --size 1GiB --piece-length 1MiB --download-only --reference
@@ -298,13 +320,22 @@ Results retain checksums, timings, HTTP requests, RSS, descriptors, control
 latency, restart and cleanup evidence.
 
 `swarm.py` uses one Transmission seed and 1–32 leechers behind a local HTTP
-tracker. Web seeds, DHT, PEX, LPD, port mapping and encryption are disabled. The
+tracker. Web seeds, DHT, PEX, LPD and port mapping are disabled. Peer encryption
+defaults to `allowed` for plaintext baseline comparisons. `--peer-encryption`
+selects the policy for every member; `preferred` and `required` runs must observe
+RC4 for every leecher. The
 default is eight spill leechers, each downloading 256 MiB with 1 MiB pieces and
 no bandwidth caps. More than one leecher requires observed multi-peer
 connections; uTP requires an observed uTP peer for every spill leecher.
 `peer-samples.jsonl` retains live diagnostics, including choke state, requests,
 upload grants and writer/read queues. Samples refresh about every two seconds;
 they are not packet traces or measurements of request-pipeline depth.
+
+Before release, the encrypted-swarm gate still requires sustained `preferred`
+TCP/uTP runs with reconnect churn, recording CPU, throughput and memory. The
+swarm command above enables the encrypted workload; it is not itself a completed
+soak or handshake-flood measurement. Keep this gate open until those dev-machine
+results are recorded.
 
 Use fresh artifact directories and otherwise idle machines for comparisons.
 `result.json` retains workload, source/binary provenance and measurement details.

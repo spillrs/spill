@@ -64,7 +64,7 @@ pub fn transfer(s: &TorrentStatus) -> Value {
 fn peer(p: &telemetry::PeerStatus) -> Value {
     let d = &p.detail;
     json!({"connection":p.connection,"endpoint":p.endpoint,"client":p.client,"direction":p.direction,
-        "transport":p.transport,"utp_retransmits":p.utp_retransmits,"source":p.source,"web_seed_url":p.web_seed_url,
+        "transport":p.transport,"encryption":p.encryption,"utp_retransmits":p.utp_retransmits,"source":p.source,"web_seed_url":p.web_seed_url,
         "download_bytes_per_second":p.download_bytes_per_second,"upload_bytes_per_second":p.upload_bytes_per_second,
         "detail":{"downloaded_bytes":d.downloaded_bytes,"uploaded_bytes":d.uploaded_bytes,"connection":d.connection,
             "established":d.established,"fast_extension":d.fast_extension,"remote_choking":d.remote_choking,

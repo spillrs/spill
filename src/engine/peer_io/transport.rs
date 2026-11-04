@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) async fn run_socket(
     socket: Stream,
-    start: HandshakeStart,
+    mut start: HandshakeStart,
     context: SocketContext,
     connection: ConnectionId,
     commands: mpsc::Receiver<Outbound>,
@@ -17,7 +17,24 @@ pub(super) async fn run_socket(
         Stream::Tcp(mut socket) => {
             // Control frames must not wait for Nagle between batches of blocks.
             socket.set_nodelay(true)?;
-            handshake(&mut socket, start, &context, connection, events).await?;
+            prepare(&mut socket, &mut start, &context, connection, events).await?;
+            let (reader, writer) = socket.into_split();
+            let method = start
+                .negotiated
+                .as_ref()
+                .map_or(crate::protocol::peer::mse::Method::Plaintext, |n| n.method);
+            let (mut reader, mut writer) =
+                super::encryption::wrap(reader, writer, start.negotiated.take());
+            handshake(
+                &mut reader,
+                &mut writer,
+                start,
+                &context,
+                connection,
+                events,
+                method,
+            )
+            .await?;
             let _incoming = address.map(|address| {
                 crate::engine::session::incoming::Incoming::connected(
                     context
@@ -28,7 +45,6 @@ pub(super) async fn run_socket(
                     address,
                 )
             });
-            let (reader, writer) = socket.into_split();
             run_io_throttled(
                 (reader, context.read_pause),
                 writer,
@@ -44,7 +60,24 @@ pub(super) async fn run_socket(
             .await
         }
         Stream::Utp(mut socket) => {
-            handshake(&mut socket, start, &context, connection, events).await?;
+            prepare(&mut socket, &mut start, &context, connection, events).await?;
+            let (reader, writer) = socket.split();
+            let method = start
+                .negotiated
+                .as_ref()
+                .map_or(crate::protocol::peer::mse::Method::Plaintext, |n| n.method);
+            let (mut reader, mut writer) =
+                super::encryption::wrap(reader, writer, start.negotiated.take());
+            handshake(
+                &mut reader,
+                &mut writer,
+                start,
+                &context,
+                connection,
+                events,
+                method,
+            )
+            .await?;
             let _incoming = address.map(|address| {
                 crate::engine::session::incoming::Incoming::connected(
                     context
@@ -55,7 +88,6 @@ pub(super) async fn run_socket(
                     address,
                 )
             });
-            let (reader, writer) = socket.split();
             run_io_throttled(
                 (reader, context.read_pause),
                 writer,
@@ -72,25 +104,53 @@ pub(super) async fn run_socket(
         }
     }
 }
-async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
+async fn prepare<S: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut S,
-    start: HandshakeStart,
+    start: &mut HandshakeStart,
     context: &SocketContext,
     connection: ConnectionId,
     events: &mpsc::Sender<PeerEvent>,
 ) -> io::Result<()> {
-    let HandshakeStart { role, deadline } = start;
+    if let Role::Outbound(hash, Some(methods), _) = start.role {
+        let mut local = context.local.clone();
+        local.info_hash = hash;
+        start.negotiated = Some(Box::new(
+            timeout_at(
+                start.deadline,
+                super::encryption::initiate(socket, hash, methods, &local.encode()),
+            )
+            .await
+            .map_err(|_| handshake_expired())??,
+        ));
+        events
+            .send(PeerEvent::MseNegotiated { connection })
+            .await
+            .map_err(|_| event_receiver_closed())?;
+    }
+    Ok(())
+}
+
+async fn handshake<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+    start: HandshakeStart,
+    context: &SocketContext,
+    connection: ConnectionId,
+    events: &mpsc::Sender<PeerEvent>,
+    encryption: crate::protocol::peer::mse::Method,
+) -> io::Result<()> {
+    let HandshakeStart { role, deadline, .. } = start;
     let mut local = context.local.clone();
     if Instant::now() >= deadline {
         return Err(handshake_expired());
     }
     let remote = timeout_at(deadline, async {
-        if let Role::Outbound(hash) = role {
+        if let Role::Outbound(hash, None, _) = role {
             local.info_hash = hash;
-            socket.write_all(&local.encode()).await?;
+            writer.write_all(&local.encode()).await?;
         }
         let mut bytes = [0; HANDSHAKE_LEN];
-        socket.read_exact(&mut bytes).await?;
+        reader.read_exact(&mut bytes).await?;
         let (mut remote, _) = Handshake::decode(&bytes).map_err(invalid_data)?;
         let reply = matches!(role, Role::Inbound);
         let addressed = match role {
@@ -98,7 +158,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
                 .identity
                 .wire_keys()
                 .any(|key| key == remote.info_hash),
-            Role::Outbound(hash) => {
+            Role::Outbound(hash, _, _) => {
                 remote.info_hash == hash
                     || (context
                         .identity
@@ -139,7 +199,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
             if Instant::now() >= deadline {
                 return Err(handshake_expired());
             }
-            socket.write_all(&local.encode()).await?;
+            writer.write_all(&local.encode()).await?;
         }
         Ok(remote)
     })
@@ -157,6 +217,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
             reserved: remote.reserved,
             peer_id: remote.peer_id,
             info_hash: remote.info_hash,
+            encryption: Some(encryption),
         })
         .await
         .map_err(|_| event_receiver_closed())?;

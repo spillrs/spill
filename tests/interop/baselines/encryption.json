@@ -1,0 +1,325 @@
+{
+  "scenario": "peer-encryption",
+  "status": "passed",
+  "source_revision": "460e6407cbffe1d20149305df4cca8bde9e8a234",
+  "source_dirty": true,
+  "test_fixes_revision": "eb3077319ceaabc04baaa294cc9e9638b4052fc4",
+  "daemon_sha256": "1fea02f785b7d61515ad587fd5dd7344fd736becef5351122588bb5dc6495973",
+  "provenance": "Production tree at source_revision with uncommitted test/doc fixes subsequently committed as test_fixes_revision.",
+  "transmission": "4.1.3 (838877323f)",
+  "libtorrent": "2.1.2.0",
+  "checks_passed": 17,
+  "transmission_cases": [
+    {
+      "name": "utp-kill",
+      "passed": true,
+      "transport": "utp",
+      "spill_policy": "required",
+      "transmission_policy": "required",
+      "bytes": 8388608,
+      "observed": {
+        "transmission_to_serve": {
+          "encryptions": [
+            "rc4"
+          ],
+          "transports": [
+            "utp"
+          ]
+        },
+        "serve_to_transmission": {
+          "encryptions": [
+            "rc4"
+          ],
+          "transports": [
+            "utp"
+          ]
+        }
+      },
+      "payload_checksums_match": true,
+      "additional_flags": [
+        "--kill-at",
+        "--http-tracker",
+        "--restart-check"
+      ]
+    },
+    {
+      "name": "preferred",
+      "passed": true,
+      "transport": "tcp",
+      "spill_policy": "preferred",
+      "transmission_policy": "preferred",
+      "bytes": 8388608,
+      "observed": {
+        "transmission_to_serve": {
+          "encryptions": [
+            "rc4"
+          ],
+          "transports": [
+            "tcp"
+          ]
+        },
+        "serve_to_transmission": {
+          "encryptions": [
+            "rc4"
+          ],
+          "transports": [
+            "tcp"
+          ]
+        }
+      },
+      "payload_checksums_match": true,
+      "additional_flags": []
+    },
+    {
+      "name": "plaintext",
+      "passed": true,
+      "transport": "tcp",
+      "spill_policy": "allowed",
+      "transmission_policy": "allowed",
+      "bytes": 8388608,
+      "observed": {
+        "transmission_to_serve": {
+          "encryptions": [
+            "plaintext"
+          ],
+          "transports": [
+            "tcp"
+          ]
+        },
+        "serve_to_transmission": {
+          "encryptions": [
+            "plaintext"
+          ],
+          "transports": [
+            "tcp"
+          ]
+        }
+      },
+      "payload_checksums_match": true,
+      "additional_flags": []
+    },
+    {
+      "name": "tolerated",
+      "passed": true,
+      "transport": "utp",
+      "spill_policy": "required",
+      "transmission_policy": "allowed",
+      "bytes": 8388608,
+      "observed": {
+        "transmission_to_serve": {
+          "encryptions": [
+            "rc4"
+          ],
+          "transports": [
+            "utp"
+          ]
+        }
+      },
+      "payload_checksums_match": true,
+      "additional_flags": [
+        "--download-only"
+      ]
+    },
+    {
+      "name": "magnet",
+      "passed": true,
+      "transport": "tcp",
+      "spill_policy": "required",
+      "transmission_policy": "required",
+      "bytes": 8388608,
+      "observed": {
+        "transmission_to_serve": {
+          "encryptions": [
+            "rc4"
+          ],
+          "transports": [
+            "tcp"
+          ]
+        },
+        "serve_to_transmission": {
+          "encryptions": [
+            "rc4"
+          ],
+          "transports": [
+            "tcp"
+          ]
+        }
+      },
+      "payload_checksums_match": true,
+      "additional_flags": [
+        "--magnet",
+        "--hybrid",
+        "--http-tracker",
+        "--restart-check"
+      ]
+    }
+  ],
+  "libtorrent_cases": [
+    {
+      "name": "tcp-preferred-disabled-spill",
+      "libtorrent": "2.1.2.0",
+      "expected": "plaintext",
+      "observed": [
+        {
+          "encryption": "plaintext",
+          "transport": "tcp",
+          "direction": "outbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    },
+    {
+      "name": "utp-preferred-disabled-libtorrent",
+      "libtorrent": "2.1.2.0",
+      "expected": "plaintext",
+      "observed": [
+        {
+          "encryption": "plaintext",
+          "transport": "utp",
+          "direction": "inbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    },
+    {
+      "name": "utp-preferred-mse-plaintext-spill",
+      "libtorrent": "2.1.2.0",
+      "expected": "plaintext",
+      "observed": [
+        {
+          "encryption": "plaintext",
+          "transport": "utp",
+          "direction": "outbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    },
+    {
+      "name": "tcp-preferred-mse-plaintext-libtorrent",
+      "libtorrent": "2.1.2.0",
+      "expected": "plaintext",
+      "observed": [
+        {
+          "encryption": "plaintext",
+          "transport": "tcp",
+          "direction": "inbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    },
+    {
+      "name": "utp-required-rc4-spill",
+      "libtorrent": "2.1.2.0",
+      "expected": "rc4",
+      "observed": [
+        {
+          "encryption": "rc4",
+          "transport": "utp",
+          "direction": "outbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    },
+    {
+      "name": "tcp-required-rc4-libtorrent",
+      "libtorrent": "2.1.2.0",
+      "expected": "rc4",
+      "observed": [
+        {
+          "encryption": "rc4",
+          "transport": "tcp",
+          "direction": "inbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    },
+    {
+      "name": "tcp-required-disabled-libtorrent",
+      "libtorrent": "2.1.2.0",
+      "expected": "rejected",
+      "observed": [],
+      "verified_bytes": 0,
+      "passed": true
+    },
+    {
+      "name": "utp-required-mse-plaintext-libtorrent",
+      "libtorrent": "2.1.2.0",
+      "expected": "rejected",
+      "observed": [],
+      "verified_bytes": 0,
+      "passed": true
+    },
+    {
+      "name": "tcp-required-disabled-spill",
+      "libtorrent": "2.1.2.0",
+      "expected": "rejected",
+      "observed": [],
+      "verified_bytes": 0,
+      "passed": true
+    },
+    {
+      "name": "utp-required-mse-plaintext-spill",
+      "libtorrent": "2.1.2.0",
+      "expected": "rejected",
+      "observed": [],
+      "verified_bytes": 0,
+      "passed": true
+    },
+    {
+      "name": "utp-allowed-rc4-spill",
+      "libtorrent": "2.1.2.0",
+      "expected": "rc4",
+      "observed": [
+        {
+          "encryption": "rc4",
+          "transport": "utp",
+          "direction": "outbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    },
+    {
+      "name": "tcp-allowed-rc4-spill",
+      "libtorrent": "2.1.2.0",
+      "expected": "rc4",
+      "observed": [
+        {
+          "encryption": "rc4",
+          "transport": "tcp",
+          "direction": "outbound"
+        }
+      ],
+      "verified_bytes": 4194304,
+      "checksum_matches": true,
+      "passed": true
+    }
+  ],
+  "libtorrent_case_names": "<transport>-<spill policy>-<peer mode>-<initiator>; rc4 and mse-plaintext use forced in/out policy with the respective allowed encryption level; disabled disables MSE.",
+  "rejection_observation_seconds": 6,
+  "harness_sha256": {
+    "spill-encryption-focused-interop.py": "7e5ea9782d8fa3ab1d5f04856c927c0034ca3a28ce0da6f747e862d837f44b8e",
+    "spill-encryption-focused-libtorrent.py": "5fc8f4aec1cfc782d34018833ac86922848c12aaf66e68b0b466298c3e66b3dd"
+  },
+  "local_artifacts": [
+    "target/interop/enc-fixed-tx/",
+    "target/interop/enc-fixed-lt/"
+  ],
+  "reproduction": "Transmission runs use tests/interop/transmission_smoke.py with the recorded transport/policies, --size 8MiB --rate-limit 1MiB --timeout 120; utp-kill adds --kill-at 0.5. Libtorrent used an ad hoc local driver, whose hash and case results are retained here; that driver is not committed.",
+  "validation_scope": "Controlled LAN IPv4 correctness checks with public discovery and port mapping disabled. Not evidence of performance, public-swarm capacity, or final merged-tree validation.",
+  "tier3_run": false,
+  "release_gate": "Preferred-policy sustained TCP/uTP swarm/soak with reconnect churn; record CPU, throughput and memory before release."
+}

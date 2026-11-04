@@ -115,15 +115,15 @@ impl Progress {
         transfer: &mut Shell,
         source: &'static str,
         log_endpoint: bool,
-        _dial: Option<DialId>,
-    ) {
+        prepared: Option<crate::engine::peer_io::Prepared>,
+    ) -> bool {
         let address = socket.peer_addr().ok();
-        let transport = socket.transport();
+        let transport = socket.transport().as_str();
         let retransmits = match &socket {
             crate::engine::peer_io::Stream::Utp(s) => Some(s.retransmits()),
             crate::engine::peer_io::Stream::Tcp(_) => None,
         };
-        match transfer.attach_peer(socket, role) {
+        match transfer.attach_peer(socket, role, prepared) {
             Ok(id) => {
                 trace!(connection=?id,source,transport,direction=if matches!(role,Role::Inbound){"inbound"}else{"outbound"},endpoint=?address.filter(|_|log_endpoint),"peer_admitted");
                 self.remember(
@@ -144,8 +144,12 @@ impl Progress {
                         uploaded: 0,
                     },
                 );
+                true
             }
-            Err(error) => trace!(kind=?error.kind(),"peer_rejected"),
+            Err(error) => {
+                trace!(kind=?error.kind(),"peer_rejected");
+                false
+            }
         }
     }
     pub(in crate::engine) fn prepare_discovery(
@@ -215,12 +219,17 @@ impl Progress {
                 return Ok(());
             };
             let Some(address) = transfer.contact(entry.address)? else {
-                queue.dial_completed(entry.address, false, false);
+                queue.dial_completed(entry.address, None, false);
                 dials.withdraw();
                 return Ok(());
             };
             let utp = queue.try_utp(address);
-            match dials.admit(address, utp) {
+            match dials.admit(
+                address,
+                utp,
+                queue.fallback(address),
+                queue.methods(address),
+            ) {
                 Ok(id) => {
                     self.sources.insert(id, (entry.source, entry.hash));
                     self.pending += 1;
@@ -228,7 +237,7 @@ impl Progress {
                 }
                 Err(_) => {
                     transfer.connect_failed(address)?;
-                    queue.dial_completed(address, false, false);
+                    queue.dial_completed(address, None, false);
                     return Ok(());
                 }
             }
@@ -243,19 +252,27 @@ impl Progress {
         event: Option<ConnectionEvent>,
         transfer: &mut Shell,
         options: &RuntimeOptions,
+        contacts: &mut crate::engine::session::dial::Contacts,
     ) -> io::Result<()> {
         let event = event.ok_or_else(|| io::Error::other("unexpected dial completion"))?;
         self.pending = self.pending.saturating_sub(1);
         let (source, hash) = self.sources.remove(&event.id).expect("admitted dial");
         match event.result {
-            Ok(socket) => self.attach_peer(
-                socket,
-                Role::Outbound(hash),
-                transfer,
-                source,
-                options.log_peer_endpoints,
-                Some(event.id),
-            ),
+            Ok(socket) => {
+                if !self.attach_peer(
+                    socket,
+                    Role::Outbound(hash, event.methods, event.address),
+                    transfer,
+                    source,
+                    options.log_peer_endpoints,
+                    None,
+                ) {
+                    contacts.negotiated(
+                        event.address,
+                        crate::engine::session::dial::NegotiationOutcome::Failed,
+                    );
+                }
+            }
             Err(error) => {
                 transfer.connect_failed(event.address)?;
                 trace!(dial=?event.id,source,kind=?error.kind(),os_code=error.raw_os_error(),"dial_failed");
@@ -378,6 +395,7 @@ impl Progress {
                             .map(str::to_owned),
                         direction: context.direction,
                         transport: context.transport,
+                        encryption: transfer.peer_encryption(ConnectionId(detail.connection)),
                         utp_retransmits: context
                             .retransmits
                             .as_ref()

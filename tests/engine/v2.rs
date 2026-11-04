@@ -3,7 +3,7 @@ use spill::{
     engine::{
         profile::Profile,
         selection::FilePriority,
-        session::{Limits, NetworkOptions, Session},
+        session::{Limits, NetworkOptions, PeerEncryption, Session},
         torrent::{Destination, RunPolicy, TorrentHandle, TorrentOptions, TorrentSource},
     },
     protocol::{metainfo::OwnedMetainfo, peer::hash::HashRequest},
@@ -22,6 +22,7 @@ async fn session() -> Session {
         NetworkOptions {
             listen: "127.0.0.1:0".parse().unwrap(),
             utp: false,
+            peer_encryption: PeerEncryption::Allowed,
             allow_local_network: true,
             ..Default::default()
         },

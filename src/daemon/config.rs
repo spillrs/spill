@@ -18,6 +18,7 @@ pub struct Config {
     pub web_listen: Option<SocketAddr>,
     pub allow_local_network: bool,
     pub utp: bool,
+    pub peer_encryption: spill::engine::session::PeerEncryption,
     pub port_mapping: bool,
     #[serde(deserialize_with = "mapping_gateway")]
     pub port_mapping_gateway: Option<spill::engine::session::port_map::Gateway>,
@@ -72,6 +73,7 @@ impl Default for Config {
             web_listen: None,
             allow_local_network: false,
             utp: true,
+            peer_encryption: spill::engine::session::PeerEncryption::default(),
             port_mapping: true,
             port_mapping_gateway: None,
             peers: Profile::DEFAULT.peers,

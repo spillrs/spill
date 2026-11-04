@@ -118,6 +118,11 @@ ran and which you did not.
 - **Prefer deleting code.** When a change makes something unused, remove
   it in the same change.
 
+## Commit messages
+
+- Use plain imperative subjects, such as `Support MSE peer encryption`.
+  Do not use Conventional Commits prefixes such as `feat:`, `fix:` or `chore:`.
+
 ## Before finishing a change
 
 1. `cargo fmt --all`

@@ -42,6 +42,7 @@ Downloads default to `~/Downloads` on both platforms. If you override
 | `web_listen` | unset (off) | Address for the web interface. Must be a loopback address, for example `"127.0.0.1:8080"`. |
 | `allow_local_network` | `false` | Allow outbound connections to private, loopback and link-local addresses (LAN peers, a tracker on your network). Multicast, unspecified and broadcast addresses and port 0 are never allowed. Inbound connections are not filtered. |
 | `utp` | `true` | Accept uTP peers and try uTP before TCP when dialing. Set `false` for TCP-only peers; UDP trackers and the DHT remain available. |
+| `peer_encryption` | `"preferred"` | MSE/PE for TCP and uTP: `"allowed"` tries plaintext first, `"preferred"` tries MSE first, `"required"` permits only RC4 application streams. The first two accept plaintext and allow one alternate-mode retry after a negotiation close/reset. See [Peer encryption](networking.md#peer-encryption). |
 | `port_mapping` | `true` | Ask the IPv4 gateway to forward the listen port for TCP and UDP, using NAT-PMP then UPnP IGD. Failures never stop torrents. The system-service example disables it. |
 | `port_mapping_gateway` | unset (auto-discover) | An IPv4 address (port 5351) or `"ip:port"` overrides NAT-PMP discovery. An `"http://host:port/rootDesc.xml"` UPnP description URL skips NAT-PMP and SSDP and uses that IGD directly. Hosts must be unicast, ports nonzero; URL overrides accept HTTP only, without credentials or fragments. |
 | `peers` | `50` | Maximum connections per torrent, `1`–`4096`. |
@@ -68,6 +69,7 @@ adjust that size. Each uTP peer has at most 256 KiB of queued/unacknowledged
 send data and 256 KiB of receive/reassembly data. Of the receive budget,
 192 KiB is advertised and 64 KiB is reserved to fill reassembly gaps.
 
+Encrypted peer writes stage at most 64 KiB of ciphertext per connection.
 Transport buffers fill on demand and are additional to the torrent cache/writer
 reservations. At the default aggregate limit of 1,000 peers, uTP buffer allowances
 alone can reach about 500 MiB, before peer queues, bookkeeping and kernel buffers.

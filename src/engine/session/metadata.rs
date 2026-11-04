@@ -159,10 +159,11 @@ impl Network {
         let result=async {
             loop {
                 if *stop.borrow() {return Err(io::Error::new(io::ErrorKind::Interrupted,"metadata stopped"));}
+                shell.resolve_negotiations(&mut contacts);
                 while shell.can_connect() && dials.ready() {
                     let Some(entry)=contacts.candidate(|a|shell.rejects_contact(a))else{dials.withdraw();break};
-                    let Some(address)=shell.contact(entry.address)?else{contacts.dial_completed(entry.address,false,false);break};
-                    if dials.admit(address, contacts.try_utp(address)).is_err() {shell.connect_failed(address)?;contacts.dial_completed(address,false,false);break;}
+                    let Some(address)=shell.contact(entry.address)?else{contacts.dial_completed(entry.address,None,false);break};
+                    if dials.admit(address, contacts.try_utp(address), contacts.fallback(address), contacts.methods(address)).is_err() {shell.connect_failed(address)?;contacts.dial_completed(address,None,false);break;}
                     dial_keys.insert(address, entry.hash);
                 }
                 if !shell.can_connect(){dials.withdraw();}
@@ -179,14 +180,15 @@ impl Network {
                     event=dials.next(),if dials.has_work()=>{
                         if let Some(event)=event? {
                             let key = dial_keys.remove(&event.address).expect("metadata dial key");
-                            contacts.dial_completed(event.address,event.result.is_ok(),event.utp_failed);
+                            contacts.dial_completed(event.address,event.transport(),event.utp_failed);
                             match event.result {
                                 Ok(socket)=>{
-                                    if let Err(error) = shell.attach_peer(socket,crate::engine::peer_io::Role::Outbound(key)) {
+                                    if let Err(error) = shell.attach_peer(socket,crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), None) {
                                         // Only a per-peer rejection may leave acquisition running.
                                         if crate::engine::core::fault::is_local(&error) {
                                             return Err(error);
                                         }
+                                        contacts.negotiated(event.address, crate::engine::session::dial::NegotiationOutcome::Failed);
                                         tracing::trace!(kind=?error.kind(), "metadata_peer_rejected");
                                         shell.connect_failed(event.address)?;
                                     }

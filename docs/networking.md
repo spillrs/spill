@@ -165,6 +165,36 @@ connections are accepted from any address.
   hash messages on v1 torrents. V2 connections follow stricter rules; see
   [v2 and hybrid torrents](v2.md#peer-protocol).
 
+## Peer encryption
+
+spill supports Message Stream Encryption / Protocol Encryption (MSE/PE) on
+both TCP and uTP. It negotiates before the ordinary BitTorrent handshake and
+supports RC4 streams and negotiated plaintext application traffic.
+
+Set session-wide `peer_encryption` in daemon configuration:
+
+- `"allowed"`: initiate plaintext first, accepting MSE from incoming peers.
+- `"preferred"` (default): initiate MSE first.
+- `"required"`: reject plaintext and require RC4 for the whole application stream.
+
+`allowed` and `preferred` retry once in the alternate mode when the peer
+closes or resets during negotiation. The retry uses the transport that connected;
+malformed negotiation and timeouts do not trigger a retry. Once MSE succeeds,
+a close during the subsequent BitTorrent handshake does not trigger plaintext
+fallback. This is separate from the initial uTP-to-TCP connection fallback.
+`required` never downgrades. When responding to MSE, both `allowed` and `preferred`
+select RC4 if the peer offers it.
+
+Peer JSON reports `encryption` as `"rc4"` or `"plaintext"`, independently of
+`transport`. Negotiated plaintext reports `"plaintext"`. Web seeds report `null`,
+not their HTTP/TLS security. A peer also reports `null` before its handshake or
+when its live I/O observation is no longer available.
+
+MSE is legacy traffic obfuscation, not modern secure transport: its DH/RC4
+parameters are required for interoperability, it has no peer authentication or
+authenticated encryption, and it does not protect against active interception.
+It does not encrypt tracker or DHT traffic or hide IP addresses.
+
 ## Privacy notes
 
 - Trackers, DHT nodes and peers see your IP address and what you download. This
@@ -172,6 +202,7 @@ connections are accepted from any address.
 - A magnet link announces its info hash (to the DHT and its trackers) before
   spill knows whether the torrent is private. Use a `.torrent` file for private
   trackers; private metadata from magnets is rejected.
-- spill does not encrypt peer connections.
+- Peer encryption is obfuscation, not anonymity or authenticated transport; see
+  [Peer encryption](#peer-encryption).
 - Detailed tracker and web-seed observations expose full URLs, which may contain
   passkeys or other secrets, even when transport errors redact them.

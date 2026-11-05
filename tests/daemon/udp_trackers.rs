@@ -277,7 +277,8 @@ async fn udp_trackers_are_independent_and_back_off_failed_announces() {
             .expect("silent tracker must not block another torrent"),
         Some(true)
     );
-    tokio::time::timeout(Duration::from_secs(12), async {
+    // Leave room for the two-second diagnostics publication after the ten-second timeout.
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let row = daemon.call(json!({"op":"get","id":slow_id})).await;
             let tracker = &row["transfer"]["trackers"][0];

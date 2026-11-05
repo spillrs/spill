@@ -144,3 +144,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: gh release edit "$TAG" --draft=false
+
+  notify-website:
+    needs: release
+    uses: ./.github/workflows/notify-website.yml
+    secrets:
+      WEBSITE_SYNC_TOKEN: ${{ secrets.WEBSITE_SYNC_TOKEN }}

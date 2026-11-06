@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in dev-machine BEP 9 / BEP 52 magnet checks against libtorrent 2.1+."""
 import argparse
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import subprocess
@@ -94,10 +95,14 @@ def magnet_case(lt, args, binary, root, torrent, topic, *, kill=False):
     try:
         source.complete(args.timeout, seed=True)
         hybrid = lt.load_torrent_file(str(torrent)).ti.info_hashes().has_v1()
+        accepted_key = keys(lt, torrent)[0] if hybrid and topic != "v2" else None
         relay = wire.Relay(args.host, source.address(args.host), root / "download-wire.jsonl", "spill",
                            allow_hash_requests=True, choke_for_hashes=not hybrid, force_v1=hybrid,
-                           accepted_key=keys(lt, torrent)[0] if hybrid and topic != "v2" else None)
-        tracker = Tracker(lt, "http", args.host, {key: relay.address for key in keys(lt, torrent)})
+                           accepted_key=accepted_key)
+        # A v1-only relay must not be advertised as a v2 peer for the same endpoint.
+        tracker = Tracker(lt, "http", args.host,
+                          {key: relay.address if accepted_key is None or key == accepted_key else None
+                           for key in keys(lt, torrent)})
         daemon = Daemon(binary, root / "daemon", args.host, rate_limit=524288 if kill else 0)
         torrent_id = control(daemon.socket, "add", magnet=magnet_uri(lt, torrent, topic, tracker.url))["id"]
         daemon.wait(torrent_id, lambda r: r["metadata_ready"], args.timeout)
@@ -137,21 +142,23 @@ def magnet_case(lt, args, binary, root, torrent, topic, *, kill=False):
         result["status"] = "passed"
         return result
     finally:
-        if leecher: leecher.stop()
-        if daemon: daemon.close()
-        source.stop()
-        if relay:
-            result["handshakes"] = hellos(relay)
-            result["requests"] = relay.hash_requests
-            result["download_wire"] = relay.stop()
-        if reverse:
-            result["reverse_requests"] = reverse.hash_requests
-            result["reverse_handshakes"] = hellos(reverse)
-            result["reverse_wire"] = reverse.stop()
-        if tracker:
-            tracker.close()
-            result["announces"] = tracker.records
-        (root / "case.json").write_text(json.dumps(result, indent=2))
+        # Run every cleanup even when a relay's wire assertions fail.
+        with ExitStack() as cleanup:
+            cleanup.callback(lambda: (root / "case.json").write_text(json.dumps(result, indent=2)))
+            if tracker:
+                result["announces"] = tracker.records
+                cleanup.callback(tracker.close)
+            if reverse:
+                result["reverse_requests"] = reverse.hash_requests
+                result["reverse_handshakes"] = hellos(reverse)
+                cleanup.callback(lambda: result.update(reverse_wire=reverse.stop()))
+            if relay:
+                result["handshakes"] = hellos(relay)
+                result["requests"] = relay.hash_requests
+                cleanup.callback(lambda: result.update(download_wire=relay.stop()))
+            cleanup.callback(source.stop)
+            if daemon: cleanup.callback(daemon.close)
+            if leecher: cleanup.callback(leecher.stop)
 
 
 def recovery_case(lt, args, binary, root, policy):

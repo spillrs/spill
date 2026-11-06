@@ -296,10 +296,12 @@ python3 tests/interop/libtorrent_magnets.py --allow-network --host LAN_IP --rele
 ```
 
 The matrix covers v2-only btmh magnets and both hybrid fixtures with btih-only,
-btmh-only and dual topics, in both directions. A pending hybrid checks SHA-1,
-announces only in v1, and accepts either handshake key without offering an
-upgrade. It downloads without hash requests, rebuilds layers locally and serves
-them after restart. Btmh-only bootstrap may use a v2 metadata connection.
+btmh-only and dual topics, in both directions. For btih-only and dual topics,
+the v1-only relay is advertised only in the v1 swarm; v2 announces receive no
+peers. Btmh-only bootstrap may use a v2 metadata connection. After metadata,
+a pending hybrid checks SHA-1 and accepts either handshake key without offering
+an upgrade. It downloads without hash requests, rebuilds layers locally and
+serves them after restart.
 
 V2-only magnets authenticate layers before payload preparation. Before forwarding
 a hash request, the relay injects Interested/NotInterested if needed and waits

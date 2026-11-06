@@ -221,15 +221,26 @@ impl Progress {
         discovery: &mut Discovery,
         options: &RuntimeOptions,
     ) -> io::Result<()> {
-        let (Some(queue), Some(dials)) = (&mut discovery.contacts, &mut discovery.dials) else {
-            return Ok(());
-        };
-        while transfer.can_connect() && dials.ready() {
-            let Some(entry) = queue.candidate(|a| transfer.rejects_contact(a)) else {
+        let queue = discovery.contacts.as_mut().expect("online contacts");
+        let dials = discovery.dials.as_mut().expect("online dial client");
+        transfer.drain_holepunches(queue);
+        loop {
+            let punch = queue.has_due_punch();
+            if !transfer.can_punch() || (!transfer.can_connect() && !punch) {
+                dials.withdraw();
+                break;
+            }
+            if !dials.ready() {
+                break;
+            }
+            let Some(entry) = queue.candidate(|a, source| {
+                transfer.rejects_contact(a) || (source != "holepunch" && !transfer.can_connect())
+            }) else {
                 dials.withdraw();
                 return Ok(());
             };
-            let Some(address) = transfer.contact(entry.address)? else {
+            let Some(address) = transfer.contact(entry.address, entry.source == "holepunch")?
+            else {
                 queue.dial_completed(entry.address, None, false);
                 dials.withdraw();
                 return Ok(());
@@ -247,14 +258,11 @@ impl Progress {
                     trace!(?id,source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
                 }
                 Err(_) => {
-                    transfer.connect_failed(address)?;
+                    transfer.connect_failed(address, false)?;
                     queue.dial_completed(address, None, false);
                     return Ok(());
                 }
             }
-        }
-        if !transfer.can_connect() {
-            dials.withdraw();
         }
         Ok(())
     }
@@ -282,10 +290,12 @@ impl Progress {
                         event.address,
                         crate::engine::session::dial::NegotiationOutcome::Failed,
                     );
+                    transfer.connect_failed(event.address, false)?;
                 }
             }
             Err(error) => {
-                transfer.connect_failed(event.address)?;
+                transfer
+                    .connect_failed(event.address, source != "holepunch" && event.utp_failed)?;
                 trace!(dial=?event.id,source,kind=?error.kind(),os_code=error.raw_os_error(),"dial_failed");
             }
         }

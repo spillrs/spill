@@ -7,9 +7,7 @@ use crate::protocol::{
 use std::collections::BTreeMap;
 
 struct Peer {
-    endpoint: Option<SocketAddr>,
-    local_ip: Option<IpAddr>,
-    inbound: bool,
+    attachment: PeerAttachment,
     handshake: Handshake,
     replay: Vec<Frame>,
     v2: bool,
@@ -30,7 +28,7 @@ pub(super) struct Fetch {
     discovery_bytes: usize,
     layers: BTreeMap<[u8; 32], BTreeMap<u32, Vec<u8>>>,
     peers: HashMap<ConnectionId, Peer>,
-    attached: HashMap<ConnectionId, (Option<SocketAddr>, Option<IpAddr>, bool)>,
+    attached: HashMap<ConnectionId, PeerAttachment>,
     dialing: Vec<SocketAddr>,
     stalled: bool,
 }
@@ -65,12 +63,14 @@ impl Torrent {
         let fetch = self.metadata.take().expect("resolved metadata phase");
         let mut payload = Self::new(now, meta, self.limits, verified, seed)?;
         payload.own_peer_id = self.own_peer_id;
+        payload.utp_enabled = self.utp_enabled;
+        payload.families = self.families;
         payload.select_files(selection);
-        for (id, (endpoint, local_ip, inbound)) in fetch.attached {
-            payload.on_attach(id, endpoint, local_ip, inbound, false)?;
+        for (id, attachment) in fetch.attached {
+            payload.on_attach(id, attachment)?;
         }
         for (id, peer) in fetch.peers {
-            payload.on_attach(id, peer.endpoint, peer.local_ip, peer.inbound, false)?;
+            payload.on_attach(id, peer.attachment)?;
             if let Some(event) = payload.on_connect(id, peer.handshake)? {
                 payload.actions.push(Action::Observed(event));
             }
@@ -126,8 +126,11 @@ impl Fetch {
     }
     pub(super) fn rejects_contact(&self, addr: SocketAddr) -> bool {
         self.dialing.contains(&addr)
-            || self.attached.values().any(|a| a.0 == Some(addr))
-            || self.peers.values().any(|p| p.endpoint == Some(addr))
+            || self.attached.values().any(|a| a.endpoint == Some(addr))
+            || self
+                .peers
+                .values()
+                .any(|p| p.attachment.endpoint == Some(addr))
     }
     fn handle(
         &mut self,
@@ -138,25 +141,19 @@ impl Fetch {
         actions: &mut Vec<Action>,
     ) -> io::Result<Option<OwnedMetainfo>> {
         match input {
-            Input::PeerAttached {
-                id,
-                endpoint,
-                local_ip,
-                inbound,
-                ..
-            } => {
-                if let Some(addr) = endpoint {
+            Input::PeerAttached { id, attachment } => {
+                if let Some(addr) = attachment.endpoint {
                     self.dialing.retain(|old| *old != addr);
                 }
                 if self.attached.len() + self.peers.len() >= profile.peers.min(3) {
                     actions.push(Action::Disconnect { id });
                 } else {
-                    self.attached.insert(id, (endpoint, local_ip, inbound));
+                    self.attached.insert(id, attachment);
                 }
             }
             Input::PeerConnected { id, handshake } => {
                 let attached = self.attached.remove(&id);
-                let (endpoint, local_ip, inbound) = attached.unwrap_or((None, None, false));
+                let attachment = attached.unwrap_or_default();
                 let identity = self
                     .info
                     .as_ref()
@@ -172,9 +169,7 @@ impl Fetch {
                     actions.push(Action::Disconnect { id });
                 } else {
                     let mut peer = Peer {
-                        endpoint,
-                        local_ip,
-                        inbound,
+                        attachment,
                         handshake,
                         replay: Vec::new(),
                         v2,
@@ -192,7 +187,7 @@ impl Fetch {
                     if peer.handshake.reserved[7] & 4 != 0 {
                         peer.queue(Message::HaveNone)?;
                     }
-                    let hello = extensions::handshake(None, listen_port, false)?;
+                    let hello = extensions::handshake(None, listen_port, false, false)?;
                     peer.queue(Message::Extended {
                         id: 0,
                         payload: &hello,
@@ -269,7 +264,7 @@ impl Fetch {
                     }
                 }
             }
-            Input::ConnectFailed { addr } => self.dialing.retain(|old| *old != addr),
+            Input::ConnectFailed { addr, .. } => self.dialing.retain(|old| *old != addr),
             _ => {}
         }
         let cap = (crate::engine::profile::MAX_META - 8) as u32;
@@ -497,7 +492,7 @@ impl Peer {
                 let hello = extension::Handshake::parse(payload, extensions::limits())
                     .map_err(invalid_data)?;
                 self.remote.apply(&hello).map_err(invalid_data)?;
-                if let Some(endpoint) = &mut self.endpoint
+                if let Some(endpoint) = &mut self.attachment.endpoint
                     && endpoint.port() == 0
                     && let Some(port) = hello.port().filter(|port| *port != 0)
                 {

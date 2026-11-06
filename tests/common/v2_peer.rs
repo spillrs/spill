@@ -74,15 +74,23 @@ pub async fn initiate_hybrid(
     check_hello(peer, expected).await;
 }
 
-pub async fn frame(peer: &mut TcpStream) -> io::Result<Vec<u8>> {
+pub async fn read_frame(peer: &mut TcpStream) -> io::Result<Vec<u8>> {
     let length = peer.read_u32().await?;
     assert!(length <= 1024 * 1024);
     let mut body = vec![0; length as usize];
     peer.read_exact(&mut body).await?;
-    if body.first() == Some(&20) {
+    Ok(body)
+}
+pub async fn frame(peer: &mut TcpStream) -> io::Result<Vec<u8>> {
+    let body = read_frame(peer).await?;
+    if body.starts_with(&[20, 0]) {
+        use spill::protocol::peer::extension::{ExtensionMap, Handshake};
+        let hello = Handshake::parse(&body[2..], Default::default()).unwrap();
+        let mut map = ExtensionMap::new(&[(b"ut_pex", 0)]).unwrap();
+        map.apply(&hello).unwrap();
         assert!(
-            !body.windows(6).any(|bytes| bytes == b"ut_pex"),
-            "v2 must not advertise PEX"
+            map.id_for(b"ut_pex").is_none(),
+            "direct-only fixture must not enable PEX"
         );
     }
     Ok(body)

@@ -1,4 +1,4 @@
-//! One FIFO contact queue and token bucket shared by every session owner.
+//! Shared dial budget, fair torrent turns and owner-local contact priority.
 use crate::engine::{
     bandwidth::Bucket,
     peer_io::{Stream, Transport},
@@ -16,6 +16,7 @@ use tokio::{net::TcpStream, sync::Notify, task::JoinSet, time::Instant};
 // Reuse the payload bucket's 16 KiB minimum burst: eight 2 KiB dial credits,
 // replenished at four credits/second. Completed attempts retain pending permits.
 const COST: u32 = 2048;
+const PUNCH_LIFETIME: Duration = Duration::from_secs(3);
 #[derive(Clone)]
 pub(in crate::engine) struct Queue(Arc<Mutex<State>>);
 struct State {
@@ -33,6 +34,8 @@ pub(in crate::engine) struct Entry {
     owner: u64,
     pub(in crate::engine) address: SocketAddr,
     due: Instant,
+    punch_until: Option<Instant>,
+    restore: Option<&'static str>,
     pub(in crate::engine) source: &'static str,
     pub(in crate::engine) hash: [u8; 20],
 }
@@ -185,6 +188,7 @@ struct Known {
     source: &'static str,
     hash: [u8; 20],
     utp_failed: bool,
+    punch: bool,
     state: ContactState,
     encrypted: bool,
     retried: bool,
@@ -193,12 +197,14 @@ struct Known {
 impl Contacts {
     pub(in crate::engine) fn try_utp(&self, address: SocketAddr) -> bool {
         let known = &self.known[&address];
-        known
-            .transport
-            .map_or(!known.utp_failed, |transport| transport == Transport::Utp)
+        known.punch
+            || known
+                .transport
+                .map_or(!known.utp_failed, |transport| transport == Transport::Utp)
     }
     pub(in crate::engine) fn fallback(&self, address: SocketAddr) -> bool {
-        !self.known[&address].retried
+        let known = &self.known[&address];
+        !known.punch && !known.retried
     }
     pub(in crate::engine) fn methods(
         &self,
@@ -215,13 +221,29 @@ impl Contacts {
         source: &'static str,
     ) -> io::Result<()> {
         let mut state = self.queue.0.lock().unwrap();
+        let punch = source == "holepunch";
         for &address in peers {
-            if !crate::engine::network::peer(address, self.allow_local_network)
-                || self
-                    .known
-                    .get(&address)
-                    .is_some_and(|k| k.state != ContactState::Idle)
+            if !crate::engine::network::peer(address, self.allow_local_network) {
+                continue;
+            }
+            let address = crate::engine::network::canonical(address);
+            if let Some(known) = self.known.get_mut(&address)
+                && known.state != ContactState::Idle
             {
+                if punch && !known.punch && known.state == ContactState::Queued {
+                    if let Some(entry) = state
+                        .entries
+                        .iter_mut()
+                        .find(|e| e.owner == self.owner && e.address == address)
+                    {
+                        entry.restore = Some(entry.source);
+                        entry.source = "holepunch";
+                        entry.punch_until = Some(Instant::now() + PUNCH_LIFETIME);
+                        known.punch = true;
+                    } else {
+                        tracing::trace!("holepunch_dial_in_flight");
+                    }
+                }
                 continue;
             }
             if !self.known.contains_key(&address) && self.known.len() == 4096 {
@@ -237,13 +259,17 @@ impl Contacts {
                 source,
                 hash,
                 utp_failed: false,
+                punch: false,
                 state: ContactState::Idle,
                 encrypted: false,
                 retried: false,
                 transport: None,
             });
-            known.source = source;
-            known.hash = hash;
+            if !punch {
+                known.source = source;
+                known.hash = hash;
+            }
+            known.punch = punch;
             known.state = ContactState::Queued;
             known.encrypted = self.encryption != super::PeerEncryption::Allowed;
             known.retried = false;
@@ -252,8 +278,10 @@ impl Contacts {
                 owner: self.owner,
                 address,
                 due: Instant::now(),
+                punch_until: punch.then(|| Instant::now() + PUNCH_LIFETIME),
+                restore: None,
                 source,
-                hash,
+                hash: known.hash,
             });
         }
         Ok(())
@@ -293,17 +321,68 @@ impl Contacts {
     ) -> io::Result<()> {
         self.add(hash, peers, "pex")
     }
+    pub(in crate::engine) fn add_holepunch(
+        &mut self,
+        hash: [u8; 20],
+        address: SocketAddr,
+    ) -> io::Result<()> {
+        self.expire_punches(Instant::now());
+        self.add(hash, &[address], "holepunch")
+    }
+    fn expire_punches(&mut self, now: Instant) -> bool {
+        if !self.known.values().any(|known| known.punch) {
+            return false;
+        }
+        let mut state = self.queue.0.lock().unwrap();
+        let mut due = false;
+        state.entries.retain_mut(|entry| {
+            if entry.owner != self.owner {
+                return true;
+            }
+            let Some(until) = entry.punch_until else {
+                return true;
+            };
+            if until > now {
+                due = true;
+                return true;
+            }
+            let known = self
+                .known
+                .get_mut(&entry.address)
+                .expect("queued punch contact");
+            known.punch = false;
+            entry.punch_until = None;
+            if let Some(source) = entry.restore.take() {
+                entry.source = source;
+                return true;
+            }
+            if known.utp_failed {
+                known.state = ContactState::Idle;
+            } else {
+                self.known.remove(&entry.address);
+            }
+            false
+        });
+        due
+    }
+    pub(in crate::engine) fn has_due_punch(&mut self) -> bool {
+        self.expire_punches(Instant::now())
+    }
     pub(in crate::engine) fn candidate(
         &mut self,
-        rejects: impl Fn(SocketAddr) -> bool,
+        rejects: impl Fn(SocketAddr, &'static str) -> bool,
     ) -> Option<Entry> {
+        let now = Instant::now();
+        self.expire_punches(now);
         let mut state = self.queue.0.lock().unwrap();
-        for _ in 0..state.entries.len() {
-            let entry = state.entries.pop_front().unwrap();
-            if entry.owner != self.owner || entry.due > Instant::now() || rejects(entry.address) {
-                state.entries.push_back(entry);
-            } else {
-                return Some(entry);
+        for punch in [true, false] {
+            if let Some(i) = state.entries.iter().position(|entry| {
+                entry.owner == self.owner
+                    && (punch || entry.due <= now)
+                    && (entry.source == "holepunch") == punch
+                    && !rejects(entry.address, entry.source)
+            }) {
+                return Some(state.entries.remove(i).expect("selected dial entry"));
             }
         }
         None
@@ -315,7 +394,9 @@ impl Contacts {
         utp_failed: bool,
     ) {
         let known = self.known.get_mut(&address).expect("dialed contact");
-        known.utp_failed |= utp_failed;
+        known.utp_failed |= utp_failed && !known.punch;
+        known.retried |= known.punch;
+        known.punch = false;
         if let Some(transport) = transport {
             known.state = ContactState::Negotiating;
             known.transport = Some(transport);
@@ -341,6 +422,8 @@ impl Contacts {
                 owner: self.owner,
                 address,
                 due: Instant::now(),
+                punch_until: None,
+                restore: None,
                 source: known.source,
                 hash: known.hash,
             });
@@ -359,6 +442,8 @@ impl Contacts {
                 owner: self.owner,
                 address,
                 due: Instant::now() + Duration::from_secs(30),
+                punch_until: None,
+                restore: None,
                 source: "direct",
                 hash: known.hash,
             });
@@ -447,13 +532,13 @@ impl Client {
                     match super::utp::Mux::connect(mux, address).await {
                         Ok(stream) => return Ok(crate::engine::peer_io::Stream::Utp(stream)),
                         Err(error) => {
-                            if !fallback {
-                                return Err(error);
-                            }
                             utp_failed = matches!(
                                 error.kind(),
                                 io::ErrorKind::TimedOut | io::ErrorKind::ConnectionReset
                             );
+                            if !fallback {
+                                return Err(error);
+                            }
                         }
                     }
                 }

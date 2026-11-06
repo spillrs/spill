@@ -155,7 +155,7 @@ def magnet_case(lt, args, binary, root, torrent, topic, *, kill=False):
 
 
 def recovery_case(lt, args, binary, root, policy):
-    """Constrain the first libtorrent route, then discover an honest route."""
+    """Constrain the first route, then let an independent honest peer connect."""
     root.mkdir()
     legacy = policy == "mixed"
     torrent = wire.FIXTURES / ("hybrid.torrent" if legacy else "v2.torrent")
@@ -184,8 +184,7 @@ def recovery_case(lt, args, binary, root, policy):
         assert not list(daemon.output.rglob("*.part"))
         honest_source = wire.Libtorrent(lt, root / "honest-libtorrent", torrent, root / "seed", args.host)
         honest_source.complete(args.timeout, seed=True)
-        good = wire.Relay(args.host, honest_source.address(args.host), root / "honest-wire.jsonl", "spill", allow_hash_requests=True)
-        tracker.routes = {key: good.address for key in keys(lt, torrent)}
+        good = wire.Relay(args.host, daemon.address(), root / "honest-wire.jsonl", "libtorrent", allow_hash_requests=True)
         if policy == "stall":
             started = time.monotonic()
             wire.wait_for("stalled hash peer request timeout", lambda: "spill" in relay.closures, args.timeout)
@@ -193,6 +192,7 @@ def recovery_case(lt, args, binary, root, policy):
             assert result["request_timeout_seconds"] >= 25, result
         result["initial_wire"] = relay.stop()
         relay = None
+        honest_source.handle.connect_peer(good.address)
         row = daemon.wait(torrent_id, lambda r: r["state"] == "seeding", args.timeout)
         result["download"] = row
         result["files"] = wire.verify_files(daemon.output, wire.spill_files(lt.bdecode(torrent.read_bytes())), expected)

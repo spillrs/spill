@@ -307,9 +307,10 @@ for libtorrent's native Choke. It forges neither Choke nor hash responses.
 Checks include complete downloads, stable IDs, aliases, source-free restart and
 byte-for-byte proofs. Reverse libtorrent starts with a magnet, not metainfo.
 
-Fault cases reject, corrupt or withhold hash traffic before discovery supplies a
-separate honest source. The stalled route remains until spill closes it at
-roughly 30 seconds; tracker updates respect spill's 30-second minimum interval.
+Fault cases reject, corrupt or withhold hash traffic before an independent
+honest source connects inbound. The stalled route remains until spill closes
+it at roughly 30 seconds. Recovery does not depend on shortening the normal
+tracker announce interval.
 Independent source sessions avoid duplicate-peer rejection. A mixed case uses a
 v1-key-only relay and must complete without v2 peers or hash exchange. The
 Transmission hybrid case supplies an independent v1-only client.
@@ -356,6 +357,27 @@ repeated `.pad/32645` paths; Transmission 4.1.3 rejects both with `duplicate pat
 That comparison confirms a compatibility limitation, not successful transfer.
 Transmission seed verification uses its native v1 layout, with zero-filled
 padding files materialized where required.
+
+## Tier 2: UDP holepunching
+
+```sh
+python3 tests/interop/libtorrent_holepunch.py --allow-network --host LAN_IP --release
+# Select --role initiator, target or relay to run one role.
+```
+
+This follows the other explicit-LAN libtorrent harnesses: no root, namespaces,
+firewall changes or packet captures. It requires a libtorrent build advertising
+BEP 55. Scripted extension peers coordinate the tests; an in-process UDP filter
+requires fresh SYNs from both payload clients before forwarding anything.
+TCP fallback cannot reach a listener on the filter ports.
+
+Initiator and completed-seed target scenarios verify the transferred checksum
+and spill's uTP diagnostics. The introducer scenario checks that spill's connect
+message makes a real libtorrent target send a SYN to the requested endpoint;
+the spill introducer skips payload and must download no data. Status samples,
+SYN timing and checksums are recorded under `target/interop/` (or `--artifacts`).
+This validates client coordination, not behaviour behind a particular router.
+Real-router checks and loaded-session timing remain dev-machine validation.
 
 ## Tier 3: disk and swarm workloads
 

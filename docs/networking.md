@@ -19,9 +19,9 @@ if using LSD; it does not need router port forwarding.
 ## Peer transports
 
 spill accepts TCP and uTP (BEP 29) peer connections. Outbound connections try
-uTP first, then TCP if uTP does not answer within three seconds. A failed uTP
-attempt is remembered for that contact while its torrent runs; subsequent dials
-use TCP directly. TCP and uTP are not raced.
+uTP first, then TCP if uTP does not answer within three seconds. A remote uTP
+timeout or reset is remembered for that cached contact; subsequent ordinary
+dials use TCP directly. TCP and uTP are not raced.
 
 uTP uses LEDBAT delay-based congestion control, intended to yield bandwidth to
 other traffic. Selective acknowledgements and retransmission recover reordered
@@ -41,6 +41,37 @@ A full local uTP connection budget causes that dial to use TCP, without marking
 the remote as uTP-incompatible. Only a uTP connect timeout or reset is remembered
 as a remote failure. During clean daemon shutdown, uTP gets up to one second to
 acknowledge FINs before remaining connections are reset.
+
+## UDP holepunching
+
+spill supports BEP 55 (`ut_holepunch`) when uTP and PEX are enabled and public
+metainfo is known. It is disabled for private torrents and during magnet
+metadata resolution. There is no separate setting.
+
+After an ordinary connection attempt fails with a uTP timeout or reset, spill
+can ask a connected PEX peer to introduce it to a peer advertising holepunch
+support. The introducer asks both sides to send uTP packets directly
+to each other. A completed seed can answer these requests too. The introducer
+never relays payload; holepunching uses the session's existing UDP socket.
+
+This does not replace port mapping or guarantee connectivity through every
+NAT or firewall. Observed UDP mappings are preferred to advertised listening
+ports, but a NAT may choose a different mapping for each destination.
+Punches share ordinary dial limits and can be delayed past the other client's
+connection window. A request received while a dial to
+the same endpoint is already in flight is ignored rather than cancelled.
+
+An ordinary remote uTP failure gives that cached contact one automatic
+rendezvous opportunity. Later ordinary dials use TCP while that failure cache
+entry survives, even if the punch succeeded and the peer later disconnected.
+Idle cache entries can be evicted, and an incoming introduction can force a
+new uTP attempt. Punch attempts never fall back to TCP or retry with the other
+encryption setting; an encryption mismatch loses that attempt.
+
+Diagnostics label surviving outbound punch connections `source: "holepunch"`.
+A simultaneous inbound connection can win duplicate-peer resolution and retain
+its inbound source instead. See [Limits](limits.md#holepunch-coordination) for
+coordination bounds.
 
 ## Automatic port mapping
 
@@ -84,6 +115,9 @@ See [Troubleshooting](troubleshooting.md#nobody-can-connect-to-me) if mapping fa
 Trackers, DHT, PEX and web seeds are on by default, configurable per torrent.
 LSD is off unless LAN access is enabled and follows the torrent's `dht` setting.
 Private torrents always have DHT, PEX and LSD off.
+PEX additions include aligned capability flags indicating uTP connections and
+peers that advertise BEP 55 holepunch support. IPv4-mapped IPv6 peer endpoints
+are treated as IPv4 for contact deduplication.
 
 HTTP connections use HTTP/1 without system proxies. HTTPS verifies certificates
 against bundled Mozilla roots, not the OS trust store; this also applies to

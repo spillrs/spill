@@ -10,6 +10,8 @@ mod bencode;
 mod codecs;
 #[path = "protocol/compact.rs"]
 mod compact;
+#[path = "protocol/holepunch.rs"]
+mod holepunch;
 #[path = "protocol/identity.rs"]
 mod identity;
 #[path = "protocol/krpc.rs"]

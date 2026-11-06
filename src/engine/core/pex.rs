@@ -22,9 +22,11 @@ const INITIAL: usize = 200;
 pub(in crate::engine) struct Pex {
     pub(in crate::engine) enabled: bool,
     pub(in crate::engine) endpoint: Option<SocketAddr>,
+    pub(in crate::engine) observed: Option<SocketAddr>,
     pub(in crate::engine) local_ip: Option<crate::engine::network::IpAddr>,
     pub(in crate::engine) inbound: bool,
     pub(in crate::engine) received: Vec<SocketAddr>,
+    pub(in crate::engine) introduced: Vec<(SocketAddr, u8)>,
     received_at: Option<Instant>,
     sent_at: Option<Instant>,
     advertised: Vec<SocketAddr>,
@@ -52,17 +54,39 @@ impl Pex {
             return Ok(());
         }
         self.received_at = Some(now);
-        for address in message
-            .added_v4()
+        let dropped: Vec<_> = message
+            .dropped_v4()
             .iter()
             .map(SocketAddr::V4)
-            .chain(message.added_v6().iter().map(SocketAddr::V6))
-            .take(cap)
-        {
-            if self.received.len() >= capacity.min(INITIAL) {
-                break;
+            .chain(message.dropped_v6().iter().map(SocketAddr::V6))
+            .map(crate::engine::network::canonical)
+            .collect();
+        self.introduced.retain(|(a, _)| !dropped.contains(a));
+        let v4_flags = message.added_v4_flags().unwrap_or_default();
+        let v6_flags = message.added_v6_flags().unwrap_or_default();
+        let added = message
+            .added_v4()
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (SocketAddr::V4(a), v4_flags.get(i).copied().unwrap_or(0)))
+            .chain(
+                message
+                    .added_v6()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| (SocketAddr::V6(a), v6_flags.get(i).copied().unwrap_or(0))),
+            );
+        for (address, flags) in added.take(cap) {
+            let address = crate::engine::network::canonical(address);
+            if !crate::engine::network::eligible(address) {
+                continue;
             }
-            if crate::engine::network::eligible(address) && !self.received.contains(&address) {
+            if let Some((_, old_flags)) = self.introduced.iter_mut().find(|(a, _)| *a == address) {
+                *old_flags = flags;
+            } else if self.introduced.len() < INITIAL {
+                self.introduced.push((address, flags));
+            }
+            if self.received.len() < capacity.min(INITIAL) && !self.received.contains(&address) {
                 self.received.push(address);
             }
         }
@@ -74,7 +98,7 @@ impl Pex {
     }
     pub(in crate::engine) fn update(
         &self,
-        peers: &[SocketAddr],
+        peers: &[(SocketAddr, u8)],
         now: Instant,
     ) -> io::Result<Option<Vec<u8>>> {
         if !self.due(now) {
@@ -83,34 +107,58 @@ impl Pex {
         let added: Vec<_> = peers
             .iter()
             .copied()
-            .filter(|p| !self.advertised.contains(p))
+            .filter(|(address, _)| !self.advertised.contains(address))
             .take(UPDATE)
             .collect();
         let dropped: Vec<_> = self
             .advertised
             .iter()
             .copied()
-            .filter(|p| !peers.contains(p))
+            .filter(|p| !peers.iter().any(|(address, _)| *address == *p))
             .take(UPDATE)
             .collect();
         if added.is_empty() && dropped.is_empty() {
             return Ok(None);
         }
         let mut fields = BTreeMap::new();
-        let mut buffers = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-        for (list, v4, v6) in [(&added, 0, 1), (&dropped, 2, 3)] {
-            for address in list {
-                match address {
-                    SocketAddr::V4(a) => buffers[v4].extend_from_slice(&compact::encode_v4(*a)),
-                    SocketAddr::V6(a) => {
-                        buffers[v6].extend_from_slice(&compact::encode_v6(*a).map_err(invalid)?)
-                    }
+        let mut buffers = [
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ];
+        for &(address, flags) in &added {
+            match address {
+                SocketAddr::V4(a) => {
+                    buffers[0].extend_from_slice(&compact::encode_v4(a));
+                    buffers[4].push(flags);
+                }
+                SocketAddr::V6(a) => {
+                    buffers[1].extend_from_slice(&compact::encode_v6(a).map_err(invalid)?);
+                    buffers[5].push(flags);
                 }
             }
         }
-        for (key, bytes) in [b"added".as_slice(), b"added6", b"dropped", b"dropped6"]
-            .into_iter()
-            .zip(&buffers)
+        for address in &dropped {
+            match address {
+                SocketAddr::V4(a) => buffers[2].extend_from_slice(&compact::encode_v4(*a)),
+                SocketAddr::V6(a) => {
+                    buffers[3].extend_from_slice(&compact::encode_v6(*a).map_err(invalid)?)
+                }
+            }
+        }
+        for (key, bytes) in [
+            b"added".as_slice(),
+            b"added6",
+            b"dropped",
+            b"dropped6",
+            b"added.f",
+            b"added6.f",
+        ]
+        .into_iter()
+        .zip(&buffers)
         {
             fields.insert(key, Node::new(Value::Bytes(bytes)));
         }
@@ -141,5 +189,6 @@ impl Pex {
     pub(in crate::engine) fn disabled(&mut self) {
         self.advertised.clear();
         self.received.clear();
+        self.introduced.clear();
     }
 }

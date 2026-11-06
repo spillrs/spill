@@ -169,9 +169,9 @@ impl crate::engine::torrent::Network {
                 progress.retain_peers(shell);
                 shell.resolve_negotiations(&mut contacts);
                 while shell.can_connect() && dials.ready() {
-                    let Some(entry)=contacts.candidate(|a|shell.rejects_contact(a))else{dials.withdraw();break};
-                    let Some(address)=shell.contact(entry.address)?else{contacts.dial_completed(entry.address,None,false);break};
-                    if dials.admit(address, contacts.try_utp(address), contacts.fallback(address), contacts.methods(address)).is_err() {shell.connect_failed(address)?;contacts.dial_completed(address,None,false);break;}
+                    let Some(entry)=contacts.candidate(|a, _|shell.rejects_contact(a))else{dials.withdraw();break};
+                    let Some(address)=shell.contact(entry.address, false)?else{contacts.dial_completed(entry.address,None,false);break};
+                    if dials.admit(address, contacts.try_utp(address), contacts.fallback(address), contacts.methods(address)).is_err() {shell.connect_failed(address, false)?;contacts.dial_completed(address,None,false);break;}
                     dial_keys.insert(address, (entry.hash, entry.source));
                 }
                 if !shell.can_connect(){dials.withdraw();}
@@ -199,10 +199,10 @@ impl crate::engine::torrent::Network {
                                 Ok(socket)=>{
                                     if !progress.attach_peer(socket, crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), shell, source, options.log_peer_endpoints, None)? {
                                         contacts.negotiated(event.address, crate::engine::session::dial::NegotiationOutcome::Failed);
-                                        shell.connect_failed(event.address)?;
+                                        shell.connect_failed(event.address, false)?;
                                     }
                                 }
-                                Err(_)=>shell.connect_failed(event.address)?,
+                                Err(_)=>shell.connect_failed(event.address, false)?,
                             }
                         }
                     }

@@ -1,6 +1,16 @@
 //! Egress policy, applied to numeric endpoints after resolution and before I/O.
 pub(in crate::engine) use std::net::{IpAddr, SocketAddr};
 
+pub(in crate::engine) fn canonical(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V6(a) => a
+            .ip()
+            .to_ipv4_mapped()
+            .map_or(address, |ip| SocketAddr::new(IpAddr::V4(ip), a.port())),
+        _ => address,
+    }
+}
+
 pub(in crate::engine) fn source(address: SocketAddr, allow_local: bool) -> bool {
     let ip = address.ip().to_canonical();
     if address.port() == 0 || ip.is_unspecified() || ip.is_multicast() {

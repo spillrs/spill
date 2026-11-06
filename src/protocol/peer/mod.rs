@@ -3,6 +3,7 @@
 pub mod extension;
 mod handshake;
 pub mod hash;
+pub mod holepunch;
 pub mod message;
 pub mod metadata;
 pub mod mse;

@@ -28,22 +28,36 @@ pub(in crate::engine) fn limits() -> bencode::Limits {
     }
 }
 pub(in crate::engine) fn remote_map() -> extension::ExtensionMap {
-    extension::ExtensionMap::new(&[(b"ut_metadata", 0), (b"ut_pex", 0)])
+    extension::ExtensionMap::new(&[(b"ut_metadata", 0), (b"ut_pex", 0), (b"ut_holepunch", 0)])
         .expect("fixed extension map")
 }
 pub(in crate::engine) fn handshake(
     size: Option<usize>,
     port: Option<u16>,
     pex: bool,
+    holepunch: bool,
 ) -> io::Result<Vec<u8>> {
     let mut map = BTreeMap::from([(
         b"ut_metadata".as_slice(),
         Node::new(Value::Integer(i64::from(METADATA_ID))),
     )]);
-    if pex {
+    // Omission cannot disable an extension already negotiated on this connection.
+    if size.is_some() {
         map.insert(
             b"ut_pex",
-            Node::new(Value::Integer(i64::from(crate::engine::core::pex::ID))),
+            Node::new(Value::Integer(if pex {
+                i64::from(super::pex::ID)
+            } else {
+                0
+            })),
+        );
+        map.insert(
+            b"ut_holepunch",
+            Node::new(Value::Integer(if holepunch {
+                i64::from(super::holepunch::ID)
+            } else {
+                0
+            })),
         );
     }
     let mut fields = BTreeMap::from([(b"m".as_slice(), Node::new(Value::Dictionary(map)))]);
@@ -80,6 +94,7 @@ pub(in crate::engine) struct Extensions {
     pub(in crate::engine) client: Option<String>,
     pub(in crate::engine) remote: extension::ExtensionMap,
     pub(in crate::engine) pex: crate::engine::core::pex::Pex,
+    pub(super) holepunch: super::holepunch::Peer,
     pending: VecDeque<metadata::Kind>,
 }
 impl Default for Extensions {
@@ -91,6 +106,7 @@ impl Default for Extensions {
             client: None,
             remote: remote_map(),
             pex: crate::engine::core::pex::Pex::default(),
+            holepunch: super::holepunch::Peer::default(),
             pending: VecDeque::new(),
         }
     }

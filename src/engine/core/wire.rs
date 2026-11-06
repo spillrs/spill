@@ -83,6 +83,7 @@ impl Torrent {
                 Some(self.meta.info_bytes().len()),
                 self.listen_port,
                 self.pex_enabled,
+                self.holepunch_enabled(),
             )?;
             if !self.send(
                 peer,
@@ -94,6 +95,30 @@ impl Torrent {
                 return Ok(());
             }
             self.remotes[peer].extensions.handshake_pending = false;
+        }
+        while let Some(message) = self.remotes[peer]
+            .extensions
+            .holepunch
+            .outbound
+            .front()
+            .copied()
+        {
+            let id = self.remotes[peer]
+                .extensions
+                .remote
+                .id_for(b"ut_holepunch")
+                .expect("negotiated holepunch output");
+            let payload = message.encode().expect("unscoped holepunch endpoint");
+            if !self.send(
+                peer,
+                Message::Extended {
+                    id,
+                    payload: &payload,
+                },
+            )? {
+                return Ok(());
+            }
+            self.remotes[peer].extensions.holepunch.outbound.pop_front();
         }
         if self.remotes[peer].send_dht_port {
             if let Some(port) = self.dht_port
@@ -120,7 +145,7 @@ impl Torrent {
             && let Some(id) = self.remotes[peer].extensions.remote.id_for(b"ut_pex")
         {
             let recipient = self.remotes[peer].extensions.pex.endpoint;
-            let mut contacts = Vec::new();
+            let mut contacts: Vec<(SocketAddr, u8)> = Vec::new();
             for other in &self.remotes {
                 if other.connection != self.remotes[peer].connection
                     && other.established
@@ -128,9 +153,18 @@ impl Torrent {
                     && let Some(address) = other.extensions.pex.endpoint
                     && Some(address) != recipient
                     && crate::engine::network::eligible(address)
-                    && !contacts.contains(&address)
+                    && !contacts.iter().any(|(a, _)| *a == address)
                 {
-                    contacts.push(address);
+                    let flags = if other.extensions.pex.observed.is_some() {
+                        crate::protocol::peer::pex::UTP
+                    } else {
+                        0
+                    } | if other.extensions.remote.id_for(b"ut_holepunch").is_some() {
+                        crate::protocol::peer::pex::HOLEPUNCH
+                    } else {
+                        0
+                    };
+                    contacts.push((address, flags));
                 }
             }
             if let Some(payload) = self.remotes[peer]

@@ -4,11 +4,15 @@ impl Torrent {
     pub(super) fn on_attach(
         &mut self,
         id: ConnectionId,
-        endpoint: Option<SocketAddr>,
-        local_ip: Option<IpAddr>,
-        inbound: bool,
-        web_seed: bool,
+        attachment: PeerAttachment,
     ) -> io::Result<()> {
+        let PeerAttachment {
+            endpoint,
+            observed,
+            local_ip,
+            inbound,
+            web_seed,
+        } = attachment;
         if let Some(addr) = endpoint {
             self.dialing.retain(|old| *old != addr);
         }
@@ -41,6 +45,7 @@ impl Torrent {
                 let mut extensions = extensions::Extensions::default();
                 extensions.pex.enabled = self.pex_enabled;
                 extensions.pex.endpoint = endpoint;
+                extensions.pex.observed = observed;
                 extensions.pex.local_ip = local_ip;
                 extensions.pex.inbound = inbound;
                 extensions

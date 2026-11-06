@@ -7,6 +7,7 @@ pub(in crate::engine) mod extensions;
 pub(in crate::engine) mod fault;
 pub(in crate::engine) mod file_progress;
 mod hashes;
+mod holepunch;
 pub(in crate::engine) mod live;
 pub(in crate::engine) mod message;
 mod messages;
@@ -70,13 +71,18 @@ pub(in crate::engine) struct Capacity {
     pub(in crate::engine) frames: usize,
     pub(in crate::engine) uploaded: u64,
 }
+#[derive(Clone, Copy, Default)]
+pub(in crate::engine) struct PeerAttachment {
+    pub(in crate::engine) endpoint: Option<SocketAddr>,
+    pub(in crate::engine) observed: Option<SocketAddr>,
+    pub(in crate::engine) local_ip: Option<IpAddr>,
+    pub(in crate::engine) inbound: bool,
+    pub(in crate::engine) web_seed: bool,
+}
 pub(in crate::engine) enum Input<'a> {
     PeerAttached {
         id: ConnectionId,
-        endpoint: Option<SocketAddr>,
-        local_ip: Option<IpAddr>,
-        inbound: bool,
-        web_seed: bool,
+        attachment: PeerAttachment,
     },
     PeerConnected {
         id: ConnectionId,
@@ -86,6 +92,10 @@ pub(in crate::engine) enum Input<'a> {
         id: ConnectionId,
     },
     ConnectFailed {
+        addr: SocketAddr,
+        punchable: bool,
+    },
+    PunchContact {
         addr: SocketAddr,
     },
     Frame {
@@ -161,6 +171,9 @@ pub(in crate::engine) enum Action {
     Connect {
         addr: SocketAddr,
     },
+    Holepunch {
+        addr: SocketAddr,
+    },
     Announce {
         event: AnnounceEvent,
     },
@@ -212,6 +225,9 @@ pub(in crate::engine) struct Torrent {
     listen_port: Option<u16>,
     dht_port: Option<u16>,
     pex_enabled: bool,
+    utp_enabled: bool,
+    families: [bool; 2],
+    punches: Vec<holepunch::Pending>,
     duplex: Duplex,
     remotes: Vec<Remote>,
     remote_slots: HashMap<ConnectionId, usize>,
@@ -304,6 +320,9 @@ impl Torrent {
             listen_port: None,
             dht_port: None,
             pex_enabled: false,
+            utp_enabled: false,
+            families: [false; 2],
+            punches: Vec::new(),
             duplex: Duplex {
                 completion_reported: false,
                 cursor: 0,
@@ -350,6 +369,10 @@ impl Torrent {
         self.actions.clear();
         if matches!(input, Input::Stop) {
             self.picker.clear();
+            self.punches.clear();
+            for p in &mut self.remotes {
+                p.extensions.holepunch.outbound.clear();
+            }
             self.failed = true;
             for p in &self.remotes {
                 self.actions.push(Action::Disconnect { id: p.connection });
@@ -393,16 +416,10 @@ impl Torrent {
     }
     fn dispatch(&mut self, input: Input<'_>) -> io::Result<()> {
         match input {
-            Input::PeerAttached {
-                id,
-                endpoint,
-                local_ip,
-                inbound,
-                web_seed,
-            } => self.on_attach(id, endpoint, local_ip, inbound, web_seed)?,
+            Input::PeerAttached { id, attachment } => self.on_attach(id, attachment)?,
             Input::PeerConnected { id, handshake } => {
                 if !self.remote_slots.contains_key(&id) {
-                    self.on_attach(id, None, None, false, false)?;
+                    self.on_attach(id, PeerAttachment::default())?;
                 }
                 if let Some(event) = self.on_connect(id, handshake)? {
                     self.deferred.push_back(event);
@@ -503,7 +520,18 @@ impl Torrent {
                 self.mark_all_dirty();
             }
             Input::Stop => unreachable!("stop handled before dispatch"),
-            Input::ConnectFailed { addr } => self.dialing.retain(|old| *old != addr),
+            Input::ConnectFailed { addr, punchable } => {
+                self.dialing.retain(|old| *old != addr);
+                if punchable {
+                    self.request_holepunch(addr);
+                }
+            }
+            Input::PunchContact { addr } => {
+                if self.holepunch_enabled() && self.can_punch() && !self.rejects_contact(addr) {
+                    self.dialing.push(addr);
+                    self.actions.push(Action::Connect { addr });
+                }
+            }
             Input::Contacts(contacts) => {
                 for addr in contacts
                     .into_iter()
@@ -517,7 +545,7 @@ impl Torrent {
             }
             Input::Settings(settings) => {
                 self.bandwidth.set_local(self.now, settings.bandwidth());
-                self.pex_enabled = settings.pex;
+                self.set_ports(self.listen_port, self.dht_port, settings.pex);
                 if !settings.dht {
                     self.dht_port = None;
                 }
@@ -554,6 +582,7 @@ impl Torrent {
         }
         self.expire_requests()?;
         self.turn_over_peers()?;
+        self.expire_holepunches();
         if self.choker_dirty || self.choker.due(self.now, self.wanted_complete()) {
             let candidates: Vec<_> = self
                 .remotes
@@ -636,6 +665,7 @@ impl Torrent {
                     .filter(|p| !p.retiring)
                     .flat_map(|p| p.kept.iter().map(|(_, at)| *at)),
             )
+            .chain(self.punches.iter().map(|p| p.deadline))
             .chain(self.choker.deadline())
             .chain(self.rate_deadline)
             .chain((!self.remotes.is_empty()).then_some(self.turnover_due))
@@ -693,16 +723,25 @@ impl Torrent {
             |fetch| fetch.can_connect(self.limits.peers),
         )
     }
+    pub(in crate::engine) fn can_punch(&self) -> bool {
+        self.metadata.is_none() && self.remotes.len() + self.dialing.len() < self.limits.peers
+    }
+    pub(in crate::engine) fn set_transport(&mut self, utp: bool, families: [bool; 2]) {
+        self.utp_enabled = utp;
+        self.families = families;
+    }
+    fn connected_contact(&self, addr: SocketAddr) -> bool {
+        self.remotes.iter().any(|p| {
+            p.extensions.pex.endpoint == Some(addr) || p.extensions.pex.observed == Some(addr)
+        })
+    }
     pub(in crate::engine) fn rejects_contact(&self, addr: SocketAddr) -> bool {
         self.metadata
             .as_ref()
             .is_some_and(|fetch| fetch.rejects_contact(addr))
             || self.ip_banned(addr.ip())
             || self.dialing.contains(&addr)
-            || self
-                .remotes
-                .iter()
-                .any(|p| p.extensions.pex.endpoint == Some(addr))
+            || self.connected_contact(addr)
     }
     pub(in crate::engine) fn set_no_progress_timeout(&mut self, timeout: Duration) {
         self.no_progress_timeout = Some(timeout);
@@ -755,6 +794,19 @@ impl Torrent {
     ) {
         self.listen_port = listen;
         self.dht_port = dht;
+        if self.pex_enabled != pex {
+            for remote in &mut self.remotes {
+                remote.extensions.pex.enabled = pex;
+                if !pex {
+                    remote.extensions.pex.disabled();
+                    remote.extensions.holepunch.outbound.clear();
+                }
+                remote.extensions.handshake_pending = remote.extensions.enabled;
+            }
+            if !pex {
+                self.punches.clear();
+            }
+        }
         self.pex_enabled = pex;
     }
     pub(in crate::engine) fn charge_received_payload(&mut self, bytes: usize) {

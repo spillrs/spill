@@ -26,6 +26,8 @@ pub(in crate::engine) struct Shell {
     hint_limit: usize,
     dht_hints: Vec<std::net::SocketAddr>,
     connects: Vec<std::net::SocketAddr>,
+    holepunches: Vec<std::net::SocketAddr>,
+    log_peer_endpoints: bool,
     announces: Vec<core::AnnounceEvent>,
     listen: Option<u16>,
     advertised_port: Option<tokio::sync::watch::Receiver<u16>>,
@@ -94,6 +96,8 @@ impl Shell {
             hint_limit: profile.peers,
             dht_hints: Vec::new(),
             connects: Vec::new(),
+            holepunches: Vec::new(),
+            log_peer_endpoints: false,
             announces: Vec::new(),
             listen: None,
             advertised_port: None,
@@ -227,6 +231,10 @@ impl Shell {
                 self.events.push_back(Event::Complete);
             }
             Action::Connect { addr } => self.connects.push(addr),
+            Action::Holepunch { addr } => {
+                tracing::trace!(endpoint = ?self.log_peer_endpoints.then_some(addr), "holepunch_connect_received");
+                self.holepunches.push(addr);
+            }
             Action::Announce { event } => self.announces.push(event),
             Action::DhtHint { addr } => {
                 if self.dht_hints.len() < self.hint_limit {
@@ -463,33 +471,35 @@ impl Shell {
         &mut self,
         socket: PeerSocket,
     ) -> io::Result<ConnectionId> {
-        let (endpoint, local_ip, inbound, web_seed) = match &socket {
+        let attachment = match &socket {
             PeerSocket::Connected(socket, role, _) => {
-                let mut endpoint = socket.peer_addr()?;
+                let mut endpoint = crate::engine::network::canonical(socket.peer_addr()?);
+                let observed =
+                    matches!(socket, crate::engine::peer_io::Stream::Utp(_)).then_some(endpoint);
                 let inbound = matches!(role, Role::Inbound);
                 if inbound {
                     endpoint.set_port(0);
                 }
-                (
-                    Some(endpoint),
-                    match socket {
-                        crate::engine::peer_io::Stream::Tcp(s) => Some(s.local_addr()?.ip()),
+                core::PeerAttachment {
+                    endpoint: Some(endpoint),
+                    observed,
+                    local_ip: match socket {
+                        crate::engine::peer_io::Stream::Tcp(s) => {
+                            Some(s.local_addr()?.ip().to_canonical())
+                        }
                         crate::engine::peer_io::Stream::Utp(_) => None,
                     },
                     inbound,
-                    false,
-                )
+                    web_seed: false,
+                }
             }
-            PeerSocket::WebSeed(_) => (None, None, false, true),
+            PeerSocket::WebSeed(_) => core::PeerAttachment {
+                web_seed: true,
+                ..Default::default()
+            },
         };
         let id = self.peers.attach_socket(socket)?;
-        self.feed(Input::PeerAttached {
-            id,
-            endpoint,
-            local_ip,
-            inbound,
-            web_seed,
-        })?;
+        self.feed(Input::PeerAttached { id, attachment })?;
         Ok(id)
     }
     pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
@@ -547,6 +557,24 @@ impl Shell {
             let _ = queue.add_pex(hash, &contacts);
         }
     }
+    pub(in crate::engine) fn set_transport(
+        &mut self,
+        utp: bool,
+        families: [bool; 2],
+        log_peer_endpoints: bool,
+    ) {
+        self.core.set_transport(utp, families);
+        self.log_peer_endpoints = log_peer_endpoints;
+    }
+    pub(in crate::engine) fn drain_holepunches(
+        &mut self,
+        queue: &mut crate::engine::session::dial::Contacts,
+    ) {
+        let hash = self.info_hash().wire_key();
+        for address in self.holepunches.drain(..) {
+            let _ = queue.add_holepunch(hash, address);
+        }
+    }
     pub(in crate::engine) fn drain_dht(&mut self, node: &crate::engine::session::dht::Handle) {
         for addr in self.dht_hints.drain(..) {
             let _ = node.try_ping(addr);
@@ -563,15 +591,21 @@ impl Shell {
     pub(in crate::engine) fn contact(
         &mut self,
         addr: std::net::SocketAddr,
+        punch: bool,
     ) -> io::Result<Option<std::net::SocketAddr>> {
-        self.feed(Input::Contacts(vec![addr]))?;
+        self.feed(if punch {
+            Input::PunchContact { addr }
+        } else {
+            Input::Contacts(vec![addr])
+        })?;
         Ok(self.connects.pop())
     }
     pub(in crate::engine) fn connect_failed(
         &mut self,
         addr: std::net::SocketAddr,
+        punchable: bool,
     ) -> io::Result<()> {
-        self.feed(Input::ConnectFailed { addr })
+        self.feed(Input::ConnectFailed { addr, punchable })
     }
     pub(in crate::engine) fn set_no_progress_timeout(&mut self, timeout: std::time::Duration) {
         self.core.set_no_progress_timeout(timeout);

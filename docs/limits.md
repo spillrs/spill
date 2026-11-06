@@ -45,6 +45,31 @@ Admission and magnet metadata resolution reject invalid profiles with
 `InvalidInput` before starting work. `Profile::validate()` checks these bounds
 without starting an execution.
 
+## Holepunch coordination
+
+BEP 55 uses the ordinary session dial-token, pending-dial, peer and uTP limits;
+it has no reserved dial capacity or guaranteed admission latency.
+
+| Bound | Value |
+|---|---|
+| Pending rendezvous per torrent | 8, at most one per target and introducer |
+| Rendezvous lifetime, including output queueing | 10 seconds |
+| Queued holepunch messages per connection | 8 |
+| Queued punch dial lifetime | 3 seconds |
+| Incoming rendezvous processed per connection | 4 per 10-second window |
+| Incoming connect messages processed per connection | 4 per 10-second window |
+| Retained PEX introductions per connection | 200 |
+
+Each incoming-message window starts on its first message. Rejected and
+duplicate requests consume the allowance too; excess requests are ignored
+without a reply. The next message after the window expires starts a new one.
+Relay pairs are queued only if both connections' output queues have room.
+Expired punch-only dials are dropped. Upgraded ordinary contacts return to
+their original source and schedule. Duplicate introductions do not extend
+a queued punch's lifetime.
+PEX introductions follow the existing one-minute receive gate and disappear
+when the connection closes or disables PEX.
+
 ## Resource use
 
 - **Memory**: each running torrent may buffer up to `cache_bytes` +

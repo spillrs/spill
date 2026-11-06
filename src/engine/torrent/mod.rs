@@ -110,6 +110,8 @@ pub(in crate::engine) struct Network {
     pub(in crate::engine) advertised_port: watch::Receiver<u16>,
     pub(in crate::engine) sockets: tokio::sync::mpsc::Receiver<crate::engine::session::Inbound>,
     pub(in crate::engine) dial_queue: crate::engine::session::dial::Queue,
+    pub(in crate::engine) utp: bool,
+    pub(in crate::engine) families: [bool; 2],
     pub(in crate::engine) tracker_http: reqwest::Client,
     pub(in crate::engine) tracker_udp: crate::engine::session::udp::Transport,
     pub(in crate::engine) allow_local_network: bool,

@@ -898,13 +898,23 @@ async fn inbound_metadata_peer_is_reused_for_payload_without_tracker_peers() {
             let meta = Profile::default()
                 .parse_owned(&crate::payload::seed_metainfo("inbound", b"abc", None))
                 .unwrap();
-            let download = session().await;
+            let download = Session::bind(
+                NetworkOptions {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                    allow_local_network: true,
+                    ..Default::default()
+                },
+                Limits::default(),
+            )
+            .await
+            .unwrap();
             let (url, tracker) = metadata_peer::tracker(&[]).await;
             let mut options = TorrentOptions::new(
                 TorrentSource::Magnet(magnet(&meta, "v1", &url)),
                 Destination::Create(destination.0.clone()),
             );
             options.settings = settings();
+            options.settings.pex = true;
             options.diagnostics = true;
             let handle = download.admit(options).unwrap();
             // This peer has no listener, advertises no p and never reconnects.
@@ -920,11 +930,19 @@ async fn inbound_metadata_peer_is_reused_for_payload_without_tracker_peers() {
                 raw::send(&mut socket, 1, &[]).await;
                 raw::send(&mut socket, 20, &[&[0], hello.as_bytes()].concat()).await;
                 let mut metadata_id = None;
-                while let Ok(body) = raw::frame(&mut socket).await {
+                while let Ok(body) = raw::read_frame(&mut socket).await {
                     match body.as_slice() {
                         [20, 0, payload @ ..] => {
                             let doc = spill::protocol::bencode::decode(payload, Default::default())
                                 .unwrap();
+                            if doc.get(b"metadata_size").is_some() {
+                                assert_eq!(
+                                    doc.get(b"m").unwrap().get(b"ut_holepunch").unwrap().value(),
+                                    &spill::protocol::bencode::Value::Integer(3)
+                                );
+                            } else {
+                                assert!(doc.get(b"m").unwrap().get(b"ut_holepunch").is_none());
+                            }
                             assert_eq!(
                                 doc.get(b"p").unwrap().value(),
                                 &spill::protocol::bencode::Value::Integer(i64::from(port))

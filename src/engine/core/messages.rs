@@ -116,11 +116,18 @@ impl Torrent {
             return Ok(None);
         }
         if let Message::Extended { id, payload } = message {
-            let peer = &mut self.remotes[position];
-            let result = peer
+            let result = self.remotes[position]
                 .unsolicited
                 .charge(wire_bytes)
-                .and_then(|()| peer.extensions.receive(id, payload, &self.meta, self.now));
+                .and_then(|()| {
+                    if id == holepunch::ID {
+                        self.on_holepunch(position, payload)
+                    } else {
+                        self.remotes[position]
+                            .extensions
+                            .receive(id, payload, &self.meta, self.now)
+                    }
+                });
             if let Err(error) = result {
                 self.retire_peer(position, error)?;
             }

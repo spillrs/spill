@@ -22,6 +22,8 @@ mod discovery_v2;
 mod discovery_v2_policy;
 #[path = "engine/encryption.rs"]
 mod encryption;
+#[path = "engine/holepunch.rs"]
+mod holepunch;
 #[path = "engine/hybrid.rs"]
 mod hybrid;
 #[path = "engine/lifecycle.rs"]

@@ -761,8 +761,9 @@ def main():
             if args.hybrid:
                 assert not downloaded["layers_pending"] and downloaded["hash_total_bytes"] == 0, downloaded
                 assert bencode(document[b"piece layers"]) in stored, "catalog must retain rebuilt authenticated layers"
-            resolutions = sum(exchange["left"] == 1 for exchange in tracker.exchanges)
-            assert resolutions > 0
+            wanted_announces = sum(exchange["port"] != tracker.peer_port and exchange["left"] > 0
+                                   for exchange in tracker.exchanges)
+            assert wanted_announces > 0
             control(socket_path, "shutdown")
             assert engine.process.wait(timeout=15) == 0
             engine.start()
@@ -775,7 +776,8 @@ def main():
                 assert error.code == 2 and "already exists" in str(error), error
             else:
                 raise AssertionError("duplicate add must be rejected")
-            assert sum(exchange["left"] == 1 for exchange in tracker.exchanges) == resolutions
+            assert sum(exchange["port"] != tracker.peer_port and exchange["left"] > 0
+                       for exchange in tracker.exchanges) == wanted_announces
             result["magnet_catalog_restart"] = {"metainfo_retained": True, "refetched": False, "duplicate_rejected": True}
             destination = root / "magnet-download"
             download(args.daemon, magnet, destination, root / "magnet-product", args.host,

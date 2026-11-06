@@ -718,6 +718,12 @@ impl Session {
                 advertised_port: shared.advertised_port.subscribe(),
                 sockets,
                 dial_queue: shared.dial_queue.clone(),
+                utp: shared.utp_enabled,
+                families: shared
+                    .tracker_udp
+                    .as_ref()
+                    .expect("online UDP socket")
+                    .families,
                 tracker_http: shared.tracker_http.clone().expect("online session"),
                 tracker_udp: shared.tracker_udp.clone().expect("online session"),
                 allow_local_network: shared.allow_local_network,

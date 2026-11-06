@@ -7,6 +7,9 @@ use crate::protocol::{
     compact::{self, PEER_V4_LENGTH, PEER_V6_LENGTH, PeersV4, PeersV6},
 };
 
+pub const UTP: u8 = 0x04;
+pub const HOLEPUNCH: u8 = 0x08;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Bencode(bencode::Error),
@@ -100,6 +103,19 @@ impl<'a> Message<'a> {
     }
     pub fn added_v6(&self) -> PeersV6<'a> {
         self.added_v6
+    }
+    /// One capability byte per complete IPv4 addition. Malformed or missing
+    /// flags are ignored without changing the address list.
+    pub fn added_v4_flags(&self) -> Option<&'a [u8]> {
+        let flags = bytes(&self.document, b"added.f")?;
+        (self.added_v4.remainder().is_empty() && flags.len() == self.added_v4.len())
+            .then_some(flags)
+    }
+    /// IPv6 counterpart of [`Self::added_v4_flags`].
+    pub fn added_v6_flags(&self) -> Option<&'a [u8]> {
+        let flags = bytes(&self.document, b"added6.f")?;
+        (self.added_v6.remainder().is_empty() && flags.len() == self.added_v6.len())
+            .then_some(flags)
     }
     pub fn dropped_v4(&self) -> PeersV4<'a> {
         self.dropped_v4

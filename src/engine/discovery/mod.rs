@@ -422,6 +422,9 @@ impl Announcer {
             tracker.status.exchanges = tracker.status.exchanges.saturating_add(1);
             match result {
                 Ok(reply) => {
+                    if tracker.fails != 0 {
+                        tracing::debug!(swarm=?self.hash,tier=tracker.status.tier,slot=tracker.status.slot,"tracker_recovered");
+                    }
                     tracker.started = true;
                     tracker.last_reply = Some(Instant::now());
                     tracker.status.state = "Success";
@@ -446,12 +449,17 @@ impl Announcer {
                     tracker.status.state = "Error";
                     tracker.status.failures = tracker.status.failures.saturating_add(1);
                     tracker.status.peers_returned = Some(0);
-                    tracker.status.error = Some(error.to_string());
+                    let message = error.to_string();
+                    let changed = tracker.status.error.as_deref() != Some(message.as_str());
+                    tracker.status.error = Some(message);
                     tracker.fails = (tracker.fails + 1).min(127);
                     let fails = u64::from(tracker.fails);
                     let delay = Duration::from_secs((5 + fails * fails * 5 * 250 / 100).min(3600))
                         .max(retry_interval);
                     tracker.next_announce = Instant::now() + delay;
+                    if changed {
+                        tracing::debug!(swarm=?self.hash,tier=tracker.status.tier,slot=tracker.status.slot,kind=?error.kind(),%error,retry_secs=delay.as_secs(),disabled=tracker.disabled,"tracker_failed");
+                    }
                     let failed = self.trackers.remove(index);
                     let mut end = index;
                     while end < self.trackers.len()

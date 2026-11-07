@@ -910,7 +910,10 @@ async fn route(
             },
             accepted = accepts.accept(|| listener.accept()), if pending.len() < limits.pending_handshakes => {
                 let (socket, source) = match accepted { Ok(value) => value, Err(error) => break Err(error) };
-                let Some(permit) = admission.acquire(source.ip()) else { continue; };
+                let Some(permit) = admission.acquire(source.ip()) else {
+                    tracing::trace!(transport="tcp",reason="handshake_limit","inbound_rejected");
+                    continue;
+                };
                 let routes = routes.clone();
                 pending.spawn(async move {
                     let _permit = permit;
@@ -932,12 +935,24 @@ async fn route(
                         };
                         Ok::<_, io::Error>((hash, socket, negotiated))
                     };
-                    if let Ok(Ok((hash, socket, negotiated))) = tokio::time::timeout_at(deadline, prepare).await {
-                        let sender = routes.lock().unwrap().get(&hash).cloned();
-                        if let Some(sender) = sender
-                            && let Ok(socket) = socket.into_std() {
-                            let _ = sender.try_send(Inbound::Tcp(socket, crate::engine::peer_io::Prepared { negotiated, deadline }));
+                    match tokio::time::timeout_at(deadline, prepare).await {
+                        Ok(Ok((hash, socket, negotiated))) => {
+                            let sender = routes.lock().unwrap().get(&hash).cloned();
+                            if let Some(sender) = sender {
+                                match socket.into_std() {
+                                    Ok(socket) => {
+                                        if let Err(error) = sender.try_send(Inbound::Tcp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
+                                            tracing::trace!(transport="tcp",reason=if matches!(error,mpsc::error::TrySendError::Full(_)){"torrent_inbox_full"}else{"torrent_stopped"},"inbound_rejected");
+                                        }
+                                    }
+                                    Err(error) => tracing::trace!(transport="tcp",reason="socket_registration",kind=?error.kind(),%error,"inbound_rejected"),
+                                }
+                            } else {
+                                tracing::trace!(transport="tcp",reason="unknown_torrent","inbound_rejected");
+                            }
                         }
+                        Ok(Err(error)) => tracing::trace!(transport="tcp",reason="handshake_failed",kind=?error.kind(),%error,"inbound_rejected"),
+                        Err(_) => tracing::trace!(transport="tcp",reason="handshake_timeout","inbound_rejected"),
                     }
                 });
             }
@@ -990,14 +1005,24 @@ async fn route_utp(
                             Ok::<_, io::Error>((negotiated.wire_key, Some(Box::new(negotiated))))
                         }
                     };
-                    if let Ok(Ok((hash, negotiated))) = tokio::time::timeout_at(deadline, prepare).await {
-                        let sender = routes.lock().unwrap().get(&hash).cloned();
-                        if let Some(sender) = sender {
-                            match sender.try_send(Inbound::Utp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
-                                Ok(()) => return,
-                                Err(error) => { if let Inbound::Utp(socket, _) = error.into_inner() { socket.reset(); } return; }
+                    match tokio::time::timeout_at(deadline, prepare).await {
+                        Ok(Ok((hash, negotiated))) => {
+                            let sender = routes.lock().unwrap().get(&hash).cloned();
+                            if let Some(sender) = sender {
+                                match sender.try_send(Inbound::Utp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
+                                    Ok(()) => return,
+                                    Err(error) => {
+                                        tracing::trace!(transport="utp",reason=if matches!(error,mpsc::error::TrySendError::Full(_)){"torrent_inbox_full"}else{"torrent_stopped"},"inbound_rejected");
+                                        if let Inbound::Utp(socket, _) = error.into_inner() { socket.reset(); }
+                                        return;
+                                    }
+                                }
+                            } else {
+                                tracing::trace!(transport="utp",reason="unknown_torrent","inbound_rejected");
                             }
                         }
+                        Ok(Err(error)) => tracing::trace!(transport="utp",reason="handshake_failed",kind=?error.kind(),%error,"inbound_rejected"),
+                        Err(_) => tracing::trace!(transport="utp",reason="handshake_timeout","inbound_rejected"),
                     }
                     socket.reset();
                 });

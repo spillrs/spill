@@ -177,10 +177,26 @@ impl Mux {
                 return;
             }
             if !mux.enabled || !mux.accepting || mux.entries.len() >= mux.cap {
+                tracing::trace!(
+                    transport = "utp",
+                    reason = if !mux.enabled {
+                        "utp_disabled"
+                    } else if !mux.accepting {
+                        "session_stopping"
+                    } else {
+                        "utp_capacity"
+                    },
+                    "inbound_rejected"
+                );
                 mux.reset(address, h.connection_id, 0, h.seq_nr, now);
                 return;
             }
             let Some(permit) = mux.pending.acquire(address.ip()) else {
+                tracing::trace!(
+                    transport = "utp",
+                    reason = "handshake_limit",
+                    "inbound_rejected"
+                );
                 mux.reset(address, h.connection_id, 0, h.seq_nr, now);
                 return;
             };
@@ -217,6 +233,11 @@ impl Mux {
             let stream = Stream::new(handle.clone(), key);
             // Capacity follows the shared pending cap, so only a stopped router can reject this.
             if let Err(error) = mux.incoming.try_send((stream, permit)) {
+                tracing::trace!(
+                    transport = "utp",
+                    reason = "router_stopped",
+                    "inbound_rejected"
+                );
                 mux.entries.remove(&key);
                 mux.reset(address, h.connection_id, seq, h.seq_nr, now);
                 // Dropping a stream takes the mux lock.

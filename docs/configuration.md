@@ -119,10 +119,12 @@ Verbosity is event-driven, not a progress feed:
 - `info`: daemon/torrent lifecycle, recovery and changed port mappings. Successful
   lease renewals do not repeat the mapping announcement.
 - `debug`: storage recovery/failure operations, resume rejection, corrupt-piece
-  retries, stalls, metadata-peer rejections, protocol/request-timeout peer closes
-  and web-seed failures. No periodic progress, successful checkpoints or peer dumps.
-- `trace`: peer/dial/handshake churn, successful piece/block activity, checkpoint
-  saves and DHT maintenance. Enable only the module you are investigating.
+  retries, stalls, metadata-peer rejections, protocol/request-timeout peer closes,
+  changed tracker failures/recovery and web-seed failures. No periodic progress,
+  successful checkpoints or peer dumps.
+- `trace`: peer/dial/handshake churn, inbound rejection reasons, transport fallback,
+  successful piece/block activity, checkpoint saves and DHT maintenance. Enable
+  only the module you are investigating.
 
 Continuous listener, UDP, entropy, reconciliation and port-mapping failures
 report the first failure rather than every retry; recovery is logged. Identical
@@ -134,7 +136,9 @@ network diagnostics rather than a logging heartbeat.
 Torrent events carry a torrent ID. Peer endpoints remain off by default; enable
 `peer_endpoints` to correlate connections with remote addresses during debugging.
 This associates addresses with torrent IDs in retained logs. It does not change
-peer addresses in live JSON diagnostics. Payloads and tracker URLs/credentials
+peer addresses in live JSON diagnostics. Inbound rejections before torrent
+routing omit endpoints even when this setting is enabled; their reasons are
+logged under `spill::engine::session` at `trace`. Payloads and tracker URLs/credentials
 are not intentionally logged. Logs can still contain local paths and error text:
 review them before sharing.
 See [Troubleshooting](troubleshooting.md#where-are-the-logs) for systemd and macOS.

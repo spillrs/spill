@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpStream, sync::Notify, task::JoinSet, time::Instant};
+use tracing::Instrument;
 
 // Reuse the payload bucket's 16 KiB minimum burst: eight 2 KiB dial credits,
 // replenished at four credits/second. Completed attempts retain pending permits.
@@ -536,13 +537,15 @@ impl Client {
         self.next += 1;
         let id = DialId(self.next);
         let utp = self.utp.clone().filter(|_| try_utp);
-        self.tasks.spawn(async move {
+        let span = tracing::trace_span!("dial", dial=?id);
+        let dial = async move {
             let mut utp_failed = false;
             let result = async {
                 if let Some(mux) = utp {
                     match super::utp::Mux::connect(mux, address).await {
                         Ok(stream) => return Ok(crate::engine::peer_io::Stream::Utp(stream)),
                         Err(error) => {
+                            tracing::trace!(fallback,kind=?error.kind(),%error,"utp_dial_failed");
                             utp_failed = matches!(
                                 error.kind(),
                                 io::ErrorKind::TimedOut | io::ErrorKind::ConnectionReset
@@ -572,7 +575,8 @@ impl Client {
                 },
                 permit,
             )
-        });
+        };
+        self.tasks.spawn(dial.instrument(span));
         Ok(id)
     }
     pub(in crate::engine) async fn next(&mut self) -> io::Result<Option<ConnectionEvent>> {

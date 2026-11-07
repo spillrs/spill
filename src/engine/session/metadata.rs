@@ -132,6 +132,7 @@ impl crate::engine::torrent::Network {
         }
         let (sender, mut incoming) = tokio::sync::mpsc::channel(crate::engine::profile::MAX_QUEUED);
         let mut dial_keys = std::collections::HashMap::new();
+        let mut last_metadata_error = None::<String>;
         let lookup = async {
             if let Some(node) = &node {
                 let lookups = identity.wire_keys().map(|key| {
@@ -173,7 +174,14 @@ impl crate::engine::torrent::Network {
                 while shell.can_connect() && dials.ready() {
                     let Some(entry)=contacts.candidate(|a, _|shell.rejects_contact(a))else{dials.withdraw();break};
                     let Some(address)=shell.contact(entry.address, false)?else{contacts.dial_completed(entry.address,None,false);break};
-                    if dials.admit(address, contacts.try_utp(address), contacts.fallback(address), contacts.methods(address)).is_err() {shell.connect_failed(address, false)?;contacts.dial_completed(address,None,false);break;}
+                    let utp = contacts.try_utp(address);
+                    match dials.admit(address, utp, contacts.fallback(address), contacts.methods(address)) {
+                        Ok(id) => tracing::trace!(dial=?id,phase="metadata",source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started"),
+                        Err(error) => {
+                            tracing::trace!(phase="metadata",source=entry.source,kind=?error.kind(),%error,"peer_dial_deferred");
+                            shell.connect_failed(address, false)?;contacts.dial_completed(address,None,false);break;
+                        }
+                    }
                     dial_keys.insert(address, (entry.hash, entry.source));
                 }
                 if !shell.can_connect(){dials.withdraw();}
@@ -195,6 +203,7 @@ impl crate::engine::torrent::Network {
                     }
                     event=dials.next(),if dials.has_work()=>{
                         if let Some(event)=event? {
+                            let _dial = tracing::trace_span!("dial",dial=?event.id).entered();
                             let (key, source) = dial_keys.remove(&event.address).expect("metadata dial key");
                             contacts.dial_completed(event.address,event.transport(),event.utp_failed);
                             match event.result {
@@ -204,7 +213,10 @@ impl crate::engine::torrent::Network {
                                         shell.connect_failed(event.address, false)?;
                                     }
                                 }
-                                Err(_)=>shell.connect_failed(event.address, false)?,
+                                Err(error)=>{
+                                    tracing::trace!(dial=?event.id,phase="metadata",source,utp_failed=event.utp_failed,kind=?error.kind(),os_code=error.raw_os_error(),%error,"dial_failed");
+                                    shell.connect_failed(event.address, false)?;
+                                }
                             }
                         }
                     }
@@ -220,14 +232,16 @@ impl crate::engine::torrent::Network {
                     }
                     event=shell.next()=>{
                         event?;
-                        if options.diagnostics && let Some(error) = shell.metadata_error() {
-                            status.send_if_modified(|s| {
-                                let diagnostics = s.diagnostics.as_mut().expect("enabled diagnostics");
-                                if diagnostics.metadata_error.as_deref() == Some(error) { return false; }
-                                tracing::debug!(%error, "metadata_peer_rejected");
-                                Arc::make_mut(diagnostics).metadata_error = Some(error.to_owned());
-                                true
-                            });
+                        if let Some(error) = shell.metadata_error()
+                            && last_metadata_error.as_deref() != Some(error) {
+                            tracing::debug!(%error, "metadata_peer_rejected");
+                            last_metadata_error = Some(error.to_owned());
+                            if options.diagnostics {
+                                status.send_modify(|s| {
+                                    let diagnostics = s.diagnostics.as_mut().expect("enabled diagnostics");
+                                    Arc::make_mut(diagnostics).metadata_error = Some(error.to_owned());
+                                });
+                            }
                         }
                         let resolved = shell.take_metadata();
                         if let Some((hash_bytes, hash_total_bytes)) = shell.take_metadata_progress() {

@@ -290,8 +290,9 @@ impl Peers {
                         }
                         result
                     }
-                }
-                .map_err(socket_failure);
+                };
+                tracing::trace!(?connection,error_kind=?result.as_ref().err().map(|e|e.kind()),error=%result.as_ref().err().map(ToString::to_string).unwrap_or_default(),"peer_transport_finished");
+                let result = result.map_err(socket_failure);
                 let _ = events.send(PeerEvent::Closed { connection, result }).await;
                 connection
             }
@@ -387,6 +388,7 @@ impl Peers {
         if let Some(entry) = self.entries.get_mut(&connection) {
             entry.connected = true;
             entry.encryption = encryption;
+            tracing::trace!(?connection, ?encryption, "peer_handshake_received");
             self.capacity_changed.notify_one();
         }
     }

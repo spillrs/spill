@@ -201,7 +201,7 @@ async fn serve(
                             let _ = queue.add_dht(hash, &found.peers);
                         }
                     }
-                    Err(error) => trace!(kind = ?error.kind(), "dht_lookup_failed"),
+                    Err(error) => trace!(swarm=?hash,kind=?error.kind(),%error,"dht_lookup_failed"),
                 }
             },
             event = direct, if progress.pending > 0 => {
@@ -217,7 +217,7 @@ async fn serve(
                     let (socket, prepared) = match socket {
                         crate::engine::session::Inbound::Tcp(socket, prepared) => match tokio::net::TcpStream::from_std(socket) {
                             Ok(socket) => (crate::engine::peer_io::Stream::Tcp(socket), prepared),
-                            Err(error) => { debug!(kind = ?error.kind(), "peer_register_failed"); continue; }
+                            Err(error) => { debug!(kind = ?error.kind(), %error, "peer_register_failed"); continue; }
                         },
                         crate::engine::session::Inbound::Utp(socket, prepared) => (crate::engine::peer_io::Stream::Utp(socket), prepared),
                     };
@@ -298,10 +298,13 @@ async fn finish(
             diagnostics.dht.clear();
         }
     });
+    let exit = result.as_ref().ok().copied();
+    let result = result.map(|_| ()).and(setup).and(peers).and(p.map(|_| ()));
     debug!(clean = result.is_ok(),
-        exit = ?result.as_ref().ok(), error_kind = ?result.as_ref().err().map(|e| e.kind()),
+        ?exit, error_kind = ?result.as_ref().err().map(|e| e.kind()),
+        error = %result.as_ref().err().map(ToString::to_string).unwrap_or_default(),
         "torrent_runtime_joined");
-    result.map(|_| ()).and(setup).and(peers).and(p.map(|_| ()))
+    result
 }
 
 pub(super) struct Resources {

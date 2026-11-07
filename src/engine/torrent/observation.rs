@@ -127,22 +127,23 @@ impl Progress {
     ) -> io::Result<bool> {
         let address = socket.peer_addr().ok();
         let transport = socket.transport().as_str();
+        let direction = if matches!(role, Role::Inbound) {
+            "inbound"
+        } else {
+            "outbound"
+        };
         let retransmits = match &socket {
             crate::engine::peer_io::Stream::Utp(s) => Some(s.retransmits()),
             crate::engine::peer_io::Stream::Tcp(_) => None,
         };
         match transfer.attach_peer(socket, role, prepared) {
             Ok(id) => {
-                trace!(connection=?id,source,transport,direction=if matches!(role,Role::Inbound){"inbound"}else{"outbound"},endpoint=?address.filter(|_|log_endpoint),"peer_admitted");
+                trace!(connection=?id,source,transport,direction,endpoint=?address.filter(|_|log_endpoint),"peer_admitted");
                 self.remember(
                     id,
                     Peer {
                         address,
-                        direction: if matches!(role, Role::Inbound) {
-                            "inbound"
-                        } else {
-                            "outbound"
-                        },
+                        direction,
                         source,
                         transport,
                         retransmits,
@@ -158,7 +159,7 @@ impl Progress {
                 if crate::engine::core::fault::is_local(&error) {
                     return Err(error);
                 }
-                trace!(kind=?error.kind(),"peer_rejected");
+                trace!(source,transport,direction,endpoint=?address.filter(|_|log_endpoint),kind=?error.kind(),%error,"peer_rejected");
                 Ok(false)
             }
         }
@@ -255,9 +256,10 @@ impl Progress {
                 Ok(id) => {
                     self.sources.insert(id, (entry.source, entry.hash));
                     self.pending += 1;
-                    trace!(?id,source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
+                    trace!(dial=?id,source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
                 }
-                Err(_) => {
+                Err(error) => {
+                    trace!(source=entry.source,kind=?error.kind(),%error,"peer_dial_deferred");
                     transfer.connect_failed(address, false)?;
                     queue.dial_completed(address, None, false);
                     return Ok(());
@@ -274,6 +276,7 @@ impl Progress {
         contacts: &mut crate::engine::session::dial::Contacts,
     ) -> io::Result<()> {
         let event = event.ok_or_else(|| io::Error::other("unexpected dial completion"))?;
+        let _dial = tracing::trace_span!("dial", dial=?event.id).entered();
         self.pending = self.pending.saturating_sub(1);
         let (source, hash) = self.sources.remove(&event.id).expect("admitted dial");
         match event.result {
@@ -296,7 +299,7 @@ impl Progress {
             Err(error) => {
                 transfer
                     .connect_failed(event.address, source != "holepunch" && event.utp_failed)?;
-                trace!(dial=?event.id,source,kind=?error.kind(),os_code=error.raw_os_error(),"dial_failed");
+                trace!(dial=?event.id,source,utp_failed=event.utp_failed,kind=?error.kind(),os_code=error.raw_os_error(),%error,"dial_failed");
             }
         }
         Ok(())

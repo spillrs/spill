@@ -69,6 +69,10 @@ impl Queue {
             waiting: VecDeque::new(),
         })))
     }
+    pub(super) fn snapshot(&self) -> (usize, usize, usize) {
+        let state = self.0.lock().unwrap();
+        (state.pending, state.cap, state.entries.len())
+    }
     pub(super) fn set_utp(&self, mux: Option<Arc<Mutex<super::utp::Mux>>>) {
         self.0.lock().unwrap().utp = mux;
     }
@@ -81,6 +85,8 @@ impl Queue {
             allow_local_network: state.allow_local_network,
             encryption: state.encryption,
             known: HashMap::new(),
+            punches_queued: 0,
+            punches_expired: 0,
         };
         let turn = Turn {
             queue: self.clone(),
@@ -170,6 +176,8 @@ pub(in crate::engine) struct Contacts {
     allow_local_network: bool,
     encryption: super::PeerEncryption,
     known: HashMap<SocketAddr, Known>,
+    pub(in crate::engine) punches_queued: u64,
+    pub(in crate::engine) punches_expired: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ContactState {
@@ -240,6 +248,7 @@ impl Contacts {
                         entry.source = "holepunch";
                         entry.punch_until = Some(Instant::now() + PUNCH_LIFETIME);
                         known.punch = true;
+                        self.punches_queued += 1;
                     } else {
                         tracing::trace!("holepunch_dial_in_flight");
                     }
@@ -270,6 +279,7 @@ impl Contacts {
                 known.hash = hash;
             }
             known.punch = punch;
+            self.punches_queued += u64::from(punch);
             known.state = ContactState::Queued;
             known.encrypted = self.encryption != super::PeerEncryption::Allowed;
             known.retried = false;
@@ -351,6 +361,7 @@ impl Contacts {
                 .get_mut(&entry.address)
                 .expect("queued punch contact");
             known.punch = false;
+            self.punches_expired += 1;
             entry.punch_until = None;
             if let Some(source) = entry.restore.take() {
                 entry.source = source;

@@ -299,9 +299,21 @@ pub struct LsdStatus {
     pub last_error: Option<String>,
 }
 
-/// Local transport readiness and passive inbound observations. No probes are sent.
+/// Local transport readiness, shared budget usage and passive inbound observations.
+/// Counts are sampled under separate locks, not one atomic reservation view. No probes are sent.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct NetworkStatus {
+    /// Includes completed attempts whose result has not been consumed.
+    pub pending_dials: usize,
+    pub pending_dials_limit: usize,
+    /// Shared contact entries awaiting an attempt, including delayed retries.
+    pub queued_contacts: usize,
+    pub pending_handshakes: usize,
+    pub pending_handshakes_limit: usize,
+    pub pending_handshakes_per_ip_limit: usize,
+    /// Includes handshakes and closing connections, not just payload peers.
+    pub utp_connections: usize,
+    pub utp_connections_limit: usize,
     /// Local address while the TCP listener task is running; none offline or stopped.
     pub tcp_listen: Option<SocketAddr>,
     /// Local address while the UDP receiver task is running; none offline or stopped.
@@ -575,7 +587,23 @@ impl Session {
     pub async fn network_status(&self) -> NetworkStatus {
         let tasks = self.shared.tasks.lock().await;
         let (inbound_tcp, inbound_utp) = self.shared.incoming.lock().unwrap().snapshot();
+        let (pending_dials, pending_dials_limit, queued_contacts) =
+            self.shared.dial_queue.snapshot();
+        let pending_handshakes = self.shared.pending.counts.lock().unwrap().values().sum();
+        let (utp_connections, utp_connections_limit) = self
+            .shared
+            .utp
+            .as_ref()
+            .map_or((0, 0), |mux| mux.lock().unwrap().capacity_status());
         NetworkStatus {
+            pending_dials,
+            pending_dials_limit,
+            queued_contacts,
+            pending_handshakes,
+            pending_handshakes_limit: self.shared.limits.pending_handshakes,
+            pending_handshakes_per_ip_limit: self.shared.limits.pending_handshakes_per_ip,
+            utp_connections,
+            utp_connections_limit,
             tcp_listen: tasks
                 .listener
                 .as_ref()

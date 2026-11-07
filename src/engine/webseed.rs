@@ -374,7 +374,13 @@ async fn get_range(
             continue;
         }
         if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(invalid("web seed requires HTTP 206 range response"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "web seed requires HTTP 206 range response, received {}",
+                    response.status()
+                ),
+            ));
         }
         let expected = format!("bytes {start}-{end}/{total}");
         if response
@@ -408,18 +414,24 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 fn transport(error: reqwest::Error) -> io::Error {
-    io::Error::new(
-        if error.is_builder() {
-            io::ErrorKind::Other
-        } else if error.is_timeout() {
-            io::ErrorKind::TimedOut
-        } else {
-            // Reqwest collapses TLS/reset/connect failures into its own error.
-            // Keep them remote: raw `Other` means a fatal local fault to peer_io.
-            io::ErrorKind::ConnectionAborted
-        },
-        "web seed HTTP transport failed",
-    )
+    let kind = if error.is_builder() {
+        io::ErrorKind::Other
+    } else if error.is_timeout() {
+        io::ErrorKind::TimedOut
+    } else {
+        // Reqwest collapses TLS/reset/connect failures into its own error.
+        // Keep them remote: raw `Other` means a fatal local fault to peer_io.
+        io::ErrorKind::ConnectionAborted
+    };
+    let error = error.without_url();
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    io::Error::new(kind, message)
 }
 fn closed(_: impl std::fmt::Debug) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "web seed owner closed")

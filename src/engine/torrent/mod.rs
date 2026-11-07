@@ -236,6 +236,12 @@ pub struct TorrentStatus {
 
 #[derive(Clone, Debug, Default)]
 pub struct TorrentDiagnostics {
+    /// Last full diagnostic publication; none before the first sample.
+    pub sampled_at: Option<Instant>,
+    pub storage: Option<telemetry::StorageStatus>,
+    pub holepunch: telemetry::HolepunchStatus,
+    /// Most recent metadata peer rejection, retained through payload promotion.
+    pub metadata_error: Option<String>,
     /// Observed uTP retransmits for this owner, retained at peer I/O close.
     pub utp_retransmits: u64,
     pub pending_contacts: usize,

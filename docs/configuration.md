@@ -110,13 +110,16 @@ fsynced and a crash can lose recent events. An unusable debug-log destination
 stops startup. Later write failures are reported once to stderr per
 failure episode, retried on subsequent events, and do not stop torrents;
 recovery is also reported. Writer-health messages bypass console filtering.
+`health --json` also exposes cumulative dropped events and the current file-write
+failure flag under `logging`; successful writes clear the flag, not the count.
 
 Verbosity is event-driven, not a progress feed:
 
 - `info`: daemon/torrent lifecycle, recovery and changed port mappings. Successful
   lease renewals do not repeat the mapping announcement.
-- `debug`: storage recovery, resume rejection, corrupt-piece retries, stalls and
-  web-seed failures. No periodic progress, successful checkpoints or peer dumps.
+- `debug`: storage recovery/failure operations, resume rejection, corrupt-piece
+  retries, stalls, metadata-peer rejections, protocol/request-timeout peer closes
+  and web-seed failures. No periodic progress, successful checkpoints or peer dumps.
 - `trace`: peer/dial/handshake churn, successful piece/block activity, checkpoint
   saves and DHT maintenance. Enable only the module you are investigating.
 

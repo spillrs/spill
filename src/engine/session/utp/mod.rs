@@ -254,6 +254,9 @@ impl Mux {
             mux.reset(address, h.connection_id, 0, h.seq_nr, now);
         }
     }
+    pub(super) fn capacity_status(&self) -> (usize, usize) {
+        (self.entries.len(), self.cap)
+    }
     pub(in crate::engine) fn stop_accepting(&mut self) {
         self.accepting = false;
     }

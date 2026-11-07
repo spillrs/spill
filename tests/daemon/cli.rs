@@ -102,6 +102,19 @@ async fn client_commands_are_top_level_without_a_ctl_alias() {
     }
     let health = client(&daemon, &["health"]).await;
     assert_eq!(health["pid"], daemon.child.id().unwrap());
+    assert_eq!(health["logging"]["file_enabled"], true);
+    assert_eq!(health["logging"]["events_dropped"], 0);
+    assert_eq!(health["logging"]["write_failed"], false);
+    let network = &health["network"];
+    for (used, limit) in [
+        ("pending_dials", "pending_dials_limit"),
+        ("pending_handshakes", "pending_handshakes_limit"),
+        ("utp_connections", "utp_connections_limit"),
+    ] {
+        assert!(network[used].as_u64().unwrap() <= network[limit].as_u64().unwrap());
+    }
+    assert!(network["queued_contacts"].is_u64());
+    assert_eq!(network["pending_handshakes_per_ip_limit"], 2);
     let output = Command::new(BIN)
         .arg("--socket")
         .arg(&daemon.socket)

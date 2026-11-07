@@ -83,6 +83,10 @@ or port 6771. The `network` object adds:
 |---|---|
 | `tcp_listen`, `udp_listen` | Local address while the listener/receiver task is running; `null` offline or stopped. Not proof of external reachability. |
 | `utp_enabled`, `dht_enabled` | Configured session permissions. DHT can be enabled without its lazy node having started. |
+| `pending_dials`, `pending_dials_limit` | Used and maximum shared dial permits. Finished attempts retain permits until their owner consumes the result. |
+| `queued_contacts` | Shared contact entries awaiting attempts, including delayed retries. Not a count of immediately eligible peers. |
+| `pending_handshakes`, `pending_handshakes_limit`, `pending_handshakes_per_ip_limit` | Current shared inbound handshake usage, total cap and per-source-IP cap. |
+| `utp_connections`, `utp_connections_limit` | Current uTP multiplexer entries and cap, including connecting and closing streams. Both zero offline. |
 | `inbound_tcp`, `inbound_utp` | Separate passive observations for each peer transport, with the fields below. |
 | `lsd` | Local discovery: `enabled` permission, `active` multicast socket readiness, `announces` batches sent on at least one interface, `received` valid announcements from other sessions, and `last_error` (or `null`). Counters reset on daemon restart. Any successful interface send clears `last_error`, even if another interface failed in the same batch; those partial failures remain in the logs. |
 
@@ -101,6 +105,12 @@ shared-address IPv4 ranges; mapped IPv4 addresses are classified as IPv4.
 These observations do not contact any external service or send probes. A recent
 public handshake is evidence of connectivity at that time; a quiet swarm is not
 evidence of a closed port. See [Troubleshooting](troubleshooting.md#nobody-can-connect-to-me).
+
+Health also includes `logging`: `file_enabled`, cumulative `events_dropped`
+since daemon startup, and `write_failed` for the most recent debug-file write.
+A successful write clears `write_failed`; it does not erase the drop count.
+These observations do not make health independent of slow control or cleanup
+work. Resource counts are sampled separately, not one atomic reservation view.
 
 ## Creating torrents
 
@@ -187,6 +197,46 @@ independent tracker/DHT state for both keys but shared payload progress and
 budgets. Pending-layer hybrids use only the v1 swarm. Each tracker swarm
 receives the same torrent-wide upload/download counters, not per-swarm traffic;
 summing tracker accounting across both swarms can double-count bytes.
+
+## Runtime diagnostics in JSON
+
+`transfer` is also available during magnet acquisition and payload recovery.
+During metadata acquisition it reports tracker snapshots, active peer count,
+`pending_contacts`, and `metadata_error`: the most recent core metadata-peer
+rejection or request timeout, retained through payload promotion. This is not a
+torrent failure and is not cleared when another peer succeeds. Per-peer payload
+records and DHT lookup snapshots are not published during metadata acquisition.
+Selected-byte counts remain `null` until metadata is ready.
+
+| Transfer field | Meaning |
+|---|---|
+| `diagnostics_age_ms` | Age of the last diagnostic sample, or `null` before the first sample. Samples normally refresh every two seconds; an old sample is not evidence of current activity. |
+| `storage` | Latest storage-worker observation, or `null` before storage exists. Fields: `operation`, `operation_age_ms`, `hashes_in_flight`, `reads_in_flight`. |
+| `holepunch` | Execution-local cumulative coordination counters described below. |
+
+Storage `operation` identifies the worker's current activity or wait:
+`recovery`, `recovery_wait` (shared recheck capacity), `idle`, `write`, `hash`,
+`read`, `leaves`, `finish_file`, `sync` (completion barrier), `fingerprint`,
+`checkpoint`, `metadata_checkpoint`, `layers`, `publish` (result delivery),
+`drain`, `stopped` or `failed`. `operation_age_ms` is how long that label has
+remained unchanged, not an individual disk-I/O latency. Hash/read counts include
+submitted payload jobs waiting for blocking execution or collection; they
+exclude recovery jobs. Jobs can overlap the named worker operation. Check
+`diagnostics_age_ms` before interpreting storage activity: operation age keeps
+increasing even if the observation is stale.
+
+Holepunch counters reset for each execution:
+
+- `rendezvous_started`: introducer requests queued by this torrent.
+- `remote_errors`: BEP 55 error frames received while holepunching is enabled.
+- `rendezvous_expired`: pending introducer requests that reached their deadline.
+- `punches_queued`: punch leases created or ordinary queued contacts upgraded.
+  Duplicates do not increase this count.
+- `punches_expired`: leases that expired before dial admission, including
+  upgraded contacts restored to their original schedule.
+
+These counters are sampled diagnostics, not NAT reachability tests or transfer
+success counts. All execution diagnostics reset when the torrent restarts.
 
 ## Accounting in JSON
 

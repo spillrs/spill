@@ -241,6 +241,11 @@ async fn simultaneous_punch_reaches_an_idle_seed_through_filtered_udp_mappings()
             .any(|p| p.detail.established && p.transport == "utp") {
             assert!(leecher.changed().await);
         }
+        let diagnostics = leecher.snapshot().diagnostics.unwrap();
+        assert!(diagnostics.sampled_at.is_some());
+        assert!(diagnostics.storage.is_some());
+        assert!(diagnostics.holepunch.rendezvous_started >= 1);
+        assert!(diagnostics.holepunch.punches_queued >= 1);
         leecher.stop().await.unwrap();
         seed.stop().await.unwrap();
         a.shutdown().await.unwrap();

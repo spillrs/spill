@@ -53,6 +53,10 @@ logging. Check the agent with
 `launchctl print gui/$(id -u)/rs.spill.daemon`. The separate launchd stderr file
 needs administrator-managed retention; see [Installation](install.md#macos).
 
+`spill health --json` includes `logging.events_dropped` (cumulative since
+startup) and `logging.write_failed` (cleared after a successful file write).
+This lets a report identify missing log evidence even without the console log.
+
 `debug_log_write_failed` means the debug file could not be written.
 Check free space and permissions; transfers continue, and `debug_log_recovered`
 marks successful writing again. `debug_log_events_dropped` reports file events
@@ -123,6 +127,32 @@ A client command can't reach the control socket.
   duplicate hashes pause the torrent instead.
 - On a private tracker, `transfer.trackers[].error` shows the tracker's reason,
   for example an unregistered torrent or a client that isn't whitelisted.
+
+### Capturing a stall
+
+Before restarting, save `spill health --json` and `spill --json get ID`.
+Check `transfer.diagnostics_age_ms` first: an old sample can describe an earlier
+state. Compare two samples a few seconds apart.
+
+- Contacts but no connections: compare health's shared dial/handshake/uTP usage
+  with its limits. `queued_contacts` includes retries not yet due.
+- A magnet stuck at metadata: inspect `transfer.trackers` and `metadata_error`.
+  A rejection can remain visible after an honest peer succeeds.
+- Storage pressure or a long recovery: inspect `transfer.storage.operation`,
+  its age and submitted hash/read counts. `checkpoint` can be waiting on catalog
+  persistence; `sync` is the completion durability barrier. A label's age alone
+  does not prove that a disk operation is hung.
+- Disappearing peers: debug logs retain protocol/request-timeout close reasons.
+  Trace retains ordinary disconnects; neither reconstructs earlier packet traffic.
+- Failed web seeds: `transfer.web_seeds[].error` retains the actual failure
+  message rather than only an error category. Sources are still tried once per
+  execution; these observations do not change retry policy.
+
+Storage failure logs name the worker operation; payload read/write/finish/sync
+errors identify the zero-based metainfo file index. Logs and JSON can contain
+tracker passkeys, URLs and peer addresses: redact those before sharing a report.
+If control itself does not respond, collect console/debug logs and process state
+before stopping the daemon; health still shares the control path.
 
 ## Torrents stay queued after an internal failure
 

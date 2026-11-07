@@ -286,7 +286,7 @@ impl Peers {
                             .run(connection, receiver, &events, &context.capacity_changed)
                             .await;
                         if let Err(error) = &result {
-                            tracing::debug!(?connection, kind = ?error.kind(), "web_seed_failed");
+                            tracing::debug!(?connection, kind = ?error.kind(), %error, "web_seed_failed");
                         }
                         result
                     }

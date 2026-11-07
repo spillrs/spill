@@ -339,7 +339,7 @@ impl Progress {
                             url,
                             (
                                 Instant::now(),
-                                result.as_ref().err().map(|e| format!("{:?}", e.kind())),
+                                result.as_ref().err().map(ToString::to_string),
                             ),
                         );
                     }
@@ -352,7 +352,16 @@ impl Progress {
                         diagnostics.peers.retain(|p| p.connection != connection.0);
                     }
                 });
-                trace!(?connection,error_kind=?result.as_ref().err().map(|e|e.kind()),"peer_joined");
+                if let Err(error) = &result
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::InvalidData | io::ErrorKind::TimedOut
+                    )
+                {
+                    debug!(?connection, kind=?error.kind(), %error, "peer_closed");
+                } else {
+                    trace!(?connection,error_kind=?result.as_ref().err().map(|e|e.kind()),error=%result.as_ref().err().map(ToString::to_string).unwrap_or_default(),"peer_closed");
+                }
             }
             Event::Stalled(crate::engine::core::Stall::NoProgress) => {
                 return Ok(Some(TorrentExit::NoProgress));
@@ -448,7 +457,20 @@ impl Progress {
                     error: error.clone(),
                 })
                 .collect();
+            let mut holepunch = transfer.holepunch_status();
+            if let Some(contacts) = &discovery.contacts {
+                holepunch.punches_queued = contacts.punches_queued;
+                holepunch.punches_expired = contacts.punches_expired;
+            }
             Some(Arc::new(TorrentDiagnostics {
+                sampled_at: Some(Instant::now().into_std()),
+                storage: transfer.storage_status(),
+                holepunch,
+                metadata_error: status
+                    .borrow()
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|d| d.metadata_error.clone()),
                 utp_retransmits: self.retransmits(),
                 pending_contacts: discovery.contacts.as_ref().map_or(0, |q| q.progress()),
                 writer_free_slots: transfer.writer_free_slots(),

@@ -1012,6 +1012,7 @@ async fn stop_during_layers_and_duplicate_learned_alias_never_prepare_payload() 
             Destination::Create(root.0.clone()),
         );
         options.settings = settings();
+        options.diagnostics = true;
         let mut pending = session.admit(options).unwrap();
         while !pending.snapshot().progress.info_validated {
             assert!(pending.changed().await, "{:?}", pending.snapshot());
@@ -1019,6 +1020,20 @@ async fn stop_during_layers_and_duplicate_learned_alias_never_prepare_payload() 
         assert_eq!(pending.snapshot().identity, meta.info_hash());
         assert!(!pending.snapshot().progress.metadata_ready);
         assert!(pending.snapshot().progress.hash_total_bytes > 0);
+        loop {
+            let snapshot = pending.snapshot();
+            let diagnostics = snapshot.diagnostics.as_ref().unwrap();
+            if diagnostics
+                .trackers
+                .iter()
+                .any(|t| t.last_reply_ago_ms.is_some())
+            {
+                assert!(diagnostics.sampled_at.is_some());
+                assert!(snapshot.progress.active_peers > 0);
+                break;
+            }
+            assert!(pending.changed().await);
+        }
         assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
         assert!(
             session

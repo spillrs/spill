@@ -11,7 +11,11 @@ use spill::engine::{
         TorrentPhase, TorrentSource,
     },
 };
-use std::{collections::HashMap, io};
+use std::{
+    collections::HashMap,
+    io,
+    sync::{Arc, atomic::Ordering},
+};
 use tokio::{sync::watch, time::Instant};
 
 struct Running {
@@ -39,6 +43,7 @@ pub struct Supervisor {
     pub config: Config,
     pub db: Catalog,
     session: Session,
+    logging: Arc<crate::logging::Health>,
     dht_saved: Instant,
     failure_recording_failed: bool,
     running: HashMap<String, Running>,
@@ -48,7 +53,11 @@ fn io_error(e: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::other(e)
 }
 impl Supervisor {
-    pub async fn new(config: Config, db: Catalog) -> io::Result<Self> {
+    pub async fn new(
+        config: Config,
+        db: Catalog,
+        logging: Arc<crate::logging::Health>,
+    ) -> io::Result<Self> {
         let total = config.active_downloads + config.active_seeds;
         let limits = spill::engine::session::Limits {
             torrents: total,
@@ -79,6 +88,7 @@ impl Supervisor {
             config,
             db,
             session,
+            logging,
             dht_saved: Instant::now(),
             failure_recording_failed: false,
             running: HashMap::new(),
@@ -188,9 +198,7 @@ impl Supervisor {
                     crate::observation::phase(&snapshot, r.recheck),
                     (!matches!(
                         snapshot.progress.phase,
-                        TorrentPhase::Starting
-                            | TorrentPhase::ResolvingMetadata
-                            | TorrentPhase::PreparingDestination
+                        TorrentPhase::Starting | TorrentPhase::PreparingDestination
                     ))
                     .then_some(snapshot),
                 )
@@ -220,10 +228,12 @@ impl Supervisor {
         });
         let wanted_bytes = status
             .as_ref()
+            .filter(|s| s.progress.metadata_ready)
             .map(|s| s.progress.wanted_bytes)
             .or_else(|| selected.map(|p| p.0));
         let wanted_verified_bytes = status
             .as_ref()
+            .filter(|s| s.progress.metadata_ready)
             .map(|s| s.progress.wanted_verified_bytes)
             .or_else(|| selected.map(|p| p.1));
         let completed = status
@@ -555,6 +565,9 @@ impl Supervisor {
         json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"running":self.running.len(),"listen":self.session.local_addr(),
             "advertised_port":self.session.advertised_port(),
             "port_mapping":self.session.port_mapping(),"admission_closed":self.session.admission_closed(),
-            "network":self.session.network_status().await})
+            "network":self.session.network_status().await,
+            "logging":{"file_enabled":self.config.logging.file_enabled,
+                "events_dropped":self.logging.events_dropped.load(Ordering::Relaxed),
+                "write_failed":self.logging.write_failed.load(Ordering::Relaxed)}})
     }
 }

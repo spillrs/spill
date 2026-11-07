@@ -48,7 +48,19 @@ pub fn transfer(s: &TorrentStatus) -> Value {
         "swarm":swarm_key(d.swarm),"lookup_pending":d.lookup_pending,"next_lookup_ms":d.next_lookup_ms,"last_lookup_ago_ms":d.last_lookup_ago_ms,
         "queried":d.queried,"announced":d.announced,"peers_returned":d.peers_returned,"error":d.error,
     })).collect();
+    let storage = s.diagnostics.as_ref().and_then(|d| d.storage).map(|storage| json!({
+        "operation":storage.operation,"operation_age_ms":storage.since.elapsed().as_millis(),
+        "hashes_in_flight":storage.hashes_in_flight,"reads_in_flight":storage.reads_in_flight,
+    }));
+    let holepunch = s.diagnostics.as_ref().map(|d| {
+        let h = d.holepunch;
+        json!({"rendezvous_started":h.rendezvous_started,"remote_errors":h.remote_errors,
+            "rendezvous_expired":h.rendezvous_expired,"punches_queued":h.punches_queued,"punches_expired":h.punches_expired})
+    });
     json!({"ready":s.progress.ready,"completed":s.progress.completed,
+        "diagnostics_age_ms":s.diagnostics.as_ref().and_then(|d|d.sampled_at).map(|at|at.elapsed().as_millis()),
+        "storage":storage,"holepunch":holepunch,
+        "metadata_error":s.diagnostics.as_ref().and_then(|d|d.metadata_error.as_ref()),
         "active_peers":s.progress.active_peers,"downloaded_bytes":s.progress.processed_payload_bytes,
         "uploaded_bytes":s.progress.written_payload_bytes,
         "hash_failed_bytes":s.progress.hash_failed_bytes,"hash_failed_pieces":s.progress.hash_failed_pieces,

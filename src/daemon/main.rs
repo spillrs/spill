@@ -151,7 +151,7 @@ async fn serve(path: Option<&std::path::Path>, logging: &mut logging::Logging) -
     )?;
     let db = catalog::Catalog::open(&config.state_dir.join("catalog.sqlite"))
         .map_err(io::Error::other)?;
-    let supervisor = supervisor::Supervisor::new(config.clone(), db).await?;
+    let supervisor = supervisor::Supervisor::new(config.clone(), db, logging.health()).await?;
     let mut stopping = supervisor.shutdown.subscribe();
     let control = control::Control(Arc::new(Mutex::new(supervisor)));
     let web = if let Some(address) = config.web_listen {

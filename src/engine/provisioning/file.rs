@@ -116,7 +116,9 @@ impl FileStorage {
     ) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         for file in files {
-            let m = file.metadata()?;
+            let m = file.metadata().map_err(|error| {
+                io::Error::new(error.kind(), format!("fingerprint payload file: {error}"))
+            })?;
             out.extend_from_slice(&m.len().to_le_bytes());
             out.extend_from_slice(&m.mtime().to_le_bytes());
             out.extend_from_slice(&m.mtime_nsec().to_le_bytes());
@@ -174,7 +176,8 @@ impl FileStorage {
                     return Err(invalid("nonzero padding"));
                 }
             }
-            for e in &self.files.entries[span] {
+            for index in span {
+                let e = &self.files.entries[index];
                 let a = start.max(e.offset);
                 let b = end.min(e.offset + e.length);
                 if a < b
@@ -183,7 +186,8 @@ impl FileStorage {
                     file.write_all_at(
                         &data[(a - start) as usize..(b - start) as usize],
                         a - e.offset,
-                    )?;
+                    )
+                    .map_err(|error| file_error(error, "write", index))?;
                 }
             }
         }
@@ -200,7 +204,8 @@ impl FileStorage {
         let start = self.range(piece, offset, length)?;
         let end = start + length as u64;
         let mut bytes = vec![0; length];
-        for e in &self.files.entries[self.files.span(start, end)] {
+        for index in self.files.span(start, end) {
+            let e = &self.files.entries[index];
             let a = start.max(e.offset);
             let b = end.min(e.offset + e.length);
             if a < b
@@ -209,7 +214,8 @@ impl FileStorage {
                 file.read_exact_at(
                     &mut bytes[(a - start) as usize..(b - start) as usize],
                     a - e.offset,
-                )?;
+                )
+                .map_err(|error| file_error(error, "read", index))?;
             }
         }
         Ok(bytes)
@@ -224,7 +230,9 @@ impl FileStorage {
         if let Some(paths) = &self.files.paths
             && let Some(root) = &self.files.payload_root
         {
-            paths.finish_at(root, file)?;
+            paths
+                .finish_at(root, file)
+                .map_err(|error| file_error(error, "finish", file as usize))?;
         }
         Ok(())
     }
@@ -232,9 +240,10 @@ impl FileStorage {
     /// deliberately do not sync payload data; read-only adopted seeds need no sync.
     pub(in crate::engine) fn sync_data(&self) -> io::Result<()> {
         if !self.read_only {
-            for entry in &self.files.entries {
+            for (index, entry) in self.files.entries.iter().enumerate() {
                 if let Some(file) = &entry.file {
-                    file.sync_data()?;
+                    file.sync_data()
+                        .map_err(|error| file_error(error, "sync", index))?;
                 }
             }
         }
@@ -272,6 +281,12 @@ impl FileStorage {
             .filter_map(|(i, &b)| b.then_some(i as u32))
             .collect())
     }
+}
+fn file_error(error: io::Error, operation: &str, index: usize) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("{operation} payload file {index}: {error}"),
+    )
 }
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)

@@ -161,6 +161,8 @@ impl crate::engine::torrent::Network {
         };
         tokio::pin!(lookup);
         let deadline = Instant::now() + crate::engine::profile::TOTAL_TIMEOUT;
+        let mut report = tokio::time::interval(Duration::from_secs(2));
+        report.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut maintenance = tokio::time::interval(Duration::from_millis(250));
         maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let result=async {
@@ -218,6 +220,15 @@ impl crate::engine::torrent::Network {
                     }
                     event=shell.next()=>{
                         event?;
+                        if options.diagnostics && let Some(error) = shell.metadata_error() {
+                            status.send_if_modified(|s| {
+                                let diagnostics = s.diagnostics.as_mut().expect("enabled diagnostics");
+                                if diagnostics.metadata_error.as_deref() == Some(error) { return false; }
+                                tracing::debug!(%error, "metadata_peer_rejected");
+                                Arc::make_mut(diagnostics).metadata_error = Some(error.to_owned());
+                                true
+                            });
+                        }
                         let resolved = shell.take_metadata();
                         if let Some((hash_bytes, hash_total_bytes)) = shell.take_metadata_progress() {
                             status.send_if_modified(|s| {
@@ -235,6 +246,18 @@ impl crate::engine::torrent::Network {
                         }
                     }
                     _=maintenance.tick()=>{},
+                    _=report.tick()=>{
+                        progress.publish_peers(status);
+                        if options.diagnostics {
+                            let trackers = managers.iter().flat_map(|(_, a)| a.snapshots()).collect();
+                            status.send_modify(|s| {
+                                let diagnostics = Arc::make_mut(s.diagnostics.as_mut().expect("enabled diagnostics"));
+                                diagnostics.sampled_at = Some(Instant::now().into_std());
+                                diagnostics.pending_contacts = contacts.progress();
+                                diagnostics.trackers = trackers;
+                            });
+                        }
+                    },
                 }
             }
         }.await;

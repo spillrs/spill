@@ -123,6 +123,15 @@ impl Shell {
             None,
         )
     }
+    pub(in crate::engine) fn metadata_error(&self) -> Option<&str> {
+        self.core.metadata_error()
+    }
+    pub(in crate::engine) fn storage_status(&self) -> Option<super::telemetry::StorageStatus> {
+        self.writer.as_ref().map(Writer::snapshot)
+    }
+    pub(in crate::engine) fn holepunch_status(&self) -> super::telemetry::HolepunchStatus {
+        self.core.holepunch_status()
+    }
     pub(in crate::engine) fn take_metadata_progress(&mut self) -> Option<(u64, u64)> {
         self.metadata_progress.take()
     }

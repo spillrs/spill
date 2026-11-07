@@ -7,7 +7,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
     thread::JoinHandle,
@@ -37,7 +37,14 @@ impl Default for Config {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct Health {
+    pub(crate) events_dropped: AtomicU64,
+    pub(crate) write_failed: AtomicBool,
+}
+
 pub(crate) struct Logging {
+    health: Arc<Health>,
     startup: Option<tracing::subscriber::DefaultGuard>,
     // Retain state ownership until queued writes have drained.
     _state_lock: Option<File>,
@@ -47,10 +54,14 @@ impl Logging {
     pub(crate) fn init() -> Self {
         let startup = tracing::subscriber::set_default(Registry::default().with(console()));
         Self {
+            health: Arc::default(),
             startup: Some(startup),
             _state_lock: None,
             worker: None,
         }
+    }
+    pub(crate) fn health(&self) -> Arc<Health> {
+        self.health.clone()
     }
     pub(crate) fn configure(
         &mut self,
@@ -80,10 +91,10 @@ impl Logging {
                     ))
                 })?;
             let (sender, receiver) = mpsc::sync_channel(1024);
-            let dropped = Arc::new(AtomicU64::new(0));
+            let health = self.health.clone();
             let writer = Queue {
                 sender: sender.clone(),
-                dropped: dropped.clone(),
+                health: health.clone(),
             };
             let worker = std::thread::Builder::new()
                 .name("spill-logs".into())
@@ -91,7 +102,7 @@ impl Logging {
                     // Never send writer failures back through the failing file output.
                     tracing::subscriber::with_default(
                         Registry::default().with(console_layer()),
-                        || run_writer(file, receiver, dropped),
+                        || run_writer(file, receiver, health),
                     );
                 })?;
             self.worker = Some((sender, worker));
@@ -196,7 +207,7 @@ enum Message {
 #[derive(Clone)]
 struct Queue {
     sender: SyncSender<Message>,
-    dropped: Arc<AtomicU64>,
+    health: Arc<Health>,
 }
 struct EventWriter {
     queue: Queue,
@@ -238,13 +249,17 @@ impl Drop for EventWriter {
             .try_send(Message::Event(std::mem::take(&mut self.bytes)))
             .is_err()
         {
-            self.queue.dropped.fetch_add(1, Ordering::Relaxed);
+            self.queue
+                .health
+                .events_dropped
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 }
-fn run_writer(mut file: File, receiver: mpsc::Receiver<Message>, dropped: Arc<AtomicU64>) {
+fn run_writer(mut file: File, receiver: mpsc::Receiver<Message>, health: Arc<Health>) {
     let mut failed = false;
     let mut reported = Instant::now();
+    let mut reported_drops = 0;
     loop {
         let message = receiver.recv_timeout(Duration::from_secs(60));
         let stopping = matches!(
@@ -252,10 +267,12 @@ fn run_writer(mut file: File, receiver: mpsc::Receiver<Message>, dropped: Arc<At
             Ok(Message::Stop) | Err(mpsc::RecvTimeoutError::Disconnected)
         );
         if stopping || reported.elapsed() >= Duration::from_secs(60) {
-            let count = dropped.swap(0, Ordering::Relaxed);
+            let total = health.events_dropped.load(Ordering::Relaxed);
+            let count = total - reported_drops;
             if count != 0 {
                 tracing::warn!(count, "debug_log_events_dropped");
             }
+            reported_drops = total;
             reported = Instant::now();
         }
         match message {
@@ -265,12 +282,14 @@ fn run_writer(mut file: File, receiver: mpsc::Receiver<Message>, dropped: Arc<At
                         tracing::info!("debug_log_recovered");
                     }
                     failed = false;
+                    health.write_failed.store(false, Ordering::Relaxed);
                 }
                 Err(error) => {
                     if !failed {
                         tracing::error!(%error, "debug_log_write_failed");
                     }
                     failed = true;
+                    health.write_failed.store(true, Ordering::Relaxed);
                 }
             },
             _ if stopping => break,

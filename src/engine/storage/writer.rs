@@ -4,7 +4,7 @@ use crate::engine::core::file_progress::FileProgress;
 
 use super::cache::{self, CacheView};
 use crate::engine::profile::{AdmissionError, MAX_UPLOAD_READS, Profile};
-use crate::engine::torrent::Persistence;
+use crate::engine::torrent::{Persistence, telemetry::StorageStatus};
 use crate::engine::{
     core::{ConnectionId, SharedBlock, live},
     provisioning::FileStorage,
@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     io,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -135,6 +135,7 @@ pub(in crate::engine) struct Writer {
     cancel_recovery: Arc<AtomicBool>,
     cancel_changed: Arc<Notify>,
     capacity_changed: Arc<Notify>,
+    observation: Arc<StdMutex<StorageStatus>>,
 }
 impl Writer {
     pub(in crate::engine) fn spawn(
@@ -168,12 +169,19 @@ impl Writer {
             .into();
         let jobs = Arc::new(Mutex::new(Jobs::default()));
         let worker_jobs = jobs.clone();
+        let observation = Arc::new(StdMutex::new(StorageStatus {
+            operation: "recovery",
+            since: tokio::time::Instant::now().into_std(),
+            hashes_in_flight: 0,
+            reads_in_flight: 0,
+        }));
+        let observed = observation.clone();
         let task = tokio::spawn(async move {
             // The handle retains these jobs if this worker unwinds.
             let mut jobs = worker_jobs.lock().await;
             let mut result: io::Result<()> = async {
                 let Some((mut verified, mut dirty)) = recover(
-                    &storage, &meta, recheck, initial_resume, &canceled, &rechecks, &mut jobs,
+                    &storage, &meta, if recheck { None } else { initial_resume }, &canceled, &rechecks, &mut jobs, &observed,
                 ).await? else {
                     // Do not checkpoint a partial scan: unchecked candidates must
                     // remain subject to the previous fingerprint on the next run.
@@ -185,6 +193,7 @@ impl Writer {
                 for index in files.complete() {
                     if canceled.load(Ordering::Relaxed) { return Ok(()); }
                     let storage = storage.clone();
+                    operation(&observed, "finish_file");
                     crate::engine::run_blocking(inline, move || storage.finish_file(index)).await?;
                 }
                 let _ = ready_tx.send(Ok(verified.clone()));
@@ -195,6 +204,12 @@ impl Writer {
                 let mut pending_read = None;
                 let mut pending_command = None;
                 loop {
+                    {
+                        let mut status = observed.lock().unwrap();
+                        status.hashes_in_flight = hashes.len();
+                        status.reads_in_flight = reads.len();
+                    }
+                    operation(&observed, if layers.is_some() { "layers" } else if !hashes.is_empty() { "hash" } else if !reads.is_empty() { "read" } else { "idle" });
                     if closing && hashes.is_empty() && reads.is_empty() { break; }
                     let command = tokio::select! {
                         biased;
@@ -203,9 +218,10 @@ impl Writer {
                             if let Some(complete) = result.map_err(io::Error::other)?? {
                                 let callback = resolved.clone();
                                 let published = complete.clone();
+                                operation(&observed, "metadata_checkpoint");
                                 crate::engine::run_blocking(inline, move || callback(published)).await?;
                                 meta = complete;
-                                save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?;
+                                save(&storage, &meta, &verified, &checkpoint, fingerprint, inline, &observed).await?;
                                 dirty = false;
                             }
                             continue;
@@ -218,7 +234,7 @@ impl Writer {
                             Command::ReadDone(result.expect("read job").map_err(io::Error::other)?)
                         },
                         _ = timer.tick() => {
-                            if dirty { save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?; dirty = false; }
+                            if dirty { save(&storage, &meta, &verified, &checkpoint, fingerprint, inline, &observed).await?; dirty = false; }
                             continue;
                         }
                         () = async {}, if pending_hash.is_some() && hashes.len() < 2 => {
@@ -237,6 +253,14 @@ impl Writer {
                         },
                     };
                     live.prune();
+                    operation(&observed, match &command {
+                        Command::Write(..) => "write",
+                        Command::Hash(..) => "hash",
+                        Command::Hashed(..) => "finish_file",
+                        Command::Read(..) | Command::ReadDone(..) => "read",
+                        Command::Leaves(..) => "leaves",
+                        Command::Flush => "sync",
+                    });
                     let output = match command {
                         Command::Write(index, offset, epoch, bytes) => {
                             let mut blocks = vec![(index, offset, epoch, bytes)];
@@ -380,23 +404,39 @@ impl Writer {
                             // only after payload data is durable and resume is saved.
                             let destination = storage.clone();
                             crate::engine::run_blocking(inline, move || destination.sync_data()).await?;
-                            save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?;
+                            save(&storage, &meta, &verified, &checkpoint, fingerprint, inline, &observed).await?;
                             dirty = false;
                             start_layers(&storage, &meta, &verified, layers, &rechecks, &canceled, &cancel_notify);
                             Some(Output::Flushed)
                         }
                     };
                     if let Some(output) = output {
+                        operation(&observed, "publish");
                         let _ = results.send(output).await;
                     }
                 }
-                save(&storage, &meta, &verified, &checkpoint, fingerprint, inline).await?;
+                save(&storage, &meta, &verified, &checkpoint, fingerprint, inline, &observed).await?;
                 Ok(())
             }
             .await;
+            if let Err(error) = &result {
+                let operation = observed.lock().unwrap().operation;
+                tracing::debug!(operation, %error, "storage_failed");
+            }
             canceled.store(true, Ordering::Relaxed);
             cancel_notify.notify_one();
-            result = result.and(jobs.drain().await);
+            operation(&observed, "drain");
+            let drained = jobs.drain().await;
+            if let Err(error) = &drained {
+                tracing::debug!(operation = "drain", %error, "storage_failed");
+            }
+            result = result.and(drained);
+            {
+                let mut status = observed.lock().unwrap();
+                status.hashes_in_flight = 0;
+                status.reads_in_flight = 0;
+            }
+            operation(&observed, if result.is_ok() { "stopped" } else { "failed" });
             changed.notify_one();
             match result {
                 Ok(()) => Ok(()),
@@ -421,7 +461,11 @@ impl Writer {
             cancel_recovery,
             cancel_changed,
             capacity_changed,
+            observation,
         }
+    }
+    pub(in crate::engine) fn snapshot(&self) -> StorageStatus {
+        *self.observation.lock().unwrap()
     }
     pub(in crate::engine) async fn ready(&mut self) -> io::Result<Vec<u8>> {
         match self.ready.as_mut().expect("one startup").await {
@@ -542,6 +586,13 @@ impl Writer {
         self.error
             .as_ref()
             .map_or(Ok(()), |e| Err(io::Error::new(e.kind(), e.clone())))
+    }
+}
+fn operation(observation: &StdMutex<StorageStatus>, name: &'static str) {
+    let mut status = observation.lock().unwrap();
+    if status.operation != name {
+        status.operation = name;
+        status.since = tokio::time::Instant::now().into_std();
     }
 }
 fn has(bits: &[u8], index: u32) -> bool {
@@ -672,11 +723,14 @@ async fn save(
     checkpoint: &Arc<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync>,
     job: &mut Option<JoinHandle<io::Result<Vec<u8>>>>,
     callback: &mut Option<JoinHandle<io::Result<()>>>,
+    observation: &StdMutex<StorageStatus>,
 ) -> io::Result<()> {
+    operation(observation, "fingerprint");
     let storage = storage.clone();
     let fingerprint = crate::engine::run_blocking(job, move || storage.fingerprint()).await?;
     let resume = resume::encode(meta, verified, &fingerprint)?;
     let checkpoint = checkpoint.clone();
+    operation(observation, "checkpoint");
     crate::engine::run_blocking(callback, move || checkpoint(resume)).await?;
     tracing::trace!("resume_saved");
     Ok(())
@@ -684,11 +738,11 @@ async fn save(
 async fn recover(
     storage: &Arc<FileStorage>,
     meta: &OwnedMetainfo,
-    recheck: bool,
     initial_resume: Option<Vec<u8>>,
     canceled: &Arc<AtomicBool>,
     rechecks: &Arc<Semaphore>,
     jobs: &mut Jobs,
+    observation: &StdMutex<StorageStatus>,
 ) -> io::Result<Option<(Vec<u8>, bool)>> {
     let Jobs {
         changed: changed_job,
@@ -699,13 +753,11 @@ async fn recover(
         return Ok(None);
     }
     let count = meta.layout().piece_count();
-    let saved = if recheck { None } else { initial_resume }.and_then(|blob| {
-        match resume::decode(meta, &blob) {
-            Ok(record) => Some(record),
-            Err(error) => {
-                tracing::debug!(%error, "resume_rejected");
-                None
-            }
+    let saved = initial_resume.and_then(|blob| match resume::decode(meta, &blob) {
+        Ok(record) => Some(record),
+        Err(error) => {
+            tracing::debug!(%error, "resume_rejected");
+            None
         }
     });
     let (mut verified, candidates) = if let Some(saved) = saved {
@@ -733,6 +785,7 @@ async fn recover(
                     return Ok(None);
                 }
                 let Some(index) = pending.next() else { break };
+                operation(observation, "recovery_wait");
                 let permit = rechecks
                     .clone()
                     .acquire_owned()
@@ -744,6 +797,7 @@ async fn recover(
                 let storage = storage.clone();
                 let meta = meta.clone();
                 let canceled = canceled.clone();
+                operation(observation, "recovery");
                 jobs.spawn_blocking(move || {
                     let _permit = permit;
                     let passed = fold_piece(

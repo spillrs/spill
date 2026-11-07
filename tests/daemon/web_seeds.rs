@@ -41,8 +41,19 @@ async fn corrupt_piece_is_retried_from_another_web_seed() {
                 .unwrap()
                 .iter()
                 .find(|p| p["transport"] == "http")
+                && !row["transfer"]["web_seeds"].as_array().unwrap().is_empty()
             {
                 assert_eq!(peer.get("encryption"), Some(&serde_json::Value::Null));
+                assert!(
+                    row["transfer"]["web_seeds"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|seed| seed["error"].as_str().is_some_and(
+                            |error| error.contains("single-source piece hash mismatch")
+                        )),
+                    "{row}"
+                );
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

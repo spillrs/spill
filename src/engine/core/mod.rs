@@ -228,6 +228,7 @@ pub(in crate::engine) struct Torrent {
     utp_enabled: bool,
     families: [bool; 2],
     punches: Vec<holepunch::Pending>,
+    holepunch_status: crate::engine::torrent::telemetry::HolepunchStatus,
     duplex: Duplex,
     remotes: Vec<Remote>,
     remote_slots: HashMap<ConnectionId, usize>,
@@ -323,6 +324,7 @@ impl Torrent {
             utp_enabled: false,
             families: [false; 2],
             punches: Vec::new(),
+            holepunch_status: Default::default(),
             duplex: Duplex {
                 completion_reported: false,
                 cursor: 0,

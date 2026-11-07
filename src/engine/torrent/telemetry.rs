@@ -1,6 +1,33 @@
 //! Bounded latest observations. Rates/totals belong to the current owner, not
 //! durable torrent history. No observer drives network work.
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Instant};
+
+/// Latest storage-worker activity, not a timeout or proof of an I/O hang.
+#[derive(Clone, Copy, Debug)]
+pub struct StorageStatus {
+    /// Worker stage, including blocking-pool queue and persistence waits.
+    pub operation: &'static str,
+    /// Start of the unchanged stage label, not an individual job's start time.
+    pub since: Instant,
+    /// Submitted payload hash jobs, including finished but uncollected results.
+    pub hashes_in_flight: usize,
+    /// Submitted payload block/leaf reads; excludes startup recovery jobs.
+    pub reads_in_flight: usize,
+}
+
+/// Cumulative coordination outcomes for one torrent execution.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HolepunchStatus {
+    /// Queued rendezvous messages, not confirmed wire sends.
+    pub rendezvous_started: u64,
+    /// Parsed BEP 55 error frames, including unsolicited errors.
+    pub remote_errors: u64,
+    pub rendezvous_expired: u64,
+    /// Created/upgraded dial leases, excluding duplicates.
+    pub punches_queued: u64,
+    /// Leases expired before admission, including restored ordinary contacts.
+    pub punches_expired: u64,
+}
 
 #[derive(Clone, Debug)]
 pub struct PeerStatus {

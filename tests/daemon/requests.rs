@@ -266,6 +266,12 @@ async fn endgame_requests_progress_while_other_duplicates_are_stalled() {
                 let slots = spill::engine::profile::Profile::DEFAULT.write_queue_bytes
                     / spill::engine::profile::BLOCK_LEN as usize;
                 assert!(free <= slots as u64, "{row}");
+                assert!(row["transfer"]["diagnostics_age_ms"].is_u64());
+                let storage = &row["transfer"]["storage"];
+                assert!(storage["operation"].is_string());
+                assert!(storage["operation_age_ms"].is_u64());
+                assert!(storage["hashes_in_flight"].as_u64().unwrap() <= 2);
+                assert!(storage["reads_in_flight"].as_u64().unwrap() <= 4);
                 assert_eq!(row["transfer"]["upload_reads_in_flight"], 0);
                 assert!(
                     peers

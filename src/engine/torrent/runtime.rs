@@ -355,10 +355,22 @@ pub(super) async fn run(
     } = resources;
     let writer = writer_slot.as_mut().expect("startup writer");
     status.send_modify(|s| s.progress.phase = TorrentPhase::Recovering);
-    let result = tokio::select! {
-        biased;
-        _ = stop.changed() => Ok(None),
-        result = writer.ready() => result.map(Some),
+    let mut report = tokio::time::interval(Duration::from_secs(2));
+    report.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let result = loop {
+        tokio::select! {
+            biased;
+            _ = stop.changed() => break Ok(None),
+            result = writer.ready() => break result.map(Some),
+            _ = report.tick() => status.send_modify(|s| {
+                if let Some(diagnostics) = &mut s.diagnostics {
+                    let diagnostics = Arc::make_mut(diagnostics);
+                    diagnostics.sampled_at = Some(Instant::now().into_std());
+                    diagnostics.storage = Some(writer.snapshot());
+                    diagnostics.writer_free_slots = writer.capacity();
+                }
+            }),
+        }
     };
     let verified = match result {
         Ok(Some(verified)) => verified,

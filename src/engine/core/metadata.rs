@@ -31,6 +31,7 @@ pub(super) struct Fetch {
     attached: HashMap<ConnectionId, PeerAttachment>,
     dialing: Vec<SocketAddr>,
     stalled: bool,
+    error: Option<String>,
 }
 impl Torrent {
     pub(in crate::engine) fn magnet(
@@ -49,8 +50,14 @@ impl Torrent {
             attached: HashMap::new(),
             dialing: Vec::new(),
             stalled: false,
+            error: None,
         });
         Ok(torrent)
+    }
+    pub(in crate::engine) fn metadata_error(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|fetch| fetch.error.as_deref())
     }
     pub(in crate::engine) fn promote(
         &mut self,
@@ -161,11 +168,19 @@ impl Fetch {
                 let v2 = identity
                     .v2()
                     .is_some_and(|v2| v2.wire_key() == handshake.info_hash);
-                if attached.is_none()
-                    || !identity.wire_keys().any(|key| key == handshake.info_hash)
-                    || handshake.reserved[5] & 0x10 == 0
-                    || self.peers.len() >= profile.peers.min(3)
-                {
+                let rejection = if attached.is_none() {
+                    Some("metadata peer was not admitted")
+                } else if !identity.wire_keys().any(|key| key == handshake.info_hash) {
+                    Some("metadata handshake info hash mismatch")
+                } else if handshake.reserved[5] & 0x10 == 0 {
+                    Some("metadata peer does not support extensions")
+                } else if self.peers.len() >= profile.peers.min(3) {
+                    Some("metadata peer limit reached")
+                } else {
+                    None
+                };
+                if let Some(reason) = rejection {
+                    self.error = Some(reason.into());
                     actions.push(Action::Disconnect { id });
                 } else {
                     let mut peer = Peer {
@@ -239,7 +254,8 @@ impl Fetch {
                         {
                             return Err(error);
                         }
-                        Err(_) => {
+                        Err(error) => {
+                            self.error = Some(error.to_string());
                             self.peers.remove(&id);
                             actions.push(Action::Disconnect { id });
                         }
@@ -270,6 +286,7 @@ impl Fetch {
         let cap = (crate::engine::profile::MAX_META - 8) as u32;
         self.peers.retain(|&id, peer| {
             if now >= peer.deadline && (self.info.is_none() || peer.hashes.is_some()) {
+                self.error = Some("metadata peer request timeout".into());
                 actions.push(Action::Disconnect { id });
                 false
             } else {

@@ -31,6 +31,11 @@ fn allowance(window: &mut Option<(Instant, u8)>, now: Instant) -> bool {
     true
 }
 impl Torrent {
+    pub(in crate::engine) fn holepunch_status(
+        &self,
+    ) -> crate::engine::torrent::telemetry::HolepunchStatus {
+        self.holepunch_status
+    }
     pub(super) fn holepunch_enabled(&self) -> bool {
         self.pex_enabled && self.utp_enabled && self.metadata.is_none()
     }
@@ -64,6 +69,7 @@ impl Torrent {
                     && p.extensions.holepunch.outbound.len() < QUEUED
             });
         if let Some(relay) = relay {
+            self.holepunch_status.rendezvous_started += 1;
             self.punches.push(Pending {
                 target,
                 relay: self.remotes[relay].connection,
@@ -87,6 +93,11 @@ impl Torrent {
             }
             return;
         }
+        self.holepunch_status.rendezvous_expired += self
+            .punches
+            .iter()
+            .filter(|p| p.deadline <= self.now)
+            .count() as u64;
         self.punches.retain(|pending| {
             pending.deadline > self.now
                 && self.remotes.iter().any(|p| {
@@ -125,6 +136,7 @@ impl Torrent {
         let relay = self.remotes[peer].connection;
         match message.kind {
             Kind::Error(_) => {
+                self.holepunch_status.remote_errors += 1;
                 self.punches
                     .retain(|p| p.relay != relay || p.target != target);
             }

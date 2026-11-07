@@ -90,6 +90,7 @@ engine never installs a subscriber; its application owns tracing configuration.
 | `console_filter` | `"info"` | Tracing filter for stderr: lifecycle, torrent failures/recovery and subsystem warnings by default. |
 | `file_filter` | `"warn,spill=debug"` | Tracing filter for the debug file: spill debug events and dependency warnings. |
 | `file_enabled` | `true` | Set `false` to create no debug-file output or writer thread. Existing logs are not deleted. |
+| `peer_endpoints` | `false` | Include peer IP addresses and ports in dial, admission and holepunch trace events in either output. Requires a matching `trace` filter; does not increase verbosity itself. |
 
 Filters accept levels (`off`, `error`, `warn`, `info`, `debug`, `trace`) and
 module directives, for example `warn,spill::engine::storage=trace`. Invalid
@@ -130,9 +131,12 @@ schedules and current errors remain available through the status API.
 Use `spill --json get ID` and `spill --json health` for current progress and
 network diagnostics rather than a logging heartbeat.
 
-Torrent events carry a torrent ID. Peer endpoints remain off by default, and
-payloads and tracker URLs/credentials are not intentionally logged. Logs can
-still contain local paths and error text: review them before sharing.
+Torrent events carry a torrent ID. Peer endpoints remain off by default; enable
+`peer_endpoints` to correlate connections with remote addresses during debugging.
+This associates addresses with torrent IDs in retained logs. It does not change
+peer addresses in live JSON diagnostics. Payloads and tracker URLs/credentials
+are not intentionally logged. Logs can still contain local paths and error text:
+review them before sharing.
 See [Troubleshooting](troubleshooting.md#where-are-the-logs) for systemd and macOS.
 
 ## Torrent defaults: `[defaults]`

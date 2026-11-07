@@ -39,6 +39,23 @@ select a module at `trace` when those details are needed, for example
 logs; use `spill --json get ID` for current state. See
 [Logging configuration](configuration.md#logging-logging) for filters.
 
+For peer connection history including IP addresses and ports, set this in the
+config and restart the daemon:
+
+```toml
+[logging]
+file_filter = "warn,spill::engine::torrent=trace,spill::engine::peer_io=trace"
+peer_endpoints = true
+```
+
+Merge these keys into an existing `[logging]` table rather than adding a second
+one. Endpoint logging applies to both console and file trace events. Keep a
+bounded retention policy and review logs before sharing: addresses are linked
+to torrent IDs. Disable it and restart when the investigation is finished.
+Trace events are not a wire capture or a history of diagnostic samples. For an
+intermittent stall, also save `spill --json health` and `spill --json get ID`
+while it is happening; peer details disappear after disconnection.
+
 Torrent failures are also kept in the catalog: `spill get ID` shows
 `last_error` and, when retrying, `retry_at`. Tracker failures appear separately
 in `transfer.trackers[].error`; tracker warnings appear in `tracker_message`

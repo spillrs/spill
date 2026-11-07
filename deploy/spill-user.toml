@@ -17,6 +17,7 @@ active_seeds = 16
 console_filter = "info"
 file_filter = "warn,spill=debug"
 file_enabled = true
+peer_endpoints = false
 
 [defaults]
 download_limit = 0 # bytes/s; zero = unlimited

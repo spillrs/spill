@@ -511,6 +511,7 @@ impl Supervisor {
         options.profile = self.config.profile();
         options.settings = row.settings.transfer_settings();
         options.diagnostics = true;
+        options.log_peer_endpoints = self.config.logging.peer_endpoints;
         options.run = if row.intent == Intent::Recheck {
             RunPolicy::Recheck
         } else {

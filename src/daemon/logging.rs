@@ -26,6 +26,7 @@ pub(crate) struct Config {
     pub(crate) console_filter: String,
     pub(crate) file_filter: String,
     pub(crate) file_enabled: bool,
+    pub(crate) peer_endpoints: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -33,6 +34,7 @@ impl Default for Config {
             console_filter: "info".into(),
             file_filter: "warn,spill=debug".into(),
             file_enabled: true,
+            peer_endpoints: false,
         }
     }
 }

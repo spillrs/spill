@@ -239,7 +239,7 @@ async fn created_directory_is_reproducible_and_transfers_across_file_boundaries(
 }
 
 #[tokio::test]
-async fn empty_and_non_utf8_sources_can_be_adopted_and_links_keep_their_names() {
+async fn empty_sources_use_normalized_names_and_links_keep_their_names() {
     let root = Temp::new();
     let name = OsString::from_vec(b"empty-\xff".to_vec());
     let source = root.0.join(&name);
@@ -253,6 +253,11 @@ async fn empty_and_non_utf8_sources_can_be_adopted_and_links_keep_their_names() 
     assert_eq!(created.piece_count, 0);
     let meta = Profile::default().parse_owned(&created.metainfo).unwrap();
     assert_eq!(meta.name(), b"empty-\xff");
+    let suffix: String = Sha1::digest(b"empty-\xff")[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    std::fs::rename(&source, root.0.join(format!("empty-_~{suffix}"))).unwrap();
     let session = Session::offline(Limits::default());
     let mut torrent = TorrentOptions::new(
         TorrentSource::Metainfo(meta),

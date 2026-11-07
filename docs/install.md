@@ -222,9 +222,8 @@ spill checks the catalog schema version and automatically applies pending
 migrations before loading torrents. Schema changes and their version updates
 commit together; a failed migration rolls back and stops startup.
 
-Schema version 1 is the supported baseline and the current version. Existing
-version 1 catalogs need no changes. Unversioned nonempty catalogs and catalogs
-newer than the binary supports are rejected. If startup reports
+Schema version 1 is the supported baseline. Unversioned nonempty catalogs and
+catalogs newer than the binary supports are rejected. If startup reports
 `unsupported catalog version`, use a compatible spill binary. Do not reset the
 version manually. Alternatively, use a fresh `state_dir` and re-add torrents:
 complete files are verified and seeded without downloading again, but partial

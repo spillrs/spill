@@ -26,11 +26,11 @@ pub(in crate::engine) struct FileStorage {
 }
 
 /// Catalog record of payload paths and whether they were adopted read-only.
-/// Paths are bytes so non-UTF-8 torrent names round-trip without loss.
+/// Paths contain the normalized UTF-8 names used on disk.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DestinationBinding {
     read_only: bool,
-    paths: Vec<Vec<u8>>,
+    paths: Vec<String>,
 }
 impl DestinationBinding {
     pub(in crate::engine) fn new(meta: &OwnedMetainfo, read_only: bool) -> io::Result<Self> {
@@ -41,7 +41,8 @@ impl DestinationBinding {
                 .paths
                 .into_iter()
                 .zip(meta.layout().files())
-                .filter_map(|(path, entry)| (entry.kind() == FileKind::Data).then_some(path))
+                .filter(|(_, entry)| entry.kind() == FileKind::Data)
+                .map(|(path, _)| String::from_utf8(path).expect("normalized payload path"))
                 .collect(),
         })
     }
@@ -49,7 +50,12 @@ impl DestinationBinding {
         self.read_only
     }
     fn payload_paths(&self) -> io::Result<PayloadPaths> {
-        PayloadPaths::validated(self.paths.clone())
+        PayloadPaths::validated(
+            self.paths
+                .iter()
+                .map(|path| path.as_bytes().to_vec())
+                .collect(),
+        )
     }
 }
 

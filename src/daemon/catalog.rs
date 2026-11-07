@@ -1,6 +1,9 @@
 //! Single-user catalog with transactional startup migrations.
-use crate::settings::Settings;
-use rusqlite::{Connection, OptionalExtension, params};
+use crate::{encoding, settings::Settings};
+use rusqlite::{
+    Connection, OptionalExtension, ToSql, params,
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+};
 use serde::{Deserialize, Serialize};
 use spill::{
     engine::{profile::AdmissionError, provisioning::DestinationBinding},
@@ -47,7 +50,7 @@ pub struct Checkpoint {
     pub complete: bool,
     pub completed_announces: Vec<([u8; 20], bool)>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Intent {
     Run,
@@ -55,6 +58,32 @@ pub enum Intent {
     Recheck,
     RemoveKeep,
     RemoveDelete,
+}
+impl ToSql for Intent {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(match self {
+            Self::Run => "run",
+            Self::Paused => "paused",
+            Self::Recheck => "recheck",
+            Self::RemoveKeep => "remove_keep",
+            Self::RemoveDelete => "remove_delete",
+        }
+        .into())
+    }
+}
+impl FromSql for Intent {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value.as_str()? {
+            "run" => Ok(Self::Run),
+            "paused" => Ok(Self::Paused),
+            "recheck" => Ok(Self::Recheck),
+            "remove_keep" => Ok(Self::RemoveKeep),
+            "remove_delete" => Ok(Self::RemoveDelete),
+            text => Err(FromSqlError::Other(
+                format!("invalid torrent intent: {text}").into(),
+            )),
+        }
+    }
 }
 #[derive(Clone)]
 pub struct Row {
@@ -108,7 +137,10 @@ impl Row {
     }
 }
 // Append migrations; published entries must stay unchanged.
-const MIGRATIONS: &[&str] = &[include_str!("migrations/001.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/001.sql"),
+    include_str!("migrations/002.sql"),
+];
 
 fn migrate(c: &mut Connection) -> Result<()> {
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -127,10 +159,71 @@ fn migrate(c: &mut Connection) -> Result<()> {
         }
     }
     for (index, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+        if index == 1 {
+            migrate_text_records(&tx)?;
+        }
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", index as i64 + 1)?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+fn migrate_text_records(c: &Connection) -> Result<()> {
+    #[derive(Deserialize)]
+    struct LegacyBinding {
+        read_only: bool,
+        paths: Vec<Vec<u8>>,
+    }
+    let mut query = c.prepare("SELECT id,created_files,completed_announces FROM torrents")?;
+    let rows = query
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<Vec<u8>>>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(query);
+    for (id, binding, announces) in rows {
+        let binding = binding
+            .map(|bytes| -> Result<String> {
+                let binding: LegacyBinding = serde_json::from_slice(&bytes)?;
+                let paths = binding
+                    .paths
+                    .into_iter()
+                    .map(String::from_utf8)
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                Ok(serde_json::to_string(&serde_json::json!({
+                    "read_only": binding.read_only, "paths": paths,
+                }))?)
+            })
+            .transpose()?;
+        let announces: Vec<([u8; 20], bool)> = serde_json::from_str(&announces)?;
+        c.execute(
+            "UPDATE torrents SET created_files=?2,completed_announces=?3 WHERE id=?1",
+            params![id, binding, encoding::encode_records(&announces)?],
+        )?;
+    }
+    let nodes: Option<Vec<u8>> = c
+        .query_row("SELECT nodes FROM dht WHERE singleton=1", [], |r| r.get(0))
+        .optional()?;
+    if let Some(nodes) = nodes {
+        match serde_json::from_slice::<Vec<([u8; 20], std::net::SocketAddr)>>(&nodes) {
+            Ok(nodes) => {
+                c.execute(
+                    "UPDATE dht SET nodes=?1 WHERE singleton=1",
+                    [encoding::encode_records(&nodes)?],
+                )?;
+            }
+            Err(_) => {
+                // DHT contacts are a disposable cache, unlike payload authority.
+                c.execute("DELETE FROM dht", [])?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -165,10 +258,10 @@ impl Catalog {
                 r.get::<_, Option<Vec<u8>>>(1)?,
                 r.get(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
+                r.get::<_, Intent>(4)?,
                 r.get::<_, String>(5)?,
                 r.get::<_, Vec<u8>>(6)?,
-                r.get::<_, Option<Vec<u8>>>(7)?,
+                r.get::<_, Option<String>>(7)?,
                 r.get(8)?,
                 r.get(9)?,
                 r.get(10)?,
@@ -223,7 +316,7 @@ impl Catalog {
                 })
                 .map(Arc::new);
             let created_files = created_files
-                .map(|bytes| serde_json::from_slice(&bytes))
+                .map(|text| serde_json::from_str(&text))
                 .transpose()?;
             Ok(Row {
                 id,
@@ -233,7 +326,7 @@ impl Catalog {
                 parsed,
                 magnet,
                 output_dir: output_dir.into(),
-                intent: serde_json::from_str(&intent)?,
+                intent,
                 settings: serde_json::from_str(&settings)?,
                 checkpoint: Checkpoint {
                     resume,
@@ -246,7 +339,7 @@ impl Catalog {
                     last_upload_at,
                     seed_seconds,
                     complete,
-                    completed_announces: serde_json::from_str(&completed_announces)?,
+                    completed_announces: encoding::decode_records(&completed_announces)?,
                 },
                 created_files,
                 last_error,
@@ -270,9 +363,9 @@ impl Catalog {
     pub fn insert(&self, row: &Row) -> Result<()> {
         let mut state = self.0.lock().unwrap();
         state.connection.execute("INSERT INTO torrents(id,metainfo,magnet,output_dir,intent,settings,resume,uploaded,seed_seconds,complete,completed_announces,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces,v1,v2) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
-            params![row.id,row.metainfo,row.magnet,row.output_dir.to_string_lossy(),serde_json::to_string(&row.intent)?,
+            params![row.id,row.metainfo,row.magnet,row.output_dir.to_string_lossy(),row.intent,
                 serde_json::to_string(&row.settings)?,row.checkpoint.resume,row.checkpoint.uploaded,
-                row.checkpoint.seed_seconds,row.checkpoint.complete,serde_json::to_string(&row.checkpoint.completed_announces)?,
+                row.checkpoint.seed_seconds,row.checkpoint.complete,encoding::encode_records(&row.checkpoint.completed_announces)?,
                 row.checkpoint.downloaded,row.added_at,row.checkpoint.completed_at,
                 row.checkpoint.last_download_at,row.checkpoint.last_upload_at,
                 row.checkpoint.hash_failed_bytes,row.checkpoint.hash_failed_pieces,row.v1,row.v2])?;
@@ -300,7 +393,7 @@ impl Catalog {
     pub fn intent(&self, id: &str, intent: Intent) -> Result<()> {
         self.update(id, |c, row| {
             c.execute("UPDATE torrents SET intent=?2,last_error=NULL,retry_count=0,retry_at=0 WHERE id=?1",
-                params![id, serde_json::to_string(&intent)?])?;
+                params![id, intent])?;
             row.intent = intent;
             row.last_error = None;
             row.retry_count = 0;
@@ -357,7 +450,7 @@ impl Catalog {
             if row.created_files.as_ref() != Some(binding) {
                 c.execute(
                     "UPDATE torrents SET created_files=?2 WHERE id=?1",
-                    params![id, serde_json::to_vec(binding)?],
+                    params![id, serde_json::to_string(binding)?],
                 )?;
                 row.created_files = Some(binding.clone());
             }
@@ -376,7 +469,7 @@ impl Catalog {
                 if row.checkpoint.completed_announces != previous.completed_announces {
                     tx.execute(
                         "UPDATE torrents SET completed_announces=?2 WHERE id=?1",
-                        params![id, serde_json::to_string(&row.checkpoint.completed_announces)?],
+                        params![id, encoding::encode_records(&row.checkpoint.completed_announces)?],
                     )?;
                 }
                 // Accounting-only updates must not bind or serialize the resume blob.
@@ -433,7 +526,7 @@ impl Catalog {
             row.last_error = Some(message);
             c.execute(
                 "UPDATE torrents SET last_error=?2,retry_count=?3,retry_at=?4,intent=?5 WHERE id=?1",
-                params![id, row.last_error, row.retry_count, row.retry_at, serde_json::to_string(&row.intent)?],
+                params![id, row.last_error, row.retry_count, row.retry_at, row.intent],
             )?;
             if changed {
                 tracing::warn!(torrent_id = id, %error, retry_at = row.retry_at, "torrent_failed");
@@ -451,7 +544,7 @@ impl Catalog {
     }
     pub fn load_dht(&self) -> Result<Option<spill::engine::session::dht::SavedState>> {
         let c = self.0.lock().unwrap();
-        let saved: Option<(Vec<u8>, Vec<u8>)> = c
+        let saved: Option<(Vec<u8>, String)> = c
             .connection
             .query_row("SELECT node_id,nodes FROM dht WHERE singleton=1", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -459,7 +552,7 @@ impl Catalog {
             .optional()?;
         Ok(saved.and_then(|(id, nodes)| {
             let nodes: Vec<([u8; 20], std::net::SocketAddr)> =
-                serde_json::from_slice(&nodes).ok()?;
+                encoding::decode_records(&nodes).ok()?;
             let saved = spill::engine::session::dht::SavedState {
                 id: spill::protocol::dht::NodeId(id.try_into().ok()?),
                 nodes: nodes
@@ -475,7 +568,7 @@ impl Catalog {
         }))
     }
     pub fn save_dht(&self, state: spill::engine::session::dht::SavedState) -> Result<()> {
-        let nodes = serde_json::to_vec(
+        let nodes = encoding::encode_records(
             &state
                 .nodes
                 .iter()

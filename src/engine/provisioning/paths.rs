@@ -14,18 +14,24 @@ pub(super) fn safe_name(raw: &[u8]) -> io::Result<Vec<u8>> {
     if raw.is_empty() || raw == b"." || raw == b".." || raw.iter().any(|b| matches!(b, 0 | b'/')) {
         return Err(invalid("unsafe payload path component"));
     }
-    let mut name: Vec<_> = raw
-        .iter()
-        .map(|&b| if matches!(b, b':' | b'\\') { b'_' } else { b })
+    let mut text = String::with_capacity(raw.len());
+    for chunk in raw.utf8_chunks() {
+        text.push_str(chunk.valid());
+        if !chunk.invalid().is_empty() {
+            text.push('_');
+        }
+    }
+    let mut name: Vec<_> = text
+        .bytes()
+        .map(|b| if matches!(b, b':' | b'\\') { b'_' } else { b })
         .collect();
     if name != raw || name.len() > NAME_BYTES {
         // A digest distinguishes replacement/truncation aliases, independent of
         // file order. The normal collision checks still reject deliberate aliases.
         let boundary = |mut end: usize| {
-            if let Ok(text) = std::str::from_utf8(&name) {
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
+            let text = std::str::from_utf8(&name).expect("normalized payload name");
+            while !text.is_char_boundary(end) {
+                end -= 1;
             }
             end
         };

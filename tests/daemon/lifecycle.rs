@@ -130,7 +130,7 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        1
+        2
     );
     let resume: Vec<u8> = db
         .query_row("SELECT resume FROM torrents", [], |r| r.get(0))
@@ -141,7 +141,7 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        1
+        2
     );
     assert_eq!(
         source.hits.load(Ordering::Relaxed),
@@ -172,7 +172,7 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
     daemon.call(json!({"op":"recheck","id":id})).await;
     daemon.state(&id, "paused").await;
     daemon.stop().await;
-    db.execute_batch("PRAGMA user_version=2").unwrap();
+    db.execute_batch("PRAGMA user_version=3").unwrap();
     drop(db);
     let status = tokio::process::Command::new(BIN)
         .arg("serve")
@@ -182,12 +182,12 @@ async fn startup_migrates_catalog_and_restart_preserves_checkpoints_and_rejects_
         .await
         .unwrap();
     assert_eq!(status.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&status.stderr).contains("unsupported catalog version 2"));
+    assert!(String::from_utf8_lossy(&status.stderr).contains("unsupported catalog version 3"));
     let db = rusqlite::Connection::open(root.0.join("state/catalog.sqlite")).unwrap();
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
     assert_eq!(
         db.query_row("SELECT id FROM torrents", [], |r| r.get::<_, String>(0))

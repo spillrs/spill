@@ -241,9 +241,10 @@ async fn metainfo_downloads_resume_recheck_seed_and_remove_through_full_hash_ali
             let saved: String = db
                 .query_row("SELECT completed_announces FROM torrents", [], |r| r.get(0))
                 .unwrap();
-            let saved: Vec<([u8; 20], bool)> = serde_json::from_str(&saved).unwrap();
+            let saved: Vec<(String, bool)> = serde_json::from_str(&saved).unwrap();
             for key in &keys {
-                assert!(saved.contains(&(*key, true)));
+                let text = key.iter().map(|byte| format!("{byte:02x}")).collect();
+                assert!(saved.contains(&(text, true)));
             }
             drop(db);
             let mut daemon = Daemon::start_config(&root.0).await;

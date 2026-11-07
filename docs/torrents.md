@@ -59,9 +59,9 @@ defaults. HTTP(S) torrent URLs still fetch metainfo when added paused.
 
 Torrents are saved under the output directory: a single-file torrent as one
 file, a multi-file torrent in a directory named after the torrent. Names are
-made safe for the filesystem: `:` and `\` become `_`, components such as `..`
-are rejected, and over-long names are shortened with a short hash so they stay
-unique.
+made safe for the filesystem: invalid UTF-8 sequences, `:` and `\` become `_`,
+components such as `..` are rejected, and replaced or over-long names carry a
+short hash to distinguish them. Remaining path collisions are rejected.
 
 ### Existing files
 

@@ -13,10 +13,10 @@ Rules that apply to the whole file:
 
 ## State directory compatibility
 
-The current catalog schema is version **1**, the baseline for automatic startup
-migrations. Pending migrations run in a transaction before torrents are loaded;
-failure rolls back the changes and stops startup. Catalogs newer than the binary
-supports and nonempty unversioned catalogs are rejected. See
+Schema version **1** is the supported baseline for automatic startup migrations.
+Pending migrations run in a transaction before torrents are loaded; failure
+rolls back the changes and stops startup. Catalogs newer than the binary supports
+and nonempty unversioned catalogs are rejected. See
 [Upgrading](install.md#upgrading).
 
 Keep the state directory: it contains the authority to reopen partial downloads.

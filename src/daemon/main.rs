@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod control;
 mod create;
+mod encoding;
 #[path = "../http.rs"]
 mod http;
 mod logging;

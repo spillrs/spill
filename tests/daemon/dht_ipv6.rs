@@ -137,13 +137,14 @@ async fn daemon_saves_and_reverifies_ipv6_contacts_across_restart() {
             .expect("daemon verified IPv6 contact");
             daemon.stop().await;
             let db = rusqlite::Connection::open(root.0.join("state/catalog.sqlite")).unwrap();
-            let (node_id, nodes): (Vec<u8>, Vec<u8>) = db
+            let (node_id, nodes): (Vec<u8>, String) = db
                 .query_row("SELECT node_id,nodes FROM dht", [], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })
                 .unwrap();
-            let nodes: Vec<([u8; 20], SocketAddr)> = serde_json::from_slice(&nodes).unwrap();
-            assert_eq!(nodes, vec![(id.0, address)]);
+            let nodes: Vec<(String, SocketAddr)> = serde_json::from_str(&nodes).unwrap();
+            let key: String = id.0.iter().map(|byte| format!("{byte:02x}")).collect();
+            assert_eq!(nodes, vec![(key, address)]);
             if let Some(expected) = &saved_identity {
                 assert_eq!(&node_id, expected);
             } else {

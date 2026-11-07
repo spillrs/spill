@@ -297,7 +297,7 @@ impl Supervisor {
             "hash_total_bytes":acquisition.as_ref().map_or(0, |p| p.hash_total_bytes),
             "layers_pending":meta.is_some_and(|meta| meta.layers_pending()),
             "completed_announces":row.checkpoint.completed_announces.iter().map(|(key, delivered)|
-                json!({"swarm":crate::observation::swarm_key(*key),"delivered":delivered})).collect::<Vec<_>>(),
+                json!({"swarm":crate::encoding::hex_key(*key),"delivered":delivered})).collect::<Vec<_>>(),
             "last_error":row.last_error,
             "tracker_message":tracker_message,"retry_at":row.retry_at,"transfer":transfer})
     }

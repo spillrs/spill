@@ -1,4 +1,4 @@
-//! BEP 15 datagrams only. No sockets, random IDs, retries, expiry or matching.
+//! BEP 15 datagrams and BEP 41 URLData. No sockets, random IDs, retries, expiry or matching.
 //! Callers must match source endpoint and transaction/action,
 //! choose the transport's address family and reject truncated UDP receives.
 //! Successful parsing does not authorize dialing or certify tracker success.
@@ -44,6 +44,22 @@ impl std::error::Error for Error {
             _ => None,
         }
     }
+}
+
+/// Encode BEP 41 URLData from a serialized URL path and query (including `?`).
+/// Preserve URL escaping; do not include the scheme, authority or fragment.
+/// The packet limit includes the 98-byte announce header. Empty data emits no
+/// options; longer values are split into concatenated options.
+pub fn url_data(data: &[u8], limits: Limits) -> Result<Vec<u8>, Error> {
+    packet_limit(data.len(), limits)?;
+    let length = data.len() + 2 * data.len().div_ceil(255);
+    packet_limit(98 + length, limits)?;
+    let mut out = Vec::with_capacity(length);
+    for chunk in data.chunks(255) {
+        out.extend([2, chunk.len() as u8]);
+        out.extend_from_slice(chunk);
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

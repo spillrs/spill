@@ -125,6 +125,9 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
 
 ### Trackers
 
+- UDP announces send the tracker URL's path and query using BEP 41 URLData,
+  preserving escaped bytes and repeated query parameters. This supports trackers
+  that use URL-specific routing or passkeys; the tracker must support URLData.
 - Trackers are grouped in tiers (BEP 12). Each valid magnet `tr=` gets its own
   tier in link order; duplicate URLs keep only their first occurrence, and the
   retained tracker list has no empty duplicate tiers.

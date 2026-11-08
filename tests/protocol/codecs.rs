@@ -419,6 +419,43 @@ fn http_tracker_reply_and_query_bounds() {
 }
 
 #[test]
+fn udp_tracker_url_data_chunks_and_packet_limit() {
+    use spill::protocol::tracker::udp::{self, Error};
+    let mut limits = udp::Limits {
+        max_packet_len: 4096,
+        max_peers: 0,
+    };
+    assert!(udp::url_data(b"", limits).unwrap().is_empty());
+    assert_eq!(
+        udp::url_data(b"/dir?a=b&c=d", limits).unwrap(),
+        b"\x02\x0c/dir?a=b&c=d"
+    );
+    for length in [254, 255, 256, 510, 511] {
+        let data = vec![b'x'; length];
+        let encoded = udp::url_data(&data, limits).unwrap();
+        let mut remaining = encoded.as_slice();
+        let mut decoded = Vec::new();
+        while !remaining.is_empty() {
+            assert_eq!(remaining[0], 2);
+            let size = usize::from(remaining[1]);
+            assert_eq!(size, (length - decoded.len()).min(255));
+            decoded.extend_from_slice(&remaining[2..2 + size]);
+            remaining = &remaining[2 + size..];
+        }
+        assert_eq!(decoded, data);
+        limits.max_packet_len = 98 + encoded.len();
+        assert_eq!(udp::url_data(&data, limits).unwrap(), encoded);
+        limits.max_packet_len -= 1;
+        assert_eq!(udp::url_data(&data, limits), Err(Error::PacketLimit));
+        limits.max_packet_len = 4096;
+    }
+    limits.max_packet_len = 98;
+    assert!(udp::url_data(b"", limits).unwrap().is_empty());
+    limits.max_packet_len = 97;
+    assert_eq!(udp::url_data(b"", limits), Err(Error::PacketLimit));
+}
+
+#[test]
 fn udp_tracker_roundtrip_and_malformed_datagrams() {
     use spill::protocol::tracker::udp::{self, Family, Request, RequestKind, Response};
     let limits = udp::Limits {

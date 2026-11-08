@@ -742,6 +742,8 @@ async fn udp_announce(
     allow_local_network: bool,
     transport: crate::engine::session::udp::Transport,
 ) -> io::Result<Reply> {
+    let data = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    let extensions = udp::url_data(data.as_bytes(), CODEC).map_err(|_| invalid())?;
     let host = url.host_str().ok_or_else(invalid)?.trim_matches(['[', ']']);
     let addresses = timeout(
         crate::engine::profile::DNS_TIMEOUT,
@@ -784,7 +786,7 @@ async fn udp_announce(
         transaction_id: 0,
         kind: udp::RequestKind::Announce {
             announce: a,
-            extensions: &[],
+            extensions: &extensions,
         },
     };
     let bytes = udp_exchange(&transport, endpoint, request).await?;

@@ -214,9 +214,17 @@ async fn udp_trackers_use_prefix_keys_and_keep_hybrid_contacts_in_their_swarm() 
     tokio::time::timeout(Duration::from_secs(15), async {
         for fixture in [V2, HYBRID] {
             let tracker = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let path_query = format!(
+                "/announce%2Fkey?auth={}&token=a%2Bb&token=c",
+                "x".repeat(300)
+            );
+            let mut expected = vec![2, 255];
+            expected.extend_from_slice(&path_query.as_bytes()[..255]);
+            expected.extend([2, (path_query.len() - 255) as u8]);
+            expected.extend_from_slice(&path_query.as_bytes()[255..]);
             let meta = metainfo(
                 fixture,
-                &format!("udp://{}/announce", tracker.local_addr().unwrap()),
+                &format!("udp://{}{path_query}", tracker.local_addr().unwrap()),
             );
             let keys = swarm_keys(&meta);
             let mut endpoints = BTreeMap::new();
@@ -244,7 +252,7 @@ async fn udp_trackers_use_prefix_keys_and_keep_hybrid_contacts_in_their_swarm() 
                     if action == 0 {
                         reply.extend_from_slice(&42u64.to_be_bytes());
                     } else {
-                        assert_eq!(length, 98);
+                        assert_eq!(&packet[98..length], expected);
                         let key: [u8; 20] = packet[16..36].try_into().unwrap();
                         let event = u32::from_be_bytes(packet[80..84].try_into().unwrap());
                         records.lock().unwrap().push((key, event));

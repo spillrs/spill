@@ -33,6 +33,8 @@ Private trackers track your ratio from announces, so spill follows these rules:
   data) announce as seeds and never send `completed`.
 - A `tracker id` from the tracker is sent back on later announces, and the
   tracker's `min interval` is respected, including for `reannounce`.
+- UDP announces include the URL's path and query through BEP 41 URLData,
+  including passkeys. Authentication requires tracker-side URLData support.
 - Tracker errors are reported without the tracker URL, so passkeys don't
   appear in error messages.
 

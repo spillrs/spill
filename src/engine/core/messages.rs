@@ -33,6 +33,10 @@ impl Torrent {
             });
             peer.cancels.retain(|request| request.index != index);
         }
+        self.deferred.push_back(Event::PieceWithdrawn {
+            connection: peer.connection,
+            index,
+        });
         self.mark_all_dirty();
         Ok(())
     }
@@ -347,6 +351,7 @@ impl Torrent {
                     }
                 }
                 return Ok(Some(Event::Block {
+                    connection,
                     index,
                     begin,
                     length: u32::try_from(block.len()).expect("validated block"),

@@ -330,11 +330,12 @@ impl Progress {
                 trace!(index, "piece_verified");
             }
             Event::Block {
+                connection,
                 index,
                 begin,
                 length,
             } => {
-                trace!(index, begin, length, "block_accepted");
+                trace!(?connection, index, begin, length, "block_accepted");
             }
             Event::PeerClosed { connection, result } => {
                 self.active = self.active.saturating_sub(1);
@@ -375,7 +376,27 @@ impl Progress {
                 return Ok(Some(TorrentExit::NoProgress));
             }
             Event::Stalled(reason) => debug!(?reason, "download_stalled"),
-            Event::PieceRetry { index, retry } => debug!(index, retry, "piece_hash_failed"),
+            Event::PieceRetry {
+                index,
+                retry,
+                corrupt,
+                source,
+            } => debug!(index, retry, corrupt, ?source, "piece_retry"),
+            Event::PeerReplaced {
+                connection,
+                replacement,
+                rank,
+                replacement_rank,
+            } => trace!(
+                ?connection,
+                ?replacement,
+                rank,
+                replacement_rank,
+                "peer_replaced"
+            ),
+            Event::PieceWithdrawn { connection, index } => {
+                trace!(?connection, index, "piece_withdrawn");
+            }
             Event::PeerReady(connection) => trace!(?connection, "peer_ready"),
             Event::IgnoredBlock { index, begin } => trace!(index, begin, "block_ignored"),
         }

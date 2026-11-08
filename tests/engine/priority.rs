@@ -75,8 +75,9 @@ async fn canonical_admission_replaces_payload_peers_but_preserves_metadata_sourc
         for magnet in [false, true] {
             let root = Temp::new();
             let (url, tracker) = metadata_peer::tracker(&[]).await;
+            let payload = raw::payload(0, 32768);
             let meta = Profile::default()
-                .parse_owned(&seed_metainfo("x", b"abc", Some(&url)))
+                .parse_owned(&seed_metainfo("x", &payload, Some(&url)))
                 .unwrap();
             let key = meta.info_hash().wire_key();
             let info = meta.info_bytes().to_vec();
@@ -120,7 +121,14 @@ async fn canonical_admission_replaces_payload_peers_but_preserves_metadata_sourc
             if !magnet {
                 raw::send(&mut low, 5, &[0x80]).await;
                 raw::send(&mut low, 1, &[]).await;
-                assert_eq!(&raw::next(&mut low, 6).await[1..], raw::request(0, 0, 3));
+                let request = raw::next(&mut low, 6).await;
+                assert_eq!(&request[1..], raw::request(0, 0, 16384));
+                let mut block = request[1..9].to_vec();
+                block.extend_from_slice(&payload[..16384]);
+                raw::send(&mut low, 7, &block).await;
+                while handle.snapshot().progress.processed_payload_bytes < 16384 {
+                    assert!(handle.changed().await);
+                }
             } else {
                 raw::send(
                     &mut low,
@@ -156,13 +164,20 @@ async fn canonical_admission_replaces_payload_peers_but_preserves_metadata_sourc
             let supplier = if magnet { &mut low } else { &mut high };
             raw::send(supplier, 5, &[0x80]).await;
             raw::send(supplier, 1, &[]).await;
-            let request = raw::next(supplier, 6).await;
-            assert_eq!(&request[1..], raw::request(0, 0, 3));
-            let mut block = request[1..9].to_vec();
-            block.extend_from_slice(b"abc");
-            raw::send(supplier, 7, &block).await;
+            for &begin in if magnet {
+                &[0, 16384][..]
+            } else {
+                &[16384][..]
+            } {
+                let request = raw::next(supplier, 6).await;
+                assert_eq!(&request[1..], raw::request(0, begin, 16384));
+                let mut block = request[1..9].to_vec();
+                block.extend_from_slice(&payload[begin as usize..begin as usize + 16384]);
+                raw::send(supplier, 7, &block).await;
+            }
             handle.wait_complete().await.unwrap();
-            assert_eq!(std::fs::read(root.0.join("x")).unwrap(), b"abc");
+            assert_eq!(handle.snapshot().progress.hash_failed_pieces, 0);
+            assert_eq!(std::fs::read(root.0.join("x")).unwrap(), payload);
             handle.stop().await.unwrap();
             closed(&mut high).await;
             session.shutdown().await.unwrap();

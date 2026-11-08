@@ -12,6 +12,7 @@ pub(in crate::engine) enum Event {
     Stalled(Stall),
     PeerReady(ConnectionId),
     Block {
+        connection: ConnectionId,
         index: u32,
         begin: u32,
         length: u32,
@@ -24,6 +25,18 @@ pub(in crate::engine) enum Event {
     PieceRetry {
         index: u32,
         retry: u32,
+        corrupt: bool,
+        source: Option<ConnectionId>,
+    },
+    PeerReplaced {
+        connection: ConnectionId,
+        replacement: ConnectionId,
+        rank: u32,
+        replacement_rank: u32,
+    },
+    PieceWithdrawn {
+        connection: ConnectionId,
+        index: u32,
     },
     PeerClosed {
         connection: ConnectionId,

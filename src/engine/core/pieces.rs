@@ -25,8 +25,9 @@ impl Torrent {
     pub(super) fn restart_piece(&mut self, index: u32, corrupt: bool) -> io::Result<Event> {
         self.mark_all_dirty();
         self.actions.push(Action::Discard { piece: index });
-        let culprit = corrupt.then(|| self.picker.culprit(index)).flatten();
-        if let Some(source) = culprit
+        let source = self.picker.culprit(index);
+        if corrupt
+            && let Some(source) = source
             && let Some(&position) = self.remote_slots.get(&source)
         {
             if let Some(id) = self.remotes[position]
@@ -69,7 +70,13 @@ impl Torrent {
             }
             peer.asked.retain(|request| request.index != index);
         }
-        self.picker.on_hash_result(index, false, self.now)
+        let retry = self.picker.retry_piece(index, self.now)?;
+        Ok(Event::PieceRetry {
+            index,
+            retry,
+            corrupt,
+            source,
+        })
     }
     pub(super) fn on_hash(&mut self, index: u32, verified: bool) -> io::Result<Event> {
         self.mark_all_dirty();
@@ -84,7 +91,8 @@ impl Torrent {
         }
         self.mark_verified(index);
         self.useful_at = self.now;
-        self.picker.on_hash_result(index, true, self.now)
+        self.picker.finish(index);
+        Ok(Event::Verified(index))
     }
     pub(super) fn mark_verified(&mut self, index: u32) {
         if has(&self.verified, index) {

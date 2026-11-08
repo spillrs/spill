@@ -578,16 +578,7 @@ impl Picker {
             .all(|(_, other)| *other == source)
             .then_some(source)
     }
-    pub(in crate::engine) fn on_hash_result(
-        &mut self,
-        index: u32,
-        matched: bool,
-        now: Instant,
-    ) -> io::Result<Event> {
-        if matched {
-            self.finish(index);
-            return Ok(Event::Verified(index));
-        }
+    pub(in crate::engine) fn retry_piece(&mut self, index: u32, now: Instant) -> io::Result<u32> {
         if !self.requests(index).is_empty() {
             return Err(io::Error::other("restart with outstanding requests"));
         }
@@ -628,7 +619,7 @@ impl Picker {
         let retry = piece.retries;
         self.unrequested(index, true);
         self.clear_wait_stall();
-        Ok(Event::PieceRetry { index, retry })
+        Ok(retry)
     }
     pub(in crate::engine) fn rejected(
         &mut self,

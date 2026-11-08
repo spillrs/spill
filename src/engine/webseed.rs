@@ -382,6 +382,8 @@ async fn get_range(
                 ),
             ));
         }
+        // Decompression is disabled: mirrors may label raw .gz payloads as
+        // Content-Encoding: x-gzip. Validate the range of wire bytes instead.
         let expected = format!("bytes {start}-{end}/{total}");
         if response
             .headers()
@@ -389,10 +391,6 @@ async fn get_range(
             .and_then(|v| v.to_str().ok())
             != Some(expected.as_str())
             || response.content_length().is_some_and(|n| n != length)
-            || response
-                .headers()
-                .get(header::CONTENT_ENCODING)
-                .is_some_and(|v| !v.as_bytes().eq_ignore_ascii_case(b"identity"))
         {
             return Err(invalid("invalid web seed range headers"));
         }

@@ -118,13 +118,19 @@ Verbosity is event-driven, not a progress feed:
 
 - `info`: daemon/torrent lifecycle, recovery and changed port mappings. Successful
   lease renewals do not repeat the mapping announcement.
-- `debug`: storage recovery/failure operations, resume rejection, corrupt-piece
-  retries, stalls, metadata-peer rejections, protocol/request-timeout peer closes,
+- `debug`: storage recovery/failure operations, resume rejection, piece retries,
+  stalls, metadata-peer rejections, protocol/request-timeout peer closes,
   changed tracker failures/recovery and web-seed failures. No periodic progress,
   successful checkpoints or peer dumps.
 - `trace`: peer/dial/handshake churn, inbound rejection reasons, transport fallback,
-  successful piece/block activity, checkpoint saves and DHT maintenance. Enable
-  only the module you are investigating.
+  successful piece/block activity, piece withdrawals, canonical peer replacements,
+  checkpoint saves and DHT maintenance. Enable only the module you are investigating.
+
+`piece_retry` includes `corrupt=true` only for an actual hash mismatch; source
+loss can restart an isolated attempt without receiving corrupt bytes. `source`
+identifies a sole contributing connection when known. At trace level,
+`block_accepted` includes its connection, `peer_replaced` includes both connection
+IDs and their ranks, and `piece_withdrawn` records a received BEP 54 withdrawal.
 
 Continuous listener, UDP, entropy, reconciliation and port-mapping failures
 report the first failure rather than every retry; recovery is logged. Identical

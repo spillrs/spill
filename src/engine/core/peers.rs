@@ -86,6 +86,12 @@ impl Torrent {
             if let (Some(rank), Some((slot, old))) = (rank, lowest)
                 && rank > old
             {
+                self.deferred.push_back(Event::PeerReplaced {
+                    connection: self.remotes[slot].connection,
+                    replacement: id,
+                    rank: old,
+                    replacement_rank: rank,
+                });
                 self.retire_peer(slot, io::Error::other("replaced by higher-priority peer"))?;
             } else {
                 self.actions.push(Action::Disconnect { id });

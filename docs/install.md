@@ -21,7 +21,7 @@ binary compatibility are listed below. Inspect or pin the script installation:
 ```sh
 curl -fsSL https://spill.rs/install.sh -o install.sh
 # Read install.sh before running it.
-sh install.sh --version 0.7.1 --install-dir "$HOME/.local/bin"
+sh install.sh --version 0.7.2 --install-dir "$HOME/.local/bin"
 ```
 
 Stop a running daemon before replacing its binary. Checksums detect corruption,

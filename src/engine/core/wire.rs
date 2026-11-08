@@ -78,12 +78,17 @@ impl Torrent {
             self.remotes[peer].announced.copy_from_slice(&self.verified);
             self.remotes[peer].pending_have = None;
         }
-        if self.remotes[peer].extensions.handshake_pending {
+        let upload_only = self.wanted_complete();
+        if self.remotes[peer].extensions.enabled
+            && (self.remotes[peer].extensions.handshake_pending
+                || self.remotes[peer].extensions.sent_upload_only != Some(upload_only))
+        {
             let payload = crate::engine::core::extensions::handshake(
                 Some(self.meta.info_bytes().len()),
                 self.listen_port,
                 self.pex_enabled,
                 self.holepunch_enabled(),
+                upload_only,
             )?;
             if !self.send(
                 peer,
@@ -95,6 +100,7 @@ impl Torrent {
                 return Ok(());
             }
             self.remotes[peer].extensions.handshake_pending = false;
+            self.remotes[peer].extensions.sent_upload_only = Some(upload_only);
         }
         while let Some(message) = self.remotes[peer]
             .extensions

@@ -202,7 +202,7 @@ impl Fetch {
                     if peer.handshake.reserved[7] & 4 != 0 {
                         peer.queue(Message::HaveNone)?;
                     }
-                    let hello = extensions::handshake(None, listen_port, false, false)?;
+                    let hello = extensions::handshake(None, listen_port, false, false, false)?;
                     peer.queue(Message::Extended {
                         id: 0,
                         payload: &hello,

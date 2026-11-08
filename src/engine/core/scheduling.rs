@@ -40,6 +40,7 @@ impl Torrent {
         self.turnover_due = now + Duration::from_secs(1);
         self.mark_all_dirty();
         let complete = self.verified_count == self.meta.layout().piece_count();
+        let upload_only = self.wanted_complete();
         for position in 0..self.remotes.len() {
             let peer = &mut self.remotes[position];
             if !peer.established || peer.retiring || peer.web_seed {
@@ -50,7 +51,9 @@ impl Torrent {
                 peer.last_useful = now;
                 peer.last_uploaded = uploaded;
             }
-            let seed = complete && peer.have_count == self.meta.layout().piece_count();
+            let seed = upload_only
+                && (peer.extensions.upload_only
+                    || peer.have_count == self.meta.layout().piece_count());
             if peer.first_needed.is_some() || peer.remote_interested {
                 peer.uninteresting_since = None;
             } else {

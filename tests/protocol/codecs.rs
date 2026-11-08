@@ -304,6 +304,15 @@ fn extension_updates_are_directional_and_atomic() {
     remote.apply(&parse(b"d1:md6:ut_pexi0eee")).unwrap();
     assert_eq!(remote.id_for(b"ut_pex"), None);
     assert_eq!(remote.id_for(b"ut_metadata"), Some(7));
+    for (wire, expected) in [
+        (b"de".as_slice(), None),
+        (b"d11:upload_onlyi1ee", Some(true)),
+        (b"d11:upload_onlyi0ee", Some(false)),
+        (b"d11:upload_onlyi2ee", None),
+        (b"d11:upload_only1:1e", None),
+    ] {
+        assert_eq!(parse(wire).upload_only(), expected);
+    }
     for end in 0..wire.len() {
         assert!(Handshake::parse(&wire[..end], Limits::default()).is_err());
     }
@@ -398,6 +407,13 @@ fn http_tracker_reply_and_query_bounds() {
             .unwrap()
             .contains("&key=00ABCDEF")
     );
+    keyed.event = Some(spill::protocol::tracker::http::AnnounceEvent::Paused);
+    assert!(
+        keyed
+            .encode_query(None, 4096)
+            .unwrap()
+            .ends_with("&left=3&event=paused")
+    );
     assert!(request.encode_query(None, 1).is_err());
     assert!(request.encode_query(Some("%69nfo_hash=x"), 4096).is_err());
 }
@@ -435,7 +451,7 @@ fn udp_tracker_roundtrip_and_malformed_datagrams() {
         downloaded: 3,
         left: 4,
         uploaded: 5,
-        event: udp::EVENT_STARTED,
+        event: udp::EVENT_PAUSED,
         ip: std::net::Ipv4Addr::UNSPECIFIED,
         key: 6,
         num_want: -1,
@@ -458,6 +474,7 @@ fn udp_tracker_roundtrip_and_malformed_datagrams() {
             .unwrap(),
         wire
     );
+    assert_eq!(&wire[80..84], &[0, 0, 0, 4]);
     for end in 0..98 {
         assert!(Request::decode(&wire[..end], limits).is_err());
     }

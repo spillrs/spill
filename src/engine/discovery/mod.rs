@@ -47,6 +47,7 @@ pub(in crate::engine) struct Counters {
     pub(in crate::engine) corrupt: u64,
     pub(in crate::engine) uploaded: u64,
     pub(in crate::engine) left: u64,
+    pub(in crate::engine) partial_seed: bool,
 }
 struct Reply {
     interval: Duration,
@@ -61,7 +62,7 @@ struct Reply {
 }
 struct Tracker {
     url: Option<Url>,
-    started: bool,
+    registered: bool,
     tracker_id: Option<Vec<u8>>,
     status: TrackerStatus,
     last_reply: Option<Instant>,
@@ -88,7 +89,7 @@ pub(in crate::engine) struct Announcer {
     peer: [u8; 20],
     port: tokio::sync::watch::Receiver<u16>,
     key: u32,
-    pub(in crate::engine) counters: Counters,
+    counters: Counters,
     allow_local_network: bool,
     client: reqwest::Client,
     udp: crate::engine::session::udp::Transport,
@@ -135,7 +136,7 @@ impl Announcer {
                         });
                     Tracker {
                         url,
-                        started: false,
+                        registered: false,
                         tracker_id: None,
                         last_reply: None,
                         next_allowed: Instant::now(),
@@ -194,6 +195,7 @@ impl Announcer {
                 corrupt: 0,
                 uploaded: 0,
                 left,
+                partial_seed: false,
             },
             allow_local_network,
             client,
@@ -232,6 +234,13 @@ impl Announcer {
             })
             .unwrap_or_default()
     }
+    pub(in crate::engine) fn update_counters(&mut self, counters: Counters) {
+        let changed = self.counters.partial_seed != counters.partial_seed;
+        self.counters = counters;
+        if changed {
+            self.reannounce();
+        }
+    }
     pub(in crate::engine) async fn request(&mut self, event: AnnounceEvent) -> io::Result<()> {
         match event {
             AnnounceEvent::Completed if !self.completed_pending && !self.completed_acknowledged => {
@@ -240,7 +249,7 @@ impl Announcer {
                 self.completed_pending = true;
             }
             AnnounceEvent::Completed => return Ok(()),
-            AnnounceEvent::Started => {}
+            AnnounceEvent::Started | AnnounceEvent::Paused => {}
             AnnounceEvent::Stopped => return Ok(()),
         }
         Ok(())
@@ -270,7 +279,7 @@ impl Announcer {
         Ok(())
     }
     pub(in crate::engine) fn completion_pending(&self) -> bool {
-        self.completed_pending
+        self.completed_pending && !self.counters.partial_seed
     }
     pub(in crate::engine) fn reannounce(&mut self) {
         for tracker in self
@@ -328,6 +337,7 @@ impl Announcer {
                 Some(AnnounceEvent::Started) => udp::EVENT_STARTED,
                 Some(AnnounceEvent::Completed) => udp::EVENT_COMPLETED,
                 Some(AnnounceEvent::Stopped) => udp::EVENT_STOPPED,
+                Some(AnnounceEvent::Paused) => udp::EVENT_PAUSED,
                 None => udp::EVENT_NONE,
             },
             ip: Ipv4Addr::UNSPECIFIED,
@@ -375,12 +385,14 @@ impl Announcer {
                     continue;
                 }
                 let working = tracker.fails == 0;
-                let completing = self.completed_pending && working;
+                let completing = self.completion_pending() && working;
                 if tracker.pending.is_none()
                     && (completing || now + Duration::from_secs(1) >= tracker.next_announce)
                     && (completing || now >= tracker.next_allowed)
                 {
-                    let event = if !tracker.started {
+                    let event = if self.counters.partial_seed {
+                        Some(AnnounceEvent::Paused)
+                    } else if !tracker.registered {
                         Some(AnnounceEvent::Started)
                     } else {
                         self.completed_pending.then_some(AnnounceEvent::Completed)
@@ -425,7 +437,7 @@ impl Announcer {
                     if tracker.fails != 0 {
                         tracing::debug!(swarm=?self.hash,tier=tracker.status.tier,slot=tracker.status.slot,"tracker_recovered");
                     }
-                    tracker.started = true;
+                    tracker.registered = true;
                     tracker.last_reply = Some(Instant::now());
                     tracker.status.state = "Success";
                     tracker.status.error = None;
@@ -437,7 +449,13 @@ impl Announcer {
                     tracker.status.seeders = reply.seeders;
                     tracker.status.leechers = reply.leechers;
                     tracker.next_allowed = Instant::now() + reply.min_interval;
-                    tracker.next_announce = Instant::now() + reply.interval;
+                    tracker.next_announce = if (sent_event == Some(AnnounceEvent::Paused))
+                        != self.counters.partial_seed
+                    {
+                        Instant::now()
+                    } else {
+                        Instant::now() + reply.interval
+                    };
                     tracker.fails = 0;
                     if matches!(sent_event, Some(AnnounceEvent::Completed)) {
                         self.start_checkpoint(true);
@@ -483,7 +501,7 @@ impl Announcer {
         let exchanges: Vec<_> = self
             .trackers
             .iter()
-            .filter(|t| t.started && !t.disabled)
+            .filter(|t| t.registered && !t.disabled)
             .map(|tracker| self.exchange(tracker, Some(AnnounceEvent::Stopped)))
             .collect();
         let _ = timeout(Duration::from_secs(5), async move {
@@ -611,6 +629,7 @@ async fn http_announce(
             udp::EVENT_STARTED => Some(http::AnnounceEvent::Started),
             udp::EVENT_COMPLETED => Some(http::AnnounceEvent::Completed),
             udp::EVENT_STOPPED => Some(http::AnnounceEvent::Stopped),
+            udp::EVENT_PAUSED => Some(http::AnnounceEvent::Paused),
             _ => None,
         },
         numwant: Some(a.num_want as u32),

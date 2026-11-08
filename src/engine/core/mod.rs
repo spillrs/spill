@@ -133,6 +133,7 @@ pub(in crate::engine) enum AnnounceEvent {
     Started,
     Completed,
     Stopped,
+    Paused,
 }
 #[derive(Debug)]
 pub(in crate::engine) enum Action {

@@ -81,7 +81,9 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
                                 assert_ne!(socket.read_line(&mut line).await.unwrap(), 0);
                                 let event = if line.contains("event=completed") { "completed" }
                                     else if line.contains("event=stopped") { "stopped" }
+                                    else if line.contains("event=paused") { "paused" }
                                     else { "started" };
+                                if event == "paused" { assert!(line.contains("left=3"), "{line}"); }
                                 recorded.lock().unwrap().push(event);
                                 loop {
                                     line.clear();
@@ -91,7 +93,7 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
                                 if stall && event == "completed" {
                                     std::future::pending::<()>().await;
                                 }
-                                let body = b"d8:intervali60e5:peers0:e";
+                                let body = b"d8:intervali60e12:min intervali0e5:peers0:e";
                                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
                                 socket.write_all(body).await.unwrap();
                             });
@@ -159,6 +161,35 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
             offline.shutdown().await.unwrap();
             session.shutdown().await.unwrap();
             seed.shutdown().await.unwrap();
+            if partial {
+                let session = Session::bind(NetworkOptions { listen: "127.0.0.1:0".parse().unwrap(), allow_local_network: true, ..Default::default() }, Limits::default()).await.unwrap();
+                let mut options = TorrentOptions::new(TorrentSource::Metainfo(meta.clone()), Destination::Recover { root: destination.0.clone(), state: handle.recovery().unwrap() });
+                options.settings = TorrentSettings { trackers: true, dht: false, pex: false, web_seeds: false, file_priorities: vec![FilePriority::Normal, FilePriority::Skip], ..Default::default() };
+                let partial_seed = session.admit(options).unwrap();
+                partial_seed.wait_complete().await.unwrap();
+                while !requests.lock().unwrap().contains(&"paused") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                partial_seed.reannounce();
+                while requests.lock().unwrap().iter().filter(|event| **event == "paused").count() < 2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let mut peer = tokio::net::TcpStream::connect(session.local_addr()).await.unwrap();
+                crate::v2_peer::initiate(&mut peer, meta.info_hash().wire_key(), 77, false).await;
+                loop {
+                    let frame = crate::v2_peer::read_frame(&mut peer).await.unwrap();
+                    if frame.starts_with(&[20, 0]) {
+                        let hello = spill::protocol::peer::extension::Handshake::parse(&frame[2..], Default::default()).unwrap();
+                        assert_eq!(hello.upload_only(), Some(true));
+                        break;
+                    }
+                }
+                crate::v2_peer::send(&mut peer, 20, b"\0d11:upload_onlyi1ee").await;
+                while crate::v2_peer::read_frame(&mut peer).await.is_ok() {}
+                partial_seed.request_stop();
+                partial_seed.join().await.unwrap();
+                session.shutdown().await.unwrap();
+            }
             stop_tracker.send_replace(true);
             tracker.await.unwrap();
             let requests = requests.lock().unwrap();
@@ -168,6 +199,7 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
                 assert_eq!(requests.first(), Some(&"started"));
                 assert_eq!(requests.last(), Some(&"stopped"));
                 assert_eq!(requests.contains(&"completed"), !partial);
+                assert_eq!(requests.contains(&"paused"), partial);
             }
             assert_eq!(std::fs::read(destination.0.join("bundle/a")).unwrap(), b"abc");
             if partial {

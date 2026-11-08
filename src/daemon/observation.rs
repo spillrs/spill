@@ -73,7 +73,7 @@ fn peer(p: &telemetry::PeerStatus) -> Value {
         "download_bytes_per_second":p.download_bytes_per_second,"upload_bytes_per_second":p.upload_bytes_per_second,
         "detail":{"downloaded_bytes":d.downloaded_bytes,"uploaded_bytes":d.uploaded_bytes,"connection":d.connection,
             "established":d.established,"fast_extension":d.fast_extension,"remote_choking":d.remote_choking,
-            "local_interested":d.local_interested,"remote_interested":d.remote_interested,"local_choking":d.local_choking,
+            "local_interested":d.local_interested,"remote_interested":d.remote_interested,"remote_upload_only":d.remote_upload_only,"local_choking":d.local_choking,
             "upload_slot":d.upload_slot,"pending_upload_requests":d.pending_upload_requests,"has_needed_pieces":d.has_needed_pieces,
             "retiring":d.retiring,"output_blocked":d.output_blocked,"assigned_requests":d.assigned_requests,
             "authorized_requests":d.authorized_requests,"request_queue":d.request_queue,

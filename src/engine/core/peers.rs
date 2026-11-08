@@ -175,6 +175,7 @@ impl Torrent {
                 remote_choking: peer.choked,
                 local_interested: peer.interested,
                 remote_interested: peer.remote_interested,
+                remote_upload_only: peer.extensions.upload_only,
                 local_choking: peer.upload_choked,
                 upload_slot: peer.upload_granted,
                 pending_upload_requests: peer.uploads.len(),

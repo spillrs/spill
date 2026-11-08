@@ -152,7 +152,14 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
   exchanges each have a 10-second inactivity deadline, without in-exchange
   retransmissions. UDP trackers share the session's UDP socket. A silent tracker
   only delays its own torrent. Stopped announces are best-effort within five
-  seconds and select among trackers that acknowledged `started`.
+  seconds and select among trackers that accepted a `started` or `paused` announce.
+- Partial seeds (BEP 21) have finished their selected files but not the whole
+  torrent. Every active announce uses `event=paused` (UDP event 4), including the
+  first announce and tracker fallback. `left` still counts all unverified torrent
+  bytes. This event means upload-only participation, not a paused or stopped
+  torrent; shutdown still sends `stopped`, and partial completion never sends
+  `completed`. State changes request a new announce while respecting tracker
+  minimum intervals and failure backoff.
 - HTTP requests use compact peers, `no_peer_id=1`, `supportcrypto=1`, and
   `corrupt` (hash-failed payload bytes); `downloaded` excludes hash-failed bytes
   and is floored at zero. Tracker IDs are returned on later requests.
@@ -308,6 +315,12 @@ their interface scope. Incoming connections are accepted from any address.
   base-36 major, minor and patch digits, a reserved `0`, and `-`.
   Extension handshakes and HTTP requests identify as `spill/VERSION`; this
   case-sensitive wire identifier is not the prose brand casing.
+- Full and partial seeds advertise `upload_only=1` in extension handshakes
+  (BEP 21); downloading peers advertise zero. Handshake updates follow selected
+  completion changes, and metadata acquisition never advertises upload-only.
+  Once spill has finished its selection, connections to other upload-only peers
+  or full seeds are retired. An upload-only peer can still supply downloads
+  while spill needs pieces.
 - If the same peer connects twice (for example, both sides dialed each other),
   one connection is dropped.
 - Peers that send bad data are banned for the torrent; unhelpful peers are

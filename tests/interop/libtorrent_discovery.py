@@ -151,7 +151,7 @@ class Tracker:
                 else:
                     assert action == 1 and len(packet) >= 98, packet.hex()
                     downloaded, left, uploaded, event = struct.unpack_from("!QQQI", packet, 56)
-                    peers = self.reply(packet[16:36], {0: "none", 1: "completed", 2: "started", 3: "stopped"}[event],
+                    peers = self.reply(packet[16:36], {0: "none", 1: "completed", 2: "started", 3: "stopped", 4: "paused"}[event],
                                        downloaded, uploaded, left, packet[36:39] == b"-sP")
                     reply = struct.pack("!IIIII", 1, tx, self.interval, 1, 1) + peers
                 self.server.sendto(reply, address)

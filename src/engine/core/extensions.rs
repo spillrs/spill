@@ -36,6 +36,7 @@ pub(in crate::engine) fn handshake(
     port: Option<u16>,
     pex: bool,
     holepunch: bool,
+    upload_only: bool,
 ) -> io::Result<Vec<u8>> {
     let mut map = BTreeMap::from([(
         b"ut_metadata".as_slice(),
@@ -80,6 +81,10 @@ pub(in crate::engine) fn handshake(
     );
     if let Some(size) = size {
         fields.insert(b"metadata_size", Node::new(Value::Integer(size as i64)));
+        fields.insert(
+            b"upload_only",
+            Node::new(Value::Integer(i64::from(upload_only))),
+        );
     }
     extension::Handshake::from_node(Node::new(Value::Dictionary(fields)))
         .map_err(invalid)?
@@ -90,6 +95,8 @@ pub(in crate::engine) fn handshake(
 pub(in crate::engine) struct Extensions {
     pub(in crate::engine) enabled: bool,
     pub(in crate::engine) handshake_pending: bool,
+    pub(in crate::engine) sent_upload_only: Option<bool>,
+    pub(in crate::engine) upload_only: bool,
     pub(in crate::engine) request_queue: u32,
     pub(in crate::engine) client: Option<String>,
     pub(in crate::engine) remote: extension::ExtensionMap,
@@ -102,6 +109,8 @@ impl Default for Extensions {
         Self {
             enabled: false,
             handshake_pending: false,
+            sent_upload_only: None,
+            upload_only: false,
             request_queue: 250,
             client: None,
             remote: remote_map(),
@@ -125,6 +134,9 @@ impl Extensions {
         if id == 0 {
             let handshake = extension::Handshake::parse(payload, limits()).map_err(invalid)?;
             self.remote.apply(&handshake).map_err(invalid)?;
+            if let Some(upload_only) = handshake.upload_only() {
+                self.upload_only = upload_only;
+            }
             if let Some(client) = handshake.client() {
                 // Untrusted display hint; retain a bounded prefix, never log it.
                 self.client =

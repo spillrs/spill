@@ -88,7 +88,7 @@ impl Progress {
         let events = transfer.take_announces();
         for manager in &mut discovery.announces {
             let p = transfer.progress()?;
-            manager.counters = crate::engine::discovery::Counters {
+            manager.update_counters(crate::engine::discovery::Counters {
                 // Failed-piece bytes include padding synthesized without receiving it.
                 downloaded: p
                     .received_payload_bytes()
@@ -96,7 +96,8 @@ impl Progress {
                 corrupt: p.hash_failed_bytes(),
                 uploaded: transfer.uploaded_bytes(),
                 left: p.remaining_bytes(),
-            };
+                partial_seed: p.partial_seed(),
+            });
             for event in &events {
                 manager.request(*event).await?;
             }

@@ -12,6 +12,8 @@ pub const EVENT_NONE: u32 = 0;
 pub const EVENT_COMPLETED: u32 = 1;
 pub const EVENT_STARTED: u32 = 2;
 pub const EVENT_STOPPED: u32 = 3;
+/// Deployed BEP 21 partial-seed event, also used by libtorrent.
+pub const EVENT_PAUSED: u32 = 4;
 
 /// Explicit resource policy, not an MTU/UDP delivery guarantee. Counts include
 /// duplicate and uninteresting complete records; bytes include every tail.

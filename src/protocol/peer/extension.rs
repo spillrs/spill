@@ -93,6 +93,14 @@ impl<'a> Handshake<'a> {
     pub fn request_queue(&self) -> Option<u32> {
         u32::try_from(integer(self.document.get(b"reqq")?)?).ok()
     }
+    /// BEP 21 hint. Absence leaves a previously received value unchanged.
+    pub fn upload_only(&self) -> Option<bool> {
+        match integer(self.document.get(b"upload_only")?)? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
     /// BEP 9 hint only; metadata-message validation is separate.
     pub fn metadata_size(&self) -> Option<u32> {
         u32::try_from(integer(self.document.get(b"metadata_size")?)?).ok()

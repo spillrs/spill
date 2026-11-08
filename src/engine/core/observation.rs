@@ -58,6 +58,9 @@ impl Progress {
     pub(in crate::engine) fn remaining_bytes(&self) -> u64 {
         self.total_bytes - self.verified_bytes
     }
+    pub(in crate::engine) fn partial_seed(&self) -> bool {
+        self.wanted_verified_bytes == self.wanted_bytes && self.verified_bytes != self.total_bytes
+    }
     pub(in crate::engine) fn hash_failed_bytes(&self) -> u64 {
         self.hash_failed_bytes
     }

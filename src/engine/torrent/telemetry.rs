@@ -58,6 +58,8 @@ pub struct PeerDiagnostics {
     pub remote_choking: bool,
     pub local_interested: bool,
     pub remote_interested: bool,
+    /// BEP 21 hint; the peer does not want to download further pieces.
+    pub remote_upload_only: bool,
     pub local_choking: bool,
     pub upload_slot: bool,
     pub pending_upload_requests: usize,

@@ -230,6 +230,11 @@ exclude recovery jobs. Jobs can overlap the named worker operation. Check
 `diagnostics_age_ms` before interpreting storage activity: operation age keeps
 increasing even if the observation is stale.
 
+`transfer.peers[].detail.remote_upload_only` reports the peer's BEP 21 hint:
+`true` means it does not intend to download more pieces. Missing or malformed
+hints leave the previous value unchanged; the initial value is `false`. This
+hint does not mean the peer has every piece or that it cannot upload to spill.
+
 Holepunch counters reset for each execution:
 
 - `rendezvous_started`: introducer requests queued by this torrent.

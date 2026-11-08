@@ -89,6 +89,11 @@ stays `.part` (and sparse) unless pieces shared with a selected file fill it.
 - A torrent is complete, and starts seeding, when every selected file is.
 - Padding files (BEP 47) are never written to disk and must be `skip`.
 
+Finishing only a subset makes spill a partial seed (BEP 21). It continues
+uploading and tells peers it is upload-only; tracker announces use `paused`
+without claiming the whole torrent is complete. This is different from pausing
+the torrent. See [Networking](networking.md#trackers).
+
 ## Seeding goals
 
 A torrent pauses itself when it reaches `seed_ratio` (uploaded bytes divided by

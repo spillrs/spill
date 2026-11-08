@@ -193,6 +193,8 @@ pub enum AnnounceEvent {
     Started,
     Completed,
     Stopped,
+    /// BEP 21 partial seed, still participating in the swarm.
+    Paused,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,6 +304,7 @@ impl AnnounceRequest<'_> {
                     AnnounceEvent::Started => b"started",
                     AnnounceEvent::Completed => b"completed",
                     AnnounceEvent::Stopped => b"stopped",
+                    AnnounceEvent::Paused => b"paused",
                 },
             )?;
         }

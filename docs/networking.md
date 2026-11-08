@@ -342,6 +342,12 @@ their interface scope. Incoming connections are accepted from any address.
   Once spill has finished its selection, connections to other upload-only peers
   or full seeds are retired. An upload-only peer can still supply downloads
   while spill needs pieces.
+- spill receives BEP 54 `lt_donthave` piece withdrawals. Once metadata is known,
+  its extension handshake advertises a directional receive ID, independent of
+  the peer's receive mapping. Withdrawn pieces leave that peer's availability;
+  legacy requests are silently cancelled and can be reassigned. Fast and v2
+  requests remain pending until explicit replies arrive. Malformed withdrawals
+  disconnect the sender. spill does not send piece withdrawals.
 - If the same peer connects twice (for example, both sides dialed each other),
   one connection is dropped.
 - Peers that send bad data are banned for the torrent; unhelpful peers are

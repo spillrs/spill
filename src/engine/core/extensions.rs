@@ -12,6 +12,7 @@ use std::{
 
 pub(in crate::engine) const RESERVED: [u8; 8] = [0, 0, 0, 0, 0, 0x10, 0, 0x04];
 pub(in crate::engine) const METADATA_ID: u8 = 1;
+pub(super) const DONT_HAVE_ID: u8 = 4;
 // A full metadata block needs room for its bencoded header and two wire IDs.
 pub(in crate::engine) const MIN_FRAME: u32 = metadata::PIECE_LENGTH + 256;
 
@@ -44,6 +45,10 @@ pub(in crate::engine) fn handshake(
     )]);
     // Omission cannot disable an extension already negotiated on this connection.
     if size.is_some() {
+        map.insert(
+            b"lt_donthave",
+            Node::new(Value::Integer(i64::from(DONT_HAVE_ID))),
+        );
         map.insert(
             b"ut_pex",
             Node::new(Value::Integer(if pex {

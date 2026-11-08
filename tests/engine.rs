@@ -20,6 +20,8 @@ mod dht_ipv6;
 mod discovery_v2;
 #[path = "engine/discovery_v2_policy.rs"]
 mod discovery_v2_policy;
+#[path = "engine/donthave.rs"]
+mod donthave;
 #[path = "engine/encryption.rs"]
 mod encryption;
 #[path = "engine/holepunch.rs"]

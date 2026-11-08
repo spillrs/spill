@@ -2,6 +2,41 @@ use super::*;
 use crate::protocol::peer::message::WireMode;
 
 impl Torrent {
+    fn on_dont_have(&mut self, position: usize, payload: &[u8]) -> io::Result<()> {
+        if !self.remotes[position].extensions.enabled {
+            return Ok(());
+        }
+        let bytes: [u8; 4] = payload
+            .try_into()
+            .map_err(|_| invalid_data_text("invalid lt_donthave length"))?;
+        let index = u32::from_be_bytes(bytes);
+        if index >= self.meta.layout().piece_count() {
+            return Err(invalid_data_text("lt_donthave index out of range"));
+        }
+        let peer = &mut self.remotes[position];
+        if has(&peer.pieces, index) {
+            let old = peer.pieces.clone();
+            peer.pieces[index as usize / 8] &= !(0x80 >> (index % 8));
+            peer.have_count -= 1;
+            self.picker.availability_changed(&old, &peer.pieces);
+            peer.first_needed = first_difference(&peer.pieces, &self.excluded, 0);
+        }
+        // Fast (and v2) peers still owe an explicit answer for each request.
+        if !peer.rejects_requests() {
+            let deadline = self.now + crate::engine::profile::REQUEST_TIMEOUT;
+            peer.asked.retain(|request| {
+                if request.index != index {
+                    return true;
+                }
+                self.picker.rejected(*request, peer.connection, deadline);
+                false
+            });
+            peer.cancels.retain(|request| request.index != index);
+        }
+        self.mark_all_dirty();
+        Ok(())
+    }
+
     pub(super) fn on_frame(
         &mut self,
         connection: ConnectionId,
@@ -120,7 +155,9 @@ impl Torrent {
                 .unsolicited
                 .charge(wire_bytes)
                 .and_then(|()| {
-                    if id == holepunch::ID {
+                    if id == extensions::DONT_HAVE_ID {
+                        self.on_dont_have(position, payload)
+                    } else if id == holepunch::ID {
                         self.on_holepunch(position, payload)
                     } else {
                         self.remotes[position]

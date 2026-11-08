@@ -31,6 +31,9 @@ pub(in crate::engine) struct Shell {
     announces: Vec<core::AnnounceEvent>,
     listen: Option<u16>,
     advertised_port: Option<tokio::sync::watch::Receiver<u16>>,
+    local_address: Option<std::net::IpAddr>,
+    mapping: Option<tokio::sync::watch::Receiver<crate::engine::session::port_map::Status>>,
+    address_source: Option<crate::engine::session::dht::Handle>,
     dht: Option<u16>,
     pex: bool,
     stopped: bool,
@@ -101,6 +104,9 @@ impl Shell {
             announces: Vec::new(),
             listen: None,
             advertised_port: None,
+            local_address: None,
+            mapping: None,
+            address_source: None,
             dht: None,
             pex: false,
             stopped: false,
@@ -172,7 +178,19 @@ impl Shell {
             .as_mut()
             .ok_or_else(|| io::Error::other("payload before storage admission"))
     }
+    fn refresh_addresses(&mut self) {
+        let external = self.address_source.as_ref().map_or([None; 2], |dht| {
+            (*dht.identities.borrow()).map(|(_, ip)| ip)
+        });
+        let mapped = self
+            .mapping
+            .as_ref()
+            .and_then(|mapping| mapping.borrow().external_ip);
+        self.core
+            .set_addresses(external, mapped, self.local_address);
+    }
     fn feed(&mut self, input: Input<'_>) -> io::Result<()> {
+        self.refresh_addresses();
         if let Some(port) = &self.advertised_port {
             let port = *port.borrow();
             self.listen = Some(port);
@@ -482,7 +500,8 @@ impl Shell {
     ) -> io::Result<ConnectionId> {
         let attachment = match &socket {
             PeerSocket::Connected(socket, role, _) => {
-                let mut endpoint = crate::engine::network::canonical(socket.peer_addr()?);
+                let remote = crate::engine::network::canonical(socket.peer_addr()?);
+                let mut endpoint = remote;
                 let observed =
                     matches!(socket, crate::engine::peer_io::Stream::Utp(_)).then_some(endpoint);
                 let inbound = matches!(role, Role::Inbound);
@@ -491,12 +510,13 @@ impl Shell {
                 }
                 core::PeerAttachment {
                     endpoint: Some(endpoint),
+                    remote: Some(remote),
                     observed,
                     local_ip: match socket {
                         crate::engine::peer_io::Stream::Tcp(s) => {
                             Some(s.local_addr()?.ip().to_canonical())
                         }
-                        crate::engine::peer_io::Stream::Utp(_) => None,
+                        crate::engine::peer_io::Stream::Utp(_) => self.local_address,
                     },
                     inbound,
                     web_seed: false,
@@ -550,6 +570,17 @@ impl Shell {
         self.listen = Some(*port.borrow());
         self.advertised_port = Some(port);
         self.core.set_ports(self.listen, self.dht, self.pex);
+    }
+    pub(in crate::engine) fn set_addresses(
+        &mut self,
+        network: &super::Network,
+        dht: Option<&crate::engine::session::dht::Handle>,
+    ) -> io::Result<()> {
+        self.local_address = Some(network.tracker_udp.socket.local_addr()?.ip().to_canonical());
+        self.mapping = Some(network.mapping.clone());
+        self.address_source = dht.cloned();
+        self.refresh_addresses();
+        Ok(())
     }
     pub(in crate::engine) fn set_dht_port(&mut self, port: Option<u16>) {
         self.dht = port;

@@ -54,6 +54,7 @@ impl PeerState {
 
 pub(in crate::engine) struct PeerState {
     pub(in crate::engine) connection: ConnectionId,
+    pub(in crate::engine) endpoint: Option<std::net::SocketAddr>,
     pub(in crate::engine) peer_id: Option<[u8; 20]>,
     pub(in crate::engine) established: bool,
     pub(in crate::engine) last_useful: Instant,

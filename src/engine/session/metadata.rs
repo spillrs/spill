@@ -97,6 +97,7 @@ impl crate::engine::torrent::Network {
         let shell = resources.shell.as_mut().expect("metadata shell");
         shell.set_bandwidth(bandwidth);
         shell.set_advertised_port(self.advertised_port.clone());
+        shell.set_addresses(self, node.as_ref())?;
         shell.set_incoming(self.incoming.clone());
         let (mut contacts, dials) = self.dial_queue.client(profile);
         resources.dials = Some(dials);
@@ -172,7 +173,7 @@ impl crate::engine::torrent::Network {
                 progress.retain_peers(shell);
                 shell.resolve_negotiations(&mut contacts);
                 while shell.can_connect() && dials.ready() {
-                    let Some(entry)=contacts.candidate(|a, _|shell.rejects_contact(a))else{dials.withdraw();break};
+                    let Some(entry)=contacts.candidate(|a, _|shell.rejects_contact(a), |a| shell.contact_priority(a))else{dials.withdraw();break};
                     let Some(address)=shell.contact(entry.address, false)?else{contacts.dial_completed(entry.address,None,false);break};
                     let utp = contacts.try_utp(address);
                     match dials.admit(address, utp, contacts.fallback(address), contacts.methods(address)) {

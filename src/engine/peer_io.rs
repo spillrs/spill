@@ -176,6 +176,7 @@ pub(in crate::engine) struct Peers {
     next_id: u64,
     entries: HashMap<ConnectionId, Entry>,
     tasks: JoinSet<ConnectionId>,
+    pending: Option<(ConnectionId, PeerSocket)>,
     events_tx: mpsc::Sender<PeerEvent>,
     events: mpsc::Receiver<PeerEvent>,
     failure: Option<io::Error>,
@@ -215,6 +216,7 @@ impl Peers {
             next_id: 0,
             entries: HashMap::new(),
             tasks: JoinSet::new(),
+            pending: None,
             events_tx,
             events,
             failure: None,
@@ -235,14 +237,30 @@ impl Peers {
         socket: PeerSocket,
     ) -> io::Result<ConnectionId> {
         self.reap_ready();
-        if self.tasks.len() >= self.limits.peers - self.finished_errors.len() {
-            return Err(busy("peer connection limit"));
+        if self.pending.is_some()
+            || self.tasks.len() + self.finished_errors.len() > self.limits.peers
+        {
+            return Err(busy("peer replacement pending"));
         }
-        let next = self.next_id + 1;
+        let connection = ConnectionId(self.next_id);
+        self.next_id += 1;
+        if self.tasks.len() + self.finished_errors.len() >= self.limits.peers {
+            // The core rejects this candidate or evicts an incumbent. Do not
+            // start its task until that incumbent's closure has been consumed.
+            self.pending = Some((connection, socket));
+        } else {
+            self.start_socket(connection, socket)?;
+        }
+        Ok(connection)
+    }
+    fn start_socket(&mut self, connection: ConnectionId, socket: PeerSocket) -> io::Result<()> {
+        assert!(
+            self.tasks.len() < self.limits.peers,
+            "peer task reservation"
+        );
         let runtime =
             tokio::runtime::Handle::try_current().map_err(|_| invalid("Tokio runtime required"))?;
         let deadline = Instant::now() + crate::engine::profile::HANDSHAKE_TIMEOUT;
-        let connection = ConnectionId(self.next_id);
         let (commands, receiver) = mpsc::channel(crate::engine::profile::OUTBOUND_QUEUE);
         let events = self.events_tx.clone();
         let written = Arc::new(PayloadWrites::child(self.written.clone()));
@@ -313,8 +331,7 @@ impl Peers {
                 closed: None,
             },
         );
-        self.next_id = next;
-        Ok(connection)
+        Ok(())
     }
 
     pub(in crate::engine) fn send(
@@ -349,6 +366,16 @@ impl Peers {
     }
 
     pub(in crate::engine) fn disconnect(&mut self, connection: ConnectionId) -> io::Result<()> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(id, _)| *id == connection)
+        {
+            self.pending = None;
+            self.finished_errors
+                .push_back(Finished::Task(connection, None));
+            return Ok(());
+        }
         let entry = self
             .entries
             .get_mut(&connection)
@@ -441,7 +468,10 @@ impl Peers {
         self.written.clone()
     }
     pub(in crate::engine) fn has_work(&self) -> bool {
-        !self.tasks.is_empty() || !self.events.is_empty() || !self.finished_errors.is_empty()
+        !self.tasks.is_empty()
+            || self.pending.is_some()
+            || !self.events.is_empty()
+            || !self.finished_errors.is_empty()
     }
 
     fn joined(&mut self, result: Result<(Id, ConnectionId), JoinError>) {
@@ -514,6 +544,15 @@ impl Peers {
                 };
                 return Some(PeerEvent::Closed { connection, result });
             }
+            if self.tasks.len() < self.limits.peers
+                && let Some((connection, socket)) = self.pending.take()
+                && let Err(error) = self.start_socket(connection, socket)
+            {
+                return Some(PeerEvent::Closed {
+                    connection,
+                    result: Err(error),
+                });
+            }
             let event = if self.tasks.is_empty() {
                 self.events.try_recv().ok()?
             } else {
@@ -548,6 +587,7 @@ impl Peers {
     }
 
     pub(in crate::engine) async fn cancel_and_join(&mut self) -> io::Result<()> {
+        self.pending = None;
         self.tasks.abort_all();
         // Retain failures in the owner across canceled barrier waits.
         while let Some(result) = self.tasks.join_next_with_id().await {

@@ -72,6 +72,9 @@ impl Torrent {
         payload.own_peer_id = self.own_peer_id;
         payload.utp_enabled = self.utp_enabled;
         payload.families = self.families;
+        payload.external_addresses = self.external_addresses;
+        payload.local_address = self.local_address;
+        payload.listen_port = self.listen_port;
         payload.select_files(selection);
         for (id, attachment) in fetch.attached {
             payload.on_attach(id, attachment)?;

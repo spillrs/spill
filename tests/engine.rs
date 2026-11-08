@@ -34,6 +34,8 @@ mod lsd;
 mod magnets_v2;
 #[path = "engine/outcomes.rs"]
 mod outcomes;
+#[path = "engine/priority.rs"]
+mod priority;
 #[path = "engine/session.rs"]
 mod session;
 #[path = "engine/v2.rs"]

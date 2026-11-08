@@ -314,6 +314,24 @@ their interface scope. Incoming connections are accepted from any address.
 
 - Up to `peers` connections per torrent (default 50), and at most 8 peers are
   uploaded to at once per torrent.
+- Canonical peer priority (BEP 40) ranks eligible outgoing contacts within each
+  torrent, including magnet metadata acquisition. Higher ranks are preferred;
+  holepunch attempts keep precedence, and retry deadlines still apply. spill
+  does not open extra outgoing connections just to displace connected peers.
+- During payload transfer, a strictly higher-ranked incoming peer can replace
+  the lowest-ranked eligible peer when slots are full. A slot already being
+  freed is reused without evicting another peer. Metadata acquisition keeps its
+  existing sources regardless of incoming rank, preserving their progress.
+  Equal ranks keep the existing connection;
+  web seeds and peers whose rank is unknown are not eviction candidates.
+  One replacement socket may wait for the evicted task to join, without raising
+  the live peer-task limit or changing session-wide reservations.
+- Ranking uses confirmed DHT external-address votes, router mapping information,
+  or a public bind address. Local peers use the socket's local address when
+  known. Without a trustworthy address for that family, spill retains ordinary
+  admission and contact ordering. An individual peer's address claim is not
+  trusted. Ranks are recomputed from current address information when selecting
+  contacts or admitting a peer; address changes alone do not evict connections.
 - spill derives its peer ID prefix from its package version: `-sP` followed by
   base-36 major, minor and patch digits, a reserved `0`, and `-`.
   Extension handshakes and HTTP requests identify as `spill/VERSION`; this

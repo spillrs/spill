@@ -2,6 +2,7 @@
 
 pub mod bencode;
 pub mod compact;
+mod crc32c;
 pub mod dht;
 pub mod identity;
 pub mod lsd;

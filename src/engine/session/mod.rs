@@ -744,6 +744,7 @@ impl Session {
             Networking::Online(Network {
                 incoming: shared.incoming.clone(),
                 advertised_port: shared.advertised_port.subscribe(),
+                mapping: shared.mapping_status.clone(),
                 sockets,
                 dial_queue: shared.dial_queue.clone(),
                 utp: shared.utp_enabled,

@@ -24,6 +24,8 @@ mod metadata;
 mod mse;
 #[path = "protocol/nat_pmp.rs"]
 mod nat_pmp;
+#[path = "protocol/priority.rs"]
+mod priority;
 #[path = "protocol/resume.rs"]
 mod resume;
 #[path = "protocol/upnp.rs"]

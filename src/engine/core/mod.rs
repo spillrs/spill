@@ -74,6 +74,7 @@ pub(in crate::engine) struct Capacity {
 #[derive(Clone, Copy, Default)]
 pub(in crate::engine) struct PeerAttachment {
     pub(in crate::engine) endpoint: Option<SocketAddr>,
+    pub(in crate::engine) remote: Option<SocketAddr>,
     pub(in crate::engine) observed: Option<SocketAddr>,
     pub(in crate::engine) local_ip: Option<IpAddr>,
     pub(in crate::engine) inbound: bool,
@@ -224,6 +225,8 @@ pub(in crate::engine) struct Torrent {
     bandwidth: bandwidth::Throttle,
     rate_deadline: Option<Instant>,
     listen_port: Option<u16>,
+    external_addresses: [Option<IpAddr>; 2],
+    local_address: Option<IpAddr>,
     dht_port: Option<u16>,
     pex_enabled: bool,
     utp_enabled: bool,
@@ -320,6 +323,8 @@ impl Torrent {
             bandwidth: bandwidth::Throttle::default(),
             rate_deadline: None,
             listen_port: None,
+            external_addresses: [None; 2],
+            local_address: None,
             dht_port: None,
             pex_enabled: false,
             utp_enabled: false,

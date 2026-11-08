@@ -235,9 +235,13 @@ impl Progress {
             if !dials.ready() {
                 break;
             }
-            let Some(entry) = queue.candidate(|a, source| {
-                transfer.rejects_contact(a) || (source != "holepunch" && !transfer.can_connect())
-            }) else {
+            let Some(entry) = queue.candidate(
+                |a, source| {
+                    transfer.rejects_contact(a)
+                        || (source != "holepunch" && !transfer.can_connect())
+                },
+                |a| transfer.contact_priority(a),
+            ) else {
                 dials.withdraw();
                 return Ok(());
             };

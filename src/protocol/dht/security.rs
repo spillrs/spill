@@ -42,13 +42,5 @@ fn prefix(address: IpAddr, random: u8) -> [u8; 4] {
         }
     };
     input[0] |= (random & 7) << 5;
-    // Four or eight bytes per contact do not warrant a CRC dependency or table.
-    let mut crc = !0u32;
-    for &byte in input.iter() {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0x82f6_3b78 & 0u32.wrapping_sub(crc & 1));
-        }
-    }
-    (!crc).to_be_bytes()
+    crate::protocol::crc32c::crc32c(input).to_be_bytes()
 }

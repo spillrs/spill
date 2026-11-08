@@ -418,9 +418,19 @@ async fn failed_punch_does_not_recurse_and_relay_pending_slot_is_reusable() {
         let mut handle = session.admit(opts).unwrap();
         ready(&mut handle).await;
         let mut relay = Peer::new(&session, &meta, 81, true).await;
-        let no_flag = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let x = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let y = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut sockets = Vec::new();
+        for _ in 0..3 {
+            sockets.push(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        }
+        sockets.sort_by_key(|socket| {
+            spill::protocol::peer::priority::priority(
+                session.local_addr(),
+                socket.local_addr().unwrap(),
+            )
+        });
+        let no_flag = sockets.pop().unwrap();
+        let x = sockets.pop().unwrap();
+        let y = sockets.pop().unwrap();
         let addr_x = x.local_addr().unwrap();
         let addr_y = y.local_addr().unwrap();
         relay
@@ -564,10 +574,20 @@ async fn queued_punch_upgrades_keep_priority_and_restore_original_dials_after_ex
             )
             .await
             .unwrap();
-            let guard = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let other = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let ordinary = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let punch = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let mut sockets = Vec::new();
+            for _ in 0..4 {
+                sockets.push(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            }
+            sockets.sort_by_key(|socket| {
+                spill::protocol::peer::priority::priority(
+                    session.local_addr(),
+                    socket.local_addr().unwrap(),
+                )
+            });
+            let guard = sockets.pop().unwrap();
+            let other = sockets.pop().unwrap();
+            let ordinary = sockets.pop().unwrap();
+            let punch = sockets.pop().unwrap();
             let tcp = tokio::net::TcpListener::bind(punch.local_addr().unwrap())
                 .await
                 .unwrap();

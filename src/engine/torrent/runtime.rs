@@ -61,6 +61,7 @@ async fn drive(
     }
     transfer.set_no_progress_timeout(options.no_progress_timeout);
     transfer.set_advertised_port(session.advertised_port.clone());
+    transfer.set_addresses(&session, options.dht.as_ref())?;
     transfer.set_dht_port(options.dht.as_ref().map(|h| h.local_addr().port()));
     transfer.settings(options.settings.clone())?;
     let p = transfer.progress()?;

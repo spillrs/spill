@@ -1,6 +1,46 @@
 use super::*;
 
+fn priority(
+    external: [Option<IpAddr>; 2],
+    port: Option<u16>,
+    remote: Option<SocketAddr>,
+    local: Option<IpAddr>,
+) -> Option<u32> {
+    let remote = remote?;
+    let local = if crate::engine::network::source(remote, false) {
+        external[usize::from(remote.is_ipv6())]
+    } else {
+        local.filter(|ip| !ip.is_unspecified() && ip.is_ipv6() == remote.is_ipv6())
+    }?;
+    Some(crate::protocol::peer::priority::priority(
+        SocketAddr::new(local, port?),
+        remote,
+    ))
+}
+
 impl Torrent {
+    pub(in crate::engine) fn set_addresses(
+        &mut self,
+        mut external: [Option<IpAddr>; 2],
+        mapped: Option<IpAddr>,
+        local: Option<IpAddr>,
+    ) {
+        for ip in local.into_iter().chain(mapped) {
+            if crate::engine::network::source(SocketAddr::new(ip, 1), false) {
+                external[usize::from(ip.is_ipv6())] = Some(ip);
+            }
+        }
+        self.external_addresses = external;
+        self.local_address = local;
+    }
+    pub(in crate::engine) fn contact_priority(&self, address: SocketAddr) -> Option<u32> {
+        priority(
+            self.external_addresses,
+            self.listen_port,
+            Some(address),
+            self.local_address,
+        )
+    }
     pub(super) fn on_attach(
         &mut self,
         id: ConnectionId,
@@ -8,6 +48,7 @@ impl Torrent {
     ) -> io::Result<()> {
         let PeerAttachment {
             endpoint,
+            remote,
             observed,
             local_ip,
             inbound,
@@ -19,11 +60,37 @@ impl Torrent {
         if self.remote_slots.contains_key(&id) {
             return Err(invalid("duplicate connection ID"));
         }
-        if self.remotes.len() >= self.limits.peers
+        if self.remotes.len() > self.limits.peers
             || endpoint.is_some_and(|a| self.ip_banned(a.ip()))
         {
             self.actions.push(Action::Disconnect { id });
             return Ok(());
+        }
+        if self.remotes.len() == self.limits.peers && !self.remotes.iter().any(|p| p.retiring) {
+            let rank = priority(self.external_addresses, self.listen_port, remote, local_ip);
+            let lowest = self
+                .remotes
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| !p.retiring && !p.web_seed)
+                .filter_map(|(slot, p)| {
+                    priority(
+                        self.external_addresses,
+                        self.listen_port,
+                        p.endpoint,
+                        p.extensions.pex.local_ip,
+                    )
+                    .map(|rank| (slot, rank))
+                })
+                .min_by_key(|&(_, rank)| rank);
+            if let (Some(rank), Some((slot, old))) = (rank, lowest)
+                && rank > old
+            {
+                self.retire_peer(slot, io::Error::other("replaced by higher-priority peer"))?;
+            } else {
+                self.actions.push(Action::Disconnect { id });
+                return Ok(());
+            }
         }
         let pieces = vec![0; self.verified.len()];
         let allowed_fast = vec![0; self.verified.len()];
@@ -35,6 +102,7 @@ impl Torrent {
         self.remote_slots.insert(id, self.remotes.len());
         self.remotes.push(Remote {
             connection: id,
+            endpoint: remote,
             peer_id: None,
             established: false,
             last_useful: self.now,

@@ -383,17 +383,33 @@ impl Contacts {
     pub(in crate::engine) fn candidate(
         &mut self,
         rejects: impl Fn(SocketAddr, &'static str) -> bool,
+        priority: impl Fn(SocketAddr) -> Option<u32>,
     ) -> Option<Entry> {
         let now = Instant::now();
         self.expire_punches(now);
         let mut state = self.queue.0.lock().unwrap();
         for punch in [true, false] {
-            if let Some(i) = state.entries.iter().position(|entry| {
-                entry.owner == self.owner
-                    && (punch || entry.due <= now)
-                    && (entry.source == "holepunch") == punch
-                    && !rejects(entry.address, entry.source)
-            }) {
+            if let Some((i, _)) = state
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    entry.owner == self.owner
+                        && (punch || entry.due <= now)
+                        && (entry.source == "holepunch") == punch
+                        && !rejects(entry.address, entry.source)
+                })
+                .max_by_key(|(i, entry)| {
+                    (
+                        if punch {
+                            0
+                        } else {
+                            priority(entry.address).unwrap_or(0)
+                        },
+                        std::cmp::Reverse(*i),
+                    )
+                })
+            {
                 return Some(state.entries.remove(i).expect("selected dial entry"));
             }
         }

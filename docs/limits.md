@@ -45,6 +45,10 @@ Admission and magnet metadata resolution reject invalid profiles with
 `InvalidInput` before starting work. `Profile::validate()` checks these bounds
 without starting an execution.
 
+Canonical peer replacement (BEP 40) may retain one waiting socket per torrent
+while the evicted peer task joins. The waiting socket starts no peer task until
+capacity is released; `peers` and session peer reservations remain unchanged.
+
 ## Holepunch coordination
 
 BEP 55 uses the ordinary session dial-token, pending-dial, peer and uTP limits;

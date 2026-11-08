@@ -1,0 +1,57 @@
+{
+  "scenario": "magnet-file-selection",
+  "status": "passed",
+  "source_revision": "f60da53a92aa51cb78e7ff5039f6f493694fd115",
+  "source_dirty": true,
+  "modified_paths_at_run": ["tests/interop/transmission_smoke.py"],
+  "daemon_binary_sha256": "aea2e94ae7be3619deda8826669c92040d409c7b383e8cbdcf01d4140e3bee57",
+  "host": "192.168.1.227",
+  "transmission": "4.1.4 (a6d907d9ea)",
+  "libtorrent": "2.1.2.0",
+  "harness_sha256": {
+    "tests/interop/transmission_smoke.py": "041da0e813b785e890f8a083078b11ef630fcca6c28c393419dbfe71ae76f599",
+    "tests/interop/libtorrent_magnets.py": "3a93a977c21f4ad7c332732ffbbcebeaba5825240ac638cd1cdd35c9f907b4cd"
+  },
+  "transmission_runs": [
+    {
+      "arguments": "--release --restart-check",
+      "result": "target/interop/f60da53-tcp/result.json"
+    },
+    {
+      "arguments": "--release --transport utp --size 16MiB --rate-limit 1MiB",
+      "result": "target/interop/f60da53-utp/result.json"
+    },
+    {
+      "arguments": "--release --hybrid --magnet --http-tracker --restart-check --size 16MiB",
+      "result": "target/interop/f60da53-mag/result.json"
+    },
+    {
+      "arguments": "--release --size 16MiB --rate-limit 1MiB --kill-at 0.5 --restart-check",
+      "result": "target/interop/f60da53-kill/result.json"
+    }
+  ],
+  "transmission_command_prefix": "python3 tests/interop/transmission_smoke.py --allow-network --host 192.168.1.227",
+  "transmission_scope": "Both directions passed in all four runs; uTP was observed in both directions in the uTP run. UDP tracker fixture accepts BEP 41 extension tails.",
+  "libtorrent_matrix": {
+    "command": "python3 tests/interop/libtorrent_magnets.py --allow-network --host 192.168.1.227 --release --scenario all --artifacts target/interop/f60da53-lt",
+    "checks_passed": 16,
+    "result": "target/interop/f60da53-lt/result.json"
+  },
+  "select_only_probe": {
+    "command": "python3 target/interop/f60da53-so2/check.py",
+    "script_sha256": "0965390b089bd27902e2ba50a4fde307d72ce2ed168f0fdbf19be533f56ddfa0",
+    "result": "target/interop/f60da53-so2/result.json",
+    "fixtures": ["v2.torrent", "libtorrent-hybrid.torrent"],
+    "verified": [
+      "spill file indices and padding entries agree with libtorrent layouts",
+      "partial magnet download and reverse magnet seeding with matching payload checksums",
+      "out-of-range singleton ignored and padding remains skipped",
+      "source-discovery-free restart retains selected priorities",
+      "duplicate magnet enables another file without deselecting the first",
+      "range 0-99 clips to the manifest and completes all files in both clients"
+    ],
+    "earlier_attempt": "target/interop/f60da53-so/result.json timed out expanding selection after discovery was disabled and no peer connected. The successful probe reenables tracker discovery after the source-free restart check. No production fix was needed."
+  },
+  "tier3_run": false,
+  "scope": "Correctness and interoperability checks, not throughput or capacity measurements. This does not revalidate every tier 2 harness."
+}

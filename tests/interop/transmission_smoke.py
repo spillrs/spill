@@ -226,7 +226,7 @@ class Tracker:
                 action, tx = struct.unpack_from("!II", packet, 8)
                 if action == 0:
                     reply = struct.pack("!IIQ", 0, tx, 17)
-                elif action == 1 and len(packet) == 98:
+                elif action == 1 and len(packet) >= 98:
                     port, = struct.unpack_from("!H", packet, 96)
                     target = self.engine_port if port == self.peer_port else self.peer_port
                     peers = socket.inet_aton(self.host) + struct.pack("!H", target) if target else b""

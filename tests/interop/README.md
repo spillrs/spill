@@ -21,6 +21,7 @@ and is a release gate under `AGENTS.md`.
 
 | Scope | Record |
 |---|---|
+| BEP 53 selection, padding indices, additive updates and restart; Transmission TCP/uTP/recovery and libtorrent magnet matrix | [magnet-selection.json](baselines/magnet-selection.json) |
 | V2 direct transfers, proofs, wire policy and recovery | [v2-direct.json](baselines/v2-direct.json) |
 | Hybrid direct transfers in both wire modes | [hybrid-direct.json](baselines/hybrid-direct.json) |
 | Trackers, DHT, PEX and daemon lifecycle | [discovery-daemon.json](baselines/discovery-daemon.json) |

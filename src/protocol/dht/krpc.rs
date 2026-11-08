@@ -235,8 +235,22 @@ impl<'a> Message<'a> {
         max_nodes: usize,
         max_peers: usize,
     ) -> Result<Self, Error> {
+        Self::with_address(transaction_id, body, version, None, max_nodes, max_peers)
+    }
+
+    fn with_address(
+        transaction_id: &'a [u8],
+        body: Body<'a>,
+        version: Option<&'a [u8]>,
+        observed: Option<&'a [u8]>,
+        max_nodes: usize,
+        max_peers: usize,
+    ) -> Result<Self, Error> {
         let mut fields = BTreeMap::new();
         fields.insert(b"t".as_slice(), Node::new(Value::Bytes(transaction_id)));
+        if let Some(observed) = observed {
+            fields.insert(b"ip".as_slice(), Node::new(Value::Bytes(observed)));
+        }
         if let Some(version) = version {
             fields.insert(b"v".as_slice(), Node::new(Value::Bytes(version)));
         }
@@ -396,6 +410,46 @@ impl<'a> Message<'a> {
     }
     pub fn document(&self) -> &Node<'a> {
         &self.document
+    }
+
+    /// Encode a reply with BEP 42's top-level observed endpoint. Scope and flow
+    /// context cannot be represented on the wire. All ordinary encode budgets apply.
+    pub fn encode_reply(
+        transaction_id: &[u8],
+        body: Body<'_>,
+        observed: SocketAddr,
+        limits: bencode::Limits,
+        max_nodes: usize,
+        max_peers: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let observed = match observed {
+            SocketAddr::V4(address) => compact::encode_v4(address).to_vec(),
+            SocketAddr::V6(address) => compact::encode_v6(address)
+                .map_err(|_| Error::InvalidField("ip"))?
+                .to_vec(),
+        };
+        Message::with_address(
+            transaction_id,
+            body,
+            None,
+            Some(&observed),
+            max_nodes,
+            max_peers,
+        )?
+        .encode(limits)
+    }
+
+    /// BEP 42's optional top-level compact endpoint; malformed hints are ignored.
+    /// The runtime must correlate the response before trusting this observation.
+    pub fn observed_address(&self) -> Option<SocketAddr> {
+        let Value::Bytes(bytes) = self.document.get(b"ip")?.value() else {
+            return None;
+        };
+        match bytes.len() {
+            6 => compact::decode_v4(bytes).ok().map(SocketAddr::V4),
+            18 => compact::decode_v6(bytes).ok().map(SocketAddr::V6),
+            _ => None,
+        }
     }
 
     /// Absent differs from an explicit empty values list. Validated IPv4/IPv6

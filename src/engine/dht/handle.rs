@@ -67,10 +67,10 @@ impl Handle {
     pub(in crate::engine) fn local_addr(&self) -> SocketAddr {
         self.address
     }
-    pub(in crate::engine) fn id(&self) -> NodeId {
-        self.id
+    pub(in crate::engine) fn id(&self, ipv6: bool) -> NodeId {
+        self.identities.borrow()[usize::from(ipv6)].0
     }
-    pub(super) async fn refresh_targets(&self, ipv6: bool) -> io::Result<Vec<NodeId>> {
+    pub(super) async fn refresh_targets(&self, ipv6: bool) -> io::Result<(NodeId, Vec<NodeId>)> {
         let (reply, result) = oneshot::channel();
         self.commands
             .send(Command::RefreshTargets(ipv6, reply))

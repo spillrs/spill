@@ -197,6 +197,11 @@ independent tracker/DHT state for both keys but shared payload progress and
 budgets. Pending-layer hybrids use only the v1 swarm. Each tracker swarm
 receives the same torrent-wide upload/download counters, not per-swarm traffic;
 summing tracker accounting across both swarms can double-count bytes.
+DHT entries also report `node_ids` (hexadecimal) and `external_addresses`, each
+an array in IPv4/IPv6 order. Disabled families have a `null` node ID; an address
+is `null` until a public bind address or DHT address votes establish it. Before
+that, the node ID is not yet address-bound. These identities are session-wide,
+not different for each swarm. See [DHT security](networking.md#dht-security-and-public-addresses).
 
 ## Runtime diagnostics in JSON
 

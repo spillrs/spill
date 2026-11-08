@@ -37,7 +37,8 @@ pub fn transfer(s: &TorrentStatus) -> Value {
         })
         .collect();
     let dht: Vec<_> = s.diagnostics.iter().flat_map(|d| &d.dht).map(|d| json!({
-        "swarm":hex_key(d.swarm),"lookup_pending":d.lookup_pending,"next_lookup_ms":d.next_lookup_ms,"last_lookup_ago_ms":d.last_lookup_ago_ms,
+        "swarm":hex_key(d.swarm),"node_ids":d.node_ids.map(|id| id.map(|id| hex_key(id.0))),
+        "external_addresses":d.external_addresses,"lookup_pending":d.lookup_pending,"next_lookup_ms":d.next_lookup_ms,"last_lookup_ago_ms":d.last_lookup_ago_ms,
         "queried":d.queried,"announced":d.announced,"peers_returned":d.peers_returned,"error":d.error,
     })).collect();
     let storage = s.diagnostics.as_ref().and_then(|d| d.storage).map(|storage| json!({

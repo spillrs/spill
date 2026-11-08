@@ -381,6 +381,26 @@ SYN timing and checksums are recorded under `target/interop/` (or `--artifacts`)
 This validates client coordination, not behaviour behind a particular router.
 Real-router checks and loaded-session timing remain dev-machine validation.
 
+## Tier 3: public DHT identity convergence (manual)
+
+Pending dev-machine validation; do not run in CI or cloud agent sessions.
+The isolated DHT scenarios use exempt local addresses and do not exercise
+public-address voting or identity changes. With explicit public-network consent,
+use a public torrent and an unspecified dual-stack `listen` address. Record
+`transfer.dht[].node_ids` and `external_addresses` from `spill get ID --json`:
+
+- Confirm each reachable family's public address within a few minutes and verify
+  its ID against BEP 42. An unreachable family may remain unconfirmed.
+- Observe at least 30 minutes of stable IDs, including pooled/destination-dependent
+  NAT if available; small vote leads must not repeatedly change the identity.
+- Change the public address without restarting spill. Capture DHT traffic to verify
+  a `find_node` targeting the new ID promptly follows confirmation, rather than
+  waiting for the 15-minute bucket refresh. Check discovery continues afterward.
+- Restart with the same catalog and public addresses; reconfirmed IDs must match.
+
+Keep timestamps, status samples, packet captures and network-change details.
+The disk/swarm runners below disable DHT and cannot substitute for this check.
+
 ## Tier 3: disk and swarm workloads
 
 Tier 3 remains unrun for v2/hybrid support. Before release, exercise many

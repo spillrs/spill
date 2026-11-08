@@ -47,6 +47,34 @@ fn response<'a>(
 }
 
 #[test]
+fn bep42_node_id_prefixes_match_published_vectors() {
+    for (ip, random, prefix) in [
+        ("124.31.75.21", 1, [0x5f, 0xbf, 0xb8]),
+        ("21.75.31.124", 86, [0x5a, 0x3c, 0xe8]),
+        ("65.23.51.170", 22, [0xa5, 0xd4, 0x30]),
+        ("84.124.73.14", 65, [0x1b, 0x03, 0x20]),
+        ("43.213.53.83", 90, [0xe5, 0x6f, 0x68]),
+    ] {
+        let ip = ip.parse().unwrap();
+        let mut seed = NodeId([0; 20]);
+        seed.0[19] = random;
+        let id = seed.for_address(ip);
+        assert_eq!(&id.0[..3], &prefix);
+        assert_eq!(id.0[19], random);
+        assert!(id.valid_for(ip));
+        let mut invalid = id;
+        invalid.0[2] ^= 8;
+        assert!(!invalid.valid_for(ip));
+    }
+    let ip = "2001:4860:4860::8888".parse().unwrap();
+    let id = NodeId([37; 20]).for_address(ip);
+    assert!(id.valid_for("2001:4860:4860::8844".parse().unwrap()));
+    assert!(!id.valid_for("2001:4860:4861::8888".parse().unwrap()));
+    assert!(NodeId([0; 20]).valid_for(Ipv4Addr::LOCALHOST.into()));
+    assert!(NodeId([0; 20]).valid_for(Ipv6Addr::LOCALHOST.into()));
+}
+
+#[test]
 fn bep32_want_is_explicit_extensible_and_validated_only_for_supported_queries() {
     for (method, key) in [
         (b"find_node".as_slice(), b"target".as_slice()),

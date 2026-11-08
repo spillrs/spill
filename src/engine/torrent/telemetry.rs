@@ -106,6 +106,10 @@ pub struct WebSeedStatus {
 pub struct DhtStatus {
     /// Twenty-byte swarm key (SHA-1 or the SHA-256 prefix).
     pub swarm: [u8; 20],
+    /// Current IPv4/IPv6 identities; disabled families are absent.
+    pub node_ids: [Option<crate::protocol::dht::NodeId>; 2],
+    /// Public addresses used for BEP 42, in IPv4/IPv6 order.
+    pub external_addresses: [Option<std::net::IpAddr>; 2],
     pub lookup_pending: bool,
     pub next_lookup_ms: u64,
     pub last_lookup_ago_ms: Option<u64>,

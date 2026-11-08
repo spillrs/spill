@@ -201,15 +201,15 @@ impl Handle {
         let mut active = Requests::default();
         let mut responded = 0;
         loop {
-            // Once the closest K responsive nodes are known, only closer
-            // candidates can improve the result. Failed referrals never erase fallbacks.
+            // Announcing needs K compliant token issuers, not merely K replies.
+            // Failed referrals never erase fallbacks.
             let mut live: Vec<_> = responded_nodes.values().copied().collect();
             live.sort_unstable_by_key(|id| routing::distance(*id, target));
             let cutoff = live.get(K - 1).map(|id| routing::distance(*id, target));
             while active.can_start() && asked.len() < self.lookup_queries {
                 let Some(node) = closest.iter().map(|c| c.node).find(|n| {
                     !asked.contains(&n.address)
-                        && n.id != self.id()
+                        && n.id != self.id(ipv6)
                         && cutoff.is_none_or(|cutoff| routing::distance(n.id, target) < cutoff)
                 }) else {
                     break;
@@ -226,7 +226,10 @@ impl Handle {
             match result {
                 Ok(reply) => {
                     responded += 1;
-                    responded_nodes.insert(address, reply.id);
+                    let valid_id = reply.id.valid_for(address.ip());
+                    if valid_id && (port.is_none() || reply.token.is_some()) {
+                        responded_nodes.insert(address, reply.id);
+                    }
                     for peer in reply.peers {
                         if (port.is_none() || peer != self.address)
                             && peers.len() < self.max_peers
@@ -245,11 +248,11 @@ impl Handle {
                             address,
                         },
                         verified: true,
-                        token: reply.token,
+                        token: reply.token.filter(|_| valid_id),
                     });
                     for contact in reply.nodes {
                         if contact.address.is_ipv6() == ipv6
-                            && contact.id != self.id()
+                            && contact.id != self.id(ipv6)
                             && !closest.iter().any(|c| {
                                 c.node.id == contact.id || c.node.address == contact.address
                             })
@@ -341,8 +344,13 @@ impl Discovery {
         }
     }
     pub(in crate::engine) fn snapshot(&self) -> crate::engine::torrent::telemetry::DhtStatus {
+        let identities = *self.handle.identities.borrow();
         crate::engine::torrent::telemetry::DhtStatus {
             swarm: self.hash,
+            node_ids: std::array::from_fn(|family| {
+                self.handle.families[family].then_some(identities[family].0)
+            }),
+            external_addresses: identities.map(|(_, address)| address),
             lookup_pending: self.pending.is_some(),
             next_lookup_ms: self
                 .due

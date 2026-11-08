@@ -1,6 +1,7 @@
 //! Session-owned BEP 5/32 node. One socket/task, bounded state and explicit consent.
 //! Only source/transaction-matched replies verify contacts; routers never enter routing.
 mod bootstrap;
+mod identity;
 mod lookup;
 mod routing;
 pub(in crate::engine) use lookup::{Discovery, DiscoveryEvent};
@@ -61,7 +62,7 @@ pub(in crate::engine) struct Stats {
 }
 pub(in crate::engine) enum Command {
     BootstrapFinished(bool, oneshot::Sender<()>),
-    RefreshTargets(bool, oneshot::Sender<Vec<NodeId>>),
+    RefreshTargets(bool, oneshot::Sender<(NodeId, Vec<NodeId>)>),
     Snapshot(oneshot::Sender<SavedState>),
     Routers(bool, Vec<SocketAddr>, oneshot::Sender<()>),
     Request {
@@ -86,7 +87,9 @@ pub(in crate::engine) struct Node {
     allow_local_network: bool,
     transport: udp::Transport,
     incoming: mpsc::Receiver<(Vec<u8>, SocketAddr)>,
-    id: NodeId,
+    seed: NodeId,
+    identity: [identity::Identity; 2],
+    identities: watch::Sender<[(NodeId, Option<std::net::IpAddr>); 2]>,
     limits: Limits,
     commands: mpsc::Receiver<Command>,
     routing: [Routing; 2],
@@ -120,6 +123,15 @@ impl Node {
         } else {
             NodeId(entropy()?)
         };
+        let identity = std::array::from_fn(|family| {
+            let public = (usize::from(address.is_ipv6()) == family
+                && crate::engine::network::source(address, false))
+            .then_some(address.ip());
+            identity::Identity::new(id, public)
+        });
+        let (identities, observed) = watch::channel(std::array::from_fn(|family| {
+            (identity[family].id, identity[family].address)
+        }));
         let now = Instant::now();
         let tokens = Tokens::new(now)?;
         let (sender, commands) = mpsc::channel(limits.command_queue);
@@ -128,7 +140,7 @@ impl Node {
             commands: sender,
             address,
             families: transport.families,
-            id,
+            identities: observed,
             lookups: Arc::new(Semaphore::new(limits.max_lookups)),
             lookup_queries: limits.max_lookup_queries,
             max_peers: crate::engine::profile::MAX_QUEUED,
@@ -162,10 +174,14 @@ impl Node {
                 allow_local_network,
                 transport,
                 incoming,
-                id,
+                seed: id,
+                routing: std::array::from_fn(|family| {
+                    Routing::new(identity[family].id, limits.max_buckets)
+                }),
+                identity,
+                identities,
                 limits,
                 commands,
-                routing: std::array::from_fn(|_| Routing::new(id, limits.max_buckets)),
                 tokens,
                 peers: Peers::new(limits),
                 rate: Rate::new(limits, now),
@@ -211,7 +227,7 @@ impl Node {
             );
         }
         SavedState {
-            id: self.id,
+            id: self.seed,
             nodes: self
                 .routing
                 .iter()
@@ -250,7 +266,9 @@ impl Node {
                 command = self.commands.recv(), if !self.commands.is_closed() || !self.commands.is_empty() => {
                     match command {
                         Some(Command::RefreshTargets(ipv6, reply)) => {
-                            let _ = reply.send(self.routing[usize::from(ipv6)].refresh_targets(Instant::now())?);
+                            let family = usize::from(ipv6);
+                            let targets = self.routing[family].refresh_targets(Instant::now())?;
+                            let _ = reply.send((self.identity[family].id, targets));
                         }
                         Some(Command::BootstrapFinished(ipv6, reply)) => {
                             self.bootstrapped[usize::from(ipv6)] = true;
@@ -365,7 +383,14 @@ impl Node {
             }
         };
         let packet = query
-            .encode(&transaction, self.id, Some(want), CODEC, K, 100)
+            .encode(
+                &transaction,
+                self.identity[usize::from(address.is_ipv6())].id,
+                Some(want),
+                CODEC,
+                K,
+                100,
+            )
             .map_err(io::Error::other)?;
         match self.send(&packet, address).await {
             Ok(()) => {
@@ -482,6 +507,7 @@ impl Node {
                     .pending
                     .remove(&transaction)
                     .expect("matched transaction");
+                self.observe_address(&message, address);
                 if !self.routers.contains(&address) {
                     self.routing[family].heard(Contact { id, address }, true, Instant::now());
                 }
@@ -512,7 +538,9 @@ impl Node {
                     .filter(|n| n.address.is_ipv6() != address.is_ipv6())
                     .take(K)
                 {
-                    if node.id != self.id && !self.routers.contains(&node.address) {
+                    if node.id != self.identity[usize::from(node.address.is_ipv6())].id
+                        && !self.routers.contains(&node.address)
+                    {
                         let routing = &self.routing[usize::from(node.address.is_ipv6())];
                         if !routing.closest(node.id, Instant::now()).contains(node) {
                             self.probe(node.address).await?;
@@ -547,6 +575,7 @@ impl Node {
                     .is_some_and(|p| p.address == address && Instant::now() < p.deadline)
                 {
                     let mut pending = self.pending.remove(&transaction).expect("matched error");
+                    self.observe_address(&message, address);
                     if let Some(reply) = pending.reply.take() {
                         let _ =
                             reply.send(Err(io::Error::other(format!("DHT remote error {code}"))));
@@ -557,6 +586,19 @@ impl Node {
         }
         Ok(())
     }
+    fn observe_address(&mut self, message: &Message<'_>, source: SocketAddr) {
+        let Some(observed) = message.observed_address() else {
+            return;
+        };
+        let family = usize::from(source.is_ipv6());
+        if self.identity[family].observe(self.seed, source, observed, Instant::now()) {
+            self.routing[family].rekey(self.identity[family].id);
+            self.identities.send_replace(std::array::from_fn(|family| {
+                (self.identity[family].id, self.identity[family].address)
+            }));
+            tracing::debug!(ipv6 = source.is_ipv6(), "dht_identity_updated");
+        }
+    }
     fn answer(
         &mut self,
         transaction: &[u8],
@@ -564,7 +606,10 @@ impl Node {
         source: SocketAddr,
         now: Instant,
     ) -> Result<Vec<u8>, crate::protocol::dht::krpc::Error> {
-        let mut fields = BTreeMap::from([(b"id".as_slice(), bytes(&self.id.0))]);
+        let mut fields = BTreeMap::from([(
+            b"id".as_slice(),
+            bytes(&self.identity[usize::from(source.is_ipv6())].id.0),
+        )]);
         let raw_nodes;
         let raw_nodes6;
         let token;
@@ -657,8 +702,7 @@ impl Node {
             } else {
                 Body::Response(BNode::new(Value::Dictionary(response)))
             };
-            let encoded =
-                Message::new(transaction, body, None, K * 2, 100).and_then(|m| m.encode(CODEC));
+            let encoded = Message::encode_reply(transaction, body, source, CODEC, K * 2, 100);
             match encoded {
                 Err(crate::protocol::dht::krpc::Error::Bencode(ref error))
                     if error.kind == bencode::ErrorKind::OutputLimit && !raw_peers.is_empty() =>

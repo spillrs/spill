@@ -1,6 +1,7 @@
 //! Pure DHT message codecs only; no routing, token service or networking.
 
 pub mod krpc;
+mod security;
 
 /// A DHT node identity, distinct from a torrent's v1 info hash. All bit patterns
 /// are structurally valid; this is not proof of node ownership or reachability.

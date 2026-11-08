@@ -290,7 +290,11 @@ async fn ipv6_announcements_tokens_family_defaults_and_reply_budget() {
         .await;
         let message = response(&wire);
         let peers: Vec<_> = message.peers().unwrap().collect();
-        assert_eq!(peers.len(), 18);
+        assert_eq!(peers.len(), 17);
+        assert_eq!(
+            message.observed_address(),
+            Some(client.local_addr().unwrap())
+        );
         assert!(
             wire.len() + 21 > 1024,
             "another compact IPv6 peer must not fit"
@@ -319,6 +323,10 @@ async fn ipv6_announcements_tokens_family_defaults_and_reply_budget() {
             response(&wire).kind(),
             Kind::Error { code: 203, .. }
         ));
+        assert_eq!(
+            response(&wire).observed_address(),
+            Some(client.local_addr().unwrap())
+        );
         let wire = rpc(&client, destination, b"ping", Vec::new()).await;
         assert!(matches!(response(&wire).kind(), Kind::Response { .. }));
         session.shutdown().await.unwrap();

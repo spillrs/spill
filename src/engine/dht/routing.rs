@@ -43,6 +43,7 @@ pub(super) struct Routing {
     own: NodeId,
     max_buckets: usize,
     buckets: Vec<Bucket>,
+    refresh_own: bool,
 }
 fn bit(id: NodeId, index: usize) -> bool {
     id.0[index / 8] & (0x80 >> (index % 8)) != 0
@@ -58,12 +59,38 @@ impl Routing {
         Self {
             own,
             max_buckets,
+            refresh_own: false,
             buckets: vec![Bucket {
                 prefix: NodeId([0; 20]),
                 depth: 0,
                 contacts: vec![],
                 touched: Instant::now(),
             }],
+        }
+    }
+    pub(super) fn rekey(&mut self, own: NodeId) {
+        let old = std::mem::replace(self, Self::new(own, self.max_buckets));
+        let now = Instant::now();
+        let mut contacts: Vec<_> = old
+            .buckets
+            .into_iter()
+            .flat_map(|bucket| bucket.contacts)
+            .filter(|entry| entry.node.id != own && entry.state(now) != State::Bad)
+            .collect();
+        // Keep live lookup seeds ahead of unverified entries when buckets collapse.
+        contacts.sort_unstable_by_key(|entry| {
+            (
+                entry.state(now) != State::Good,
+                entry.reply.is_none(),
+                distance(entry.node.id, own),
+            )
+        });
+        for entry in contacts {
+            self.insert(entry);
+        }
+        self.refresh_own = true;
+        for bucket in &mut self.buckets {
+            bucket.touched = now - GOOD_FOR;
         }
     }
     pub(in crate::engine) fn touch(&mut self, target: NodeId, now: Instant) {
@@ -77,6 +104,11 @@ impl Routing {
         &mut self,
         now: Instant,
     ) -> std::io::Result<Vec<NodeId>> {
+        let mut targets = Vec::new();
+        if std::mem::take(&mut self.refresh_own) {
+            targets.push(self.own);
+            self.touch(self.own, now);
+        }
         let mut stale: Vec<_> = self
             .buckets
             .iter()
@@ -85,8 +117,7 @@ impl Routing {
             .map(|(index, b)| (b.touched, index))
             .collect();
         stale.sort_unstable();
-        let mut targets = Vec::new();
-        for (_, index) in stale.into_iter().take(2) {
+        for (_, index) in stale.into_iter().take(2 - targets.len()) {
             let bucket = &mut self.buckets[index];
             let mut target = NodeId(super::entropy()?);
             for bit_index in 0..bucket.depth {
@@ -136,21 +167,25 @@ impl Routing {
                 break;
             }
         }
+        self.insert(Entry {
+            node,
+            reply: replied.then_some(now),
+            query: now,
+            failures: 0,
+        });
+    }
+    fn insert(&mut self, entry: Entry) {
+        let now = Instant::now();
         loop {
             let index = self
                 .buckets
                 .iter()
-                .position(|b| contains(b, node.id))
+                .position(|b| contains(b, entry.node.id))
                 .expect("partition");
             let bucket = &mut self.buckets[index];
             bucket.contacts.retain(|c| c.state(now) != State::Bad);
             if bucket.contacts.len() < K {
-                bucket.contacts.push(Entry {
-                    node,
-                    reply: replied.then_some(now),
-                    query: now,
-                    failures: 0,
-                });
+                bucket.contacts.push(entry);
                 return;
             }
             if bucket.depth == 160

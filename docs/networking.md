@@ -179,9 +179,9 @@ libtorrent's transports.
 ### DHT
 
 The DHT uses the address families supported by `listen`, with separate IPv4
-and IPv6 routing tables sharing one node ID. Good contacts are saved in the
-catalog and reverified on the next start; `dht_bootstrap` lists the routers used to
-join when no saved nodes answer. It starts lazily for public transfers using DHT
+and IPv6 routing tables and address-bound node IDs (BEP 42). Good contacts are
+saved in the catalog and reverified on the next start; `dht_bootstrap` lists the
+routers used to join when no saved nodes answer. It starts lazily for public transfers using DHT
 or magnet metadata resolution, never for private torrents or metainfo-only
 rechecks. Router outages remain ordinary discovery failures and are retried.
 Initialization failures fail affected executions and are retained until the
@@ -205,6 +205,38 @@ use bracketed addresses, for example `"[2001:db8::1]:6881"` (replace this
 example with a reachable router). Link-local and scoped DHT endpoints are not
 supported. Outgoing DHT datagrams are limited to 1024 bytes, with at most 40
 peers per reply. Query rate limits group IPv6 sources by /64.
+
+#### DHT security and public addresses
+
+spill includes the requester's observed IP and port in the top-level `ip` field
+of DHT replies, including errors. Only replies matched to an outstanding query's
+source endpoint and transaction can contribute public-address observations.
+A public address explicitly bound by `listen` is used immediately. Otherwise,
+the node starts with a random ID until at least three independent source subnets
+agree on an address and form a strict majority of recent reports. Each IPv4 /24
+or IPv6 /64 gets one vote in a ten-minute window, retaining at most 32 votes per
+address family. Local sources, local reported addresses and wrong-family reports
+are ignored. After the first confirmation, switching addresses requires at least
+two-thirds of the retained votes and a lead of at least three votes over the
+current address. Ports are not used to select an identity or change the
+listening port.
+
+Confirmed address changes regenerate the affected family's node ID and rebuild
+its routing buckets. Retained contacts keep their liveness history; contacts that
+no longer fit the new buckets are dropped. The rebuild marks buckets stale and
+schedules a lookup on the new ID regardless of the table's size. Identity changes
+wake the bootstrap task and end walks aimed at the previous neighbourhood.
+Outstanding transactions, stored peers and issued announce tokens remain usable.
+The catalog retains stable random identity material, not trusted public-address observations; confirming the
+same address after restart reproduces the same ID. IPv4 and IPv6 addresses are
+confirmed independently. Tracker and peer-handshake address hints are not used.
+
+spill continues answering nodes whose IDs fail BEP 42. Their referrals and peer
+results remain usable, but their tokens are ignored and they do not count toward
+the closest-eight lookup completion condition. Announce lookups count only
+compliant nodes that return tokens toward that condition. Private, loopback and
+link-local addresses are exempt from ID verification. This limits targeted node-ID placement;
+it does not authenticate DHT nodes or prevent all DHT attacks.
 
 ### Local service discovery
 

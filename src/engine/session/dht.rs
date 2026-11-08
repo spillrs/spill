@@ -16,6 +16,8 @@ use tokio::{
 pub const MAX_SAVED_NODES: usize = 300;
 #[derive(Clone, Debug)]
 pub struct SavedState {
+    /// Stable random identity material. Live BEP 42 IDs are derived separately
+    /// for each confirmed public address; addresses are rediscovered on restart.
     pub id: NodeId,
     pub nodes: Vec<Contact>,
 }
@@ -25,7 +27,7 @@ pub(in crate::engine) struct Handle {
     pub(in crate::engine) commands: mpsc::Sender<crate::engine::dht::Command>,
     pub(in crate::engine) address: SocketAddr,
     pub(in crate::engine) families: [bool; 2],
-    pub(in crate::engine) id: NodeId,
+    pub(in crate::engine) identities: watch::Receiver<[(NodeId, Option<std::net::IpAddr>); 2]>,
     pub(in crate::engine) lookups: Arc<Semaphore>,
     pub(in crate::engine) lookup_queries: usize,
     pub(in crate::engine) max_peers: usize,

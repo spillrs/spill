@@ -19,13 +19,23 @@ pub(super) async fn run(
     let mut last_good = 0;
     let mut retry_delay = Duration::from_secs(30);
     let mut bootstrap_due = tokio::time::Instant::now();
-    loop {
+    let mut identities = handle.identities.clone();
+    'bootstrap: loop {
+        identities.borrow_and_update();
+        let (own, targets) = handle.refresh_targets(ipv6).await?;
+        for target in targets {
+            let seeds = handle.closest(ipv6, target).await?;
+            walk(&handle, ipv6, own, target, seeds, vec![]).await?;
+            if handle.id(ipv6) != own {
+                continue 'bootstrap;
+            }
+        }
         let good_before = handle.stats(ipv6).await?.good_nodes;
         // Recover promptly after contact loss, but don't bypass backoff forever
         // on hosts where this address family has no route.
         let lost_contacts = good_before < 8 && last_good >= 8;
         if good_before < 128 && (lost_contacts || tokio::time::Instant::now() >= bootstrap_due) {
-            let target = handle.id();
+            let target = handle.id(ipv6);
             let seeds = if first {
                 saved
                     .nodes
@@ -36,7 +46,10 @@ pub(super) async fn run(
             } else {
                 handle.closest(ipv6, target).await?
             };
-            let mut replied = walk(&handle, ipv6, target, seeds, vec![]).await?;
+            let mut replied = walk(&handle, ipv6, own, target, seeds, vec![]).await?;
+            if handle.id(ipv6) != own {
+                continue 'bootstrap;
+            }
             if first && !saved.nodes.is_empty() {
                 let good_nodes = handle.stats(ipv6).await?.good_nodes;
                 tracing::debug!(source = "saved", ipv6, good_nodes, "dht_bootstrap_finished");
@@ -56,12 +69,15 @@ pub(super) async fn run(
                 }
                 handle.set_routers(ipv6, addresses.clone()).await?;
                 let target = if first {
-                    handle.id()
+                    handle.id(ipv6)
                 } else {
                     NodeId(super::entropy()?)
                 };
                 let seeds = handle.closest(ipv6, target).await?;
-                replied += walk(&handle, ipv6, target, seeds, addresses.clone()).await?;
+                replied += walk(&handle, ipv6, own, target, seeds, addresses.clone()).await?;
+                if handle.id(ipv6) != own {
+                    continue 'bootstrap;
+                }
                 let good_nodes = handle.stats(ipv6).await?.good_nodes;
                 if first {
                     tracing::debug!(
@@ -91,18 +107,18 @@ pub(super) async fn run(
         if first {
             handle.bootstrap_finished(ipv6).await?;
         }
-        for target in handle.refresh_targets(ipv6).await? {
-            let seeds = handle.closest(ipv6, target).await?;
-            walk(&handle, ipv6, target, seeds, vec![]).await?;
-        }
         last_good = handle.stats(ipv6).await?.good_nodes;
         first = false;
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {},
+            changed = identities.changed() => changed.map_err(|_| super::stopped())?,
+        }
     }
 }
 async fn walk(
     handle: &Handle,
     ipv6: bool,
+    own: NodeId,
     target: NodeId,
     seeds: Vec<Contact>,
     routers: Vec<SocketAddr>,
@@ -115,6 +131,10 @@ async fn walk(
     let mut requests = Requests::default();
     let mut replied = 0;
     loop {
+        // A new identity needs its own neighbourhood, not the previous walk's target.
+        if handle.id(ipv6) != own {
+            break;
+        }
         queue.sort_unstable_by_key(|address| {
             std::cmp::Reverse(super::routing::distance(ids[address], target))
         });
@@ -141,7 +161,7 @@ async fn walk(
             replied += 1;
             for node in reply.nodes {
                 if node.address.is_ipv6() == ipv6
-                    && node.id != handle.id()
+                    && node.id != handle.id(ipv6)
                     && !asked.contains(&node.address)
                     && !queue.contains(&node.address)
                 {

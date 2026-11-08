@@ -1,15 +1,15 @@
 //! BEP 19 HTTP(S) range sources, explicitly authorized independently of trackers.
 //! A tracked peer adapter feeds the normal request, hash, retry and storage path.
-//! Parallel mirrors share bounded request/storage budgets, pinned DNS and same-origin redirects.
+//! Parallel mirrors share bounded request/storage budgets and tracker HTTP egress policy.
 use crate::engine::peer_io::{ConnectionId, Frame, PeerEvent};
 use crate::protocol::{
     bencode::Value,
     metainfo::{FileKind, OwnedMetainfo},
     peer::message::{BlockRequest, Message},
 };
-use reqwest::{Client, header, redirect};
-use std::{collections::VecDeque, io, net::SocketAddr};
-use tokio::{net::lookup_host, sync::mpsc, time::timeout};
+use reqwest::{Client, header};
+use std::{collections::VecDeque, io};
+use tokio::{sync::mpsc, time::timeout};
 use url::Url;
 
 pub(in crate::engine) const MAX_ACTIVE: usize = 16;
@@ -96,7 +96,18 @@ impl Seed {
         events: &mpsc::Sender<PeerEvent>,
         capacity_changed: &tokio::sync::Notify,
     ) -> io::Result<()> {
-        let client = self.client().await?;
+        if !crate::engine::network::http_destination_allowed(&self.url, self.allow_local_network) {
+            return Err(invalid("web seed destination not allowed"));
+        }
+        let client = crate::engine::network::http_client(self.allow_local_network)
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
+            .no_zstd()
+            .timeout(crate::engine::profile::REQUEST_TIMEOUT)
+            .pool_max_idle_per_host(1)
+            .build()
+            .map_err(transport)?;
         events
             .send(PeerEvent::Handshake {
                 connection,
@@ -219,48 +230,6 @@ impl Seed {
             .await
             .map_err(closed)
     }
-    async fn client(&self) -> io::Result<Client> {
-        let host = self
-            .url
-            .host_str()
-            .ok_or_else(|| invalid("invalid web seed host"))?;
-        let port = self
-            .url
-            .port_or_known_default()
-            .ok_or_else(|| invalid("invalid web seed port"))?;
-        let mut addresses: Vec<SocketAddr> = match self.url.host() {
-            Some(url::Host::Ipv4(ip)) => vec![SocketAddr::new(ip.into(), port)],
-            Some(url::Host::Ipv6(ip)) => vec![SocketAddr::new(ip.into(), port)],
-            _ => timeout(
-                crate::engine::profile::DNS_TIMEOUT,
-                lookup_host((host, port)),
-            )
-            .await
-            .map_err(|_| invalid("web seed DNS deadline"))?
-            .map_err(|_| invalid("web seed DNS failed"))?
-            .take(crate::engine::profile::MAX_DNS_ANSWERS)
-            .collect(),
-        };
-        addresses.retain(|a| crate::engine::network::source(*a, self.allow_local_network));
-        if addresses.is_empty() {
-            return Err(invalid("no usable web seed address"));
-        }
-        crate::http::client()
-            .redirect(redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .no_gzip()
-            .no_brotli()
-            .no_deflate()
-            .no_zstd()
-            .referer(false)
-            .connect_timeout(crate::engine::profile::CONNECT_TIMEOUT)
-            .timeout(crate::engine::profile::REQUEST_TIMEOUT)
-            .pool_max_idle_per_host(1)
-            .user_agent(crate::engine::identity::CLIENT_NAME)
-            .resolve_to_addrs(host, &addresses)
-            .build()
-            .map_err(transport)
-    }
     async fn fetch(&self, client: &Client, start: u64, length: u32) -> io::Result<Vec<u8>> {
         if length > crate::engine::profile::MAX_PIECE_LEN {
             return Err(invalid("web seed range budget"));
@@ -335,78 +304,51 @@ fn component(path: &mut String, bytes: &[u8]) {
 }
 async fn get_range(
     client: &Client,
-    mut url: Url,
+    url: Url,
     start: u64,
     length: u64,
     total: u64,
 ) -> io::Result<Vec<u8>> {
-    let end = start
-        .checked_add(length)
-        .and_then(|n| n.checked_sub(1))
-        .ok_or_else(|| invalid("invalid web seed range"))?;
-    let origin = url.origin();
-    // Same-origin redirects preserve the client's DNS pins on every hop.
-    for redirects in 0..=3 {
-        let mut response = client
-            .get(url.clone())
-            .header(header::RANGE, format!("bytes={start}-{end}"))
-            .header(header::ACCEPT_ENCODING, "identity")
-            .send()
-            .await
-            .map_err(transport)?;
-        if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
-            if redirects == 3 {
-                return Err(invalid("web seed redirect limit"));
-            }
-            let location = response
-                .headers()
-                .get(header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .filter(|s| s.len() <= crate::engine::profile::MAX_URL_BYTES)
-                .ok_or_else(|| invalid("invalid web seed redirect"))?;
-            let next = url
-                .join(location)
-                .map_err(|_| invalid("invalid web seed redirect"))?;
-            if next.origin() != origin || !valid(&next) {
-                return Err(invalid("web seed redirect must remain same-origin"));
-            }
-            url = next;
-            continue;
-        }
-        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "web seed requires HTTP 206 range response, received {}",
-                    response.status()
-                ),
-            ));
-        }
-        // Decompression is disabled: mirrors may label raw .gz payloads as
-        // Content-Encoding: x-gzip. Validate the range of wire bytes instead.
-        let expected = format!("bytes {start}-{end}/{total}");
-        if response
-            .headers()
-            .get(header::CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            != Some(expected.as_str())
-            || response.content_length().is_some_and(|n| n != length)
-        {
-            return Err(invalid("invalid web seed range headers"));
-        }
-        let mut body = Vec::with_capacity(length as usize);
-        while let Some(chunk) = response.chunk().await.map_err(transport)? {
-            if chunk.len() as u64 > length - body.len() as u64 {
-                return Err(invalid("web seed body exceeds requested range"));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        if body.len() as u64 != length {
-            return Err(invalid("short web seed range body"));
-        }
-        return Ok(body);
+    let end = start + length - 1;
+    let mut response = client
+        .get(url)
+        .header(header::RANGE, format!("bytes={start}-{end}"))
+        .header(header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(transport)?;
+    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "web seed requires HTTP 206 range response, received {}",
+                response.status()
+            ),
+        ));
     }
-    unreachable!("bounded redirect loop")
+    // Decompression is disabled: mirrors may label raw .gz payloads as
+    // Content-Encoding: x-gzip. Validate the range of wire bytes instead.
+    let expected = format!("bytes {start}-{end}/{total}");
+    if response
+        .headers()
+        .get(header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        != Some(expected.as_str())
+        || response.content_length().is_some_and(|n| n != length)
+    {
+        return Err(invalid("invalid web seed range headers"));
+    }
+    let mut body = Vec::with_capacity(length as usize);
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if chunk.len() as u64 > length - body.len() as u64 {
+            return Err(invalid("web seed body exceeds requested range"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if body.len() as u64 != length {
+        return Err(invalid("short web seed range body"));
+    }
+    Ok(body)
 }
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)

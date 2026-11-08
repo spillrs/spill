@@ -124,7 +124,6 @@ pub(in crate::engine) const UPLOAD_SLOTS: usize = 8;
 pub(in crate::engine) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub(in crate::engine) const HASH_CHUNK_LEN: usize = 65536;
 pub(in crate::engine) const DNS_TIMEOUT: Duration = Duration::from_secs(5);
-pub(in crate::engine) const MAX_DNS_ANSWERS: usize = 16;
 pub(in crate::engine) const MAX_WEB_SEEDS: usize = 32;
 pub(in crate::engine) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(in crate::engine) const STALL_RETRY_INITIAL: Duration = Duration::from_secs(1);

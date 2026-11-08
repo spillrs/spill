@@ -120,7 +120,9 @@ peers that advertise BEP 55 holepunch support. IPv4-mapped IPv6 peer endpoints
 are treated as IPv4 for contact deduplication.
 
 Web seeds must support HTTP byte-range requests. Downloaded pieces undergo the
-same verification as peer transfers. Redirects must remain on the same origin.
+same verification as peer transfers. Web seeds follow the same HTTP(S) redirect
+and address restrictions as trackers: cross-host redirects and HTTPS upgrades
+are allowed; HTTPS-to-HTTP downgrades are refused.
 
 HTTP connections use HTTP/1 without system proxies. HTTPS verifies certificates
 against bundled Mozilla roots, not the OS trust store; this also applies to

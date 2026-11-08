@@ -412,7 +412,9 @@ impl Session {
                 Err(error) => return Err(error),
             }
         };
-        let client = crate::engine::discovery::http_client(network.allow_local_network)?;
+        let client = crate::engine::network::http_client(network.allow_local_network)
+            .build()
+            .map_err(io::Error::other)?;
         let mut session = Shared::new(
             address,
             limits,

@@ -145,31 +145,41 @@ async fn v2_and_hybrid_web_seeds_respect_file_tails_padding_and_encoded_paths() 
 }
 
 #[tokio::test]
-async fn gzip_labeled_web_seed_preserves_raw_archive_bytes() {
+async fn redirected_web_seed_preserves_ranges_and_raw_archive_bytes() {
     tokio::time::timeout(Duration::from_secs(10), async {
         const ARCHIVE: &[u8] = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff\xcbH\xcd\xc9\xc9\x07\x00\x86\xa6\x106\x05\x00\x00\x00";
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mirror = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let location = format!("http://localhost:{}/redirected/archive.gz", mirror.local_addr().unwrap().port());
         let url = format!("http://{}/archive.gz", listener.local_addr().unwrap());
         let meta = metainfo(&seed_metainfo("archive.gz", ARCHIVE, None), &[url]);
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut reader = BufReader::new(&mut socket);
-            let mut range_seen = false;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                if line == "\r\n" { break; }
-                if line.to_ascii_lowercase().starts_with("range:") {
-                    assert_eq!(line.trim(), format!("range: bytes=0-{}", ARCHIVE.len() - 1));
-                    range_seen = true;
+            for (redirect, listener) in [(true, listener), (false, mirror)] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                let mut range_seen = false;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    if line == "\r\n" { break; }
+                    if line.to_ascii_lowercase().starts_with("range:") {
+                        assert_eq!(line.trim(), format!("range: bytes=0-{}", ARCHIVE.len() - 1));
+                        range_seen = true;
+                    }
+                }
+                assert!(range_seen);
+                if redirect {
+                    socket.write_all(format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    ).as_bytes()).await.unwrap();
+                } else {
+                    socket.write_all(format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 0-{}/{}\r\nContent-Encoding: x-gzip\r\nConnection: close\r\n\r\n",
+                        ARCHIVE.len(), ARCHIVE.len() - 1, ARCHIVE.len()
+                    ).as_bytes()).await.unwrap();
+                    socket.write_all(ARCHIVE).await.unwrap();
                 }
             }
-            assert!(range_seen);
-            socket.write_all(format!(
-                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 0-{}/{}\r\nContent-Encoding: x-gzip\r\nConnection: close\r\n\r\n",
-                ARCHIVE.len(), ARCHIVE.len() - 1, ARCHIVE.len()
-            ).as_bytes()).await.unwrap();
-            socket.write_all(ARCHIVE).await.unwrap();
         });
         let session = Session::bind(NetworkOptions {
             listen: "127.0.0.1:0".parse().unwrap(), allow_local_network: true, utp: false,
@@ -184,6 +194,59 @@ async fn gzip_labeled_web_seed_preserves_raw_archive_bytes() {
         assert_eq!(std::fs::read(root.0.join("archive.gz")).unwrap(), ARCHIVE);
         server.await.unwrap();
         session.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn web_seed_redirects_reject_forbidden_destinations_and_loops() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        for (location, replies, expected) in [
+            ("http://0.0.0.0:1/x", 1, "redirect destination not allowed"),
+            ("file:///payload", 1, "received 302 Found"),
+            ("/loop", 6, "redirect limit"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/x", listener.local_addr().unwrap());
+            let meta = metainfo(&seed_metainfo("x", b"abc", None), &[url]);
+            let server = tokio::spawn(async move {
+                for _ in 0..replies {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut reader = BufReader::new(&mut socket);
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).await.unwrap();
+                        if line == "\r\n" { break; }
+                    }
+                    socket.write_all(format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    ).as_bytes()).await.unwrap();
+                }
+            });
+            let session = Session::bind(NetworkOptions {
+                listen: "127.0.0.1:0".parse().unwrap(), allow_local_network: true, utp: false,
+                ..Default::default()
+            }, Limits::default()).await.unwrap();
+            let root = Temp::new();
+            let mut options = TorrentOptions::new(TorrentSource::Metainfo(meta), Destination::Create(root.0.clone()));
+            options.settings = TorrentSettings { trackers: false, dht: false, pex: false, web_seeds: true, ..Default::default() };
+            options.diagnostics = true;
+            let mut handle = session.admit(options).unwrap();
+            loop {
+                let snapshot = handle.snapshot();
+                if let Some(error) = snapshot.diagnostics.as_ref().and_then(|d| {
+                    d.web_seeds.iter().find_map(|s| s.error.as_ref())
+                }) {
+                    assert!(error.contains(expected), "{location}: {error}");
+                    assert_eq!(snapshot.progress.verified_bytes, 0);
+                    assert!(snapshot.progress.exit.is_none());
+                    break;
+                }
+                assert!(handle.changed().await);
+            }
+            server.await.unwrap();
+            handle.stop().await.unwrap();
+            session.shutdown().await.unwrap();
+        }
     }).await.unwrap();
 }
 

@@ -1,5 +1,7 @@
 //! Egress policy, applied to numeric endpoints after resolution and before I/O.
 pub(in crate::engine) use std::net::{IpAddr, SocketAddr};
+use std::{io, sync::Arc, time::Duration};
+use url::Url;
 
 pub(in crate::engine) fn canonical(address: SocketAddr) -> SocketAddr {
     match address {
@@ -34,6 +36,76 @@ pub(in crate::engine) fn source(address: SocketAddr, allow_local: bool) -> bool 
         IpAddr::V6(ip) => {
             allow_local || !(ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local())
         }
+    }
+}
+
+// Filter the actual connection destinations, with no secondary unfiltered lookup.
+#[derive(Debug)]
+struct Resolver(bool);
+impl reqwest::dns::Resolve for Resolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let allow_local_network = self.0;
+        Box::pin(async move {
+            let addresses = tokio::time::timeout(
+                crate::engine::profile::DNS_TIMEOUT,
+                tokio::net::lookup_host((name.as_str(), 80)),
+            )
+            .await??;
+            let allowed: Vec<_> = addresses
+                .filter(|a| source(*a, allow_local_network))
+                .map(|mut address| {
+                    // A nonzero DNS port overrides the URL's default HTTPS port.
+                    address.set_port(0);
+                    address
+                })
+                .collect();
+            if allowed.is_empty() {
+                return Err(
+                    io::Error::new(io::ErrorKind::InvalidData, "no usable HTTP address").into(),
+                );
+            }
+            Ok(Box::new(allowed.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+pub(in crate::engine) fn http_client(allow_local_network: bool) -> reqwest::ClientBuilder {
+    crate::http::client()
+        .user_agent(crate::engine::identity::CLIENT_NAME)
+        .referer(false)
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            let url = attempt.url();
+            if attempt.previous().len() > 5 {
+                return attempt.error("HTTP redirect limit");
+            }
+            if !matches!(url.scheme(), "http" | "https")
+                || (url.scheme() == "http"
+                    && attempt
+                        .previous()
+                        .last()
+                        .is_some_and(|url| url.scheme() == "https"))
+                || !http_destination_allowed(url, allow_local_network)
+            {
+                return attempt.error("HTTP redirect destination not allowed");
+            }
+            attempt.follow()
+        }))
+        .retry(reqwest::retry::never())
+        .pool_idle_timeout(Duration::from_secs(90))
+        .dns_resolver(Arc::new(Resolver(allow_local_network)))
+        .connect_timeout(crate::engine::profile::CONNECT_TIMEOUT)
+}
+pub(in crate::engine) fn http_destination_allowed(url: &Url, allow_local_network: bool) -> bool {
+    let Some(port) = url.port_or_known_default() else {
+        return false;
+    };
+    if port == 0 {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => source(SocketAddr::new(ip.into(), port), allow_local_network),
+        Some(url::Host::Ipv6(ip)) => source(SocketAddr::new(ip.into(), port), allow_local_network),
+        Some(url::Host::Domain(_)) => true,
+        None => false,
     }
 }
 

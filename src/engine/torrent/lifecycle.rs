@@ -107,6 +107,14 @@ pub(super) async fn run(
                 context.networking = Networking::Recheck;
             }
             context.retirement.resolve(&meta, serving)?;
+            if options.settings.file_priorities.is_empty()
+                && let Some(ranges) = magnet.select_only()
+            {
+                options.settings.file_priorities =
+                    crate::engine::selection::FileSelection::select_only(meta.layout(), ranges)
+                        .file_priorities()
+                        .to_vec();
+            }
             super::options::selection(&meta, &options.settings)?;
             context
                 .metadata

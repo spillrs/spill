@@ -574,6 +574,77 @@ async fn raw_magnets_authenticate_layers_download_and_own_learned_aliases() {
 }
 
 #[tokio::test]
+async fn select_only_waits_for_metadata_and_explicit_priorities_take_precedence() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        for (fixture, so, explicit) in [
+            (V2, "0&so=0-0", false),
+            (HYBRID, "0,1-1", false),
+            (V2, "0-4294967295", false),
+            (V2, "4294967295", false),
+            (V2, "4294967295", true),
+        ] {
+            let meta = Profile::default().parse_owned(fixture).unwrap();
+            let (address, source) = source(&meta, 0).await;
+            let (url, tracker) = metadata_peer::tracker(&[address]).await;
+            let topic = meta.info_hash().v1().map_or_else(
+                || format!("btmh:1220{}", meta.info_hash().v2().unwrap()),
+                |hash| format!("btih:{hash}"),
+            );
+            let magnet = Magnet::parse(
+                &format!("magnet:?xt=urn:{topic}&tr={url}&so={so}"),
+                Default::default(),
+            )
+            .unwrap();
+            let session = session().await;
+            let root = Temp::new();
+            let mut options = TorrentOptions::new(
+                TorrentSource::Magnet(magnet),
+                Destination::Create(root.0.clone()),
+            );
+            options.settings = settings();
+            if explicit {
+                options.settings.file_priorities =
+                    spill::engine::selection::FileSelection::all(meta.layout())
+                        .file_priorities()
+                        .to_vec();
+            }
+            let handle = session.admit(options).unwrap();
+            handle.wait_complete().await.unwrap();
+            assert!(handle.metainfo().is_some());
+            let progress = handle.snapshot().progress;
+            if explicit || so == "0-4294967295" {
+                assert!(progress.full_complete);
+            } else if so == "4294967295" {
+                assert_eq!(progress.wanted_bytes, 0);
+            } else {
+                assert_eq!(progress.wanted_bytes, meta.layout().files()[0].length());
+                assert!(progress.verified_bytes < progress.total_bytes);
+                let path: std::path::PathBuf = meta.layout().files()[0]
+                    .path()
+                    .iter()
+                    .map(|p| std::str::from_utf8(p).unwrap())
+                    .collect();
+                assert_eq!(
+                    std::fs::read(
+                        root.0
+                            .join(std::str::from_utf8(meta.name()).unwrap())
+                            .join(path)
+                    )
+                    .unwrap(),
+                    crate::v2_peer::payload(0, progress.wanted_bytes as usize)
+                );
+            }
+            handle.stop().await.unwrap();
+            session.shutdown().await.unwrap();
+            source.abort();
+            tracker.abort();
+        }
+    })
+    .await
+    .expect("bounded magnet selection after metadata acquisition");
+}
+
+#[tokio::test]
 async fn magnet_tracker_tiers_skip_failed_tracker_on_later_announce() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let meta = Profile::default().parse_owned(V2).unwrap();

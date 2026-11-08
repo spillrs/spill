@@ -1,6 +1,6 @@
 //! Bounded v1/v2 magnet inputs. Parsing does not authorize tracker/source access.
 
-use std::fmt;
+use std::{fmt, ops::RangeInclusive};
 
 use crate::protocol::identity::{InfoHashV1, InfoHashV2, TorrentIdentity};
 
@@ -32,6 +32,7 @@ pub enum Error {
     InvalidHash,
     ConflictingHashes,
     UnsupportedVersion,
+    InvalidSelection,
 }
 
 impl fmt::Display for Error {
@@ -65,6 +66,7 @@ impl Parameter {
 pub struct Magnet {
     info_hash: TorrentIdentity,
     parameters: Vec<Parameter>,
+    select_only: Option<Vec<RangeInclusive<u32>>>,
 }
 
 impl Magnet {
@@ -81,6 +83,10 @@ impl Magnet {
     /// version fail. Btmh accepts hexadecimal SHA2-256 multihashes (`1220`
     /// followed by 64 hex digits). Other well-formed multihashes are unsupported.
     /// Unknown topics are retained but cannot substitute for a known identity.
+    /// BEP 53 `so` accepts decimal u32 indices and inclusive ranges. Empty,
+    /// malformed and descending selections fail; repeated parameters are unioned.
+    /// Ranges stay compact, independent of their span. After metadata resolution,
+    /// the engine ignores out-of-range indices and clips ranges to the manifest.
     pub fn parse(input: &str, limits: Limits) -> Result<Self, Error> {
         if input.len() > limits.max_input_bytes {
             return Err(Error::ResourceLimit);
@@ -104,6 +110,7 @@ impl Magnet {
             return Err(Error::ResourceLimit);
         }
         let mut parameters = Vec::new();
+        let mut select_only = None::<Vec<RangeInclusive<u32>>>;
         for pair in query.split(|b| *b == b'&') {
             let equals = pair
                 .iter()
@@ -137,7 +144,33 @@ impl Magnet {
             {
                 continue;
             }
+            if key == b"so" {
+                let ranges = select_only.get_or_insert_with(Vec::new);
+                for token in value.split(|&b| b == b',') {
+                    let mut ends = token.split(|&b| b == b'-');
+                    let start = file_index(ends.next().expect("one token"))?;
+                    let end = ends.next().map(file_index).transpose()?.unwrap_or(start);
+                    if ends.next().is_some() || start > end {
+                        return Err(Error::InvalidSelection);
+                    }
+                    ranges.push(start..=end);
+                }
+            }
             parameters.push(Parameter { key, value });
+        }
+        if let Some(ranges) = &mut select_only {
+            ranges.sort_unstable_by_key(|r| (*r.start(), *r.end()));
+            let mut merged: Vec<RangeInclusive<u32>> = Vec::new();
+            for range in ranges.drain(..) {
+                if let Some(last) = merged.last_mut()
+                    && range.start() <= last.end()
+                {
+                    *last = *last.start()..=(*last.end()).max(*range.end());
+                } else {
+                    merged.push(range);
+                }
+            }
+            *ranges = merged;
         }
         let mut v1 = None;
         let mut v2 = None;
@@ -165,6 +198,7 @@ impl Magnet {
         Ok(Self {
             info_hash,
             parameters,
+            select_only,
         })
     }
 
@@ -174,6 +208,13 @@ impl Magnet {
 
     pub fn parameters(&self) -> &[Parameter] {
         &self.parameters
+    }
+
+    /// BEP 53 zero-based file indices, as sorted, non-overlapping inclusive
+    /// ranges. `None` means no selection was specified. Padding indices follow
+    /// the manifest order but do not select payload.
+    pub fn select_only(&self) -> Option<&[RangeInclusive<u32>]> {
+        self.select_only.as_deref()
     }
 
     /// Valid tracker hints, preserving duplicates and link order.
@@ -191,6 +232,16 @@ impl Magnet {
             .rfind(|p| p.key == b"dn")
             .map(|p| p.value())
     }
+}
+
+fn file_index(input: &[u8]) -> Result<u32, Error> {
+    if input.is_empty() || !input.iter().all(u8::is_ascii_digit) {
+        return Err(Error::InvalidSelection);
+    }
+    std::str::from_utf8(input)
+        .expect("decimal digits")
+        .parse()
+        .map_err(|_| Error::InvalidSelection)
 }
 
 fn prefix(value: &[u8], prefix: &[u8]) -> bool {

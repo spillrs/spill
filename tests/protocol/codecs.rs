@@ -288,6 +288,51 @@ fn magnet_decoding_and_limits() {
 }
 
 #[test]
+fn magnet_select_only_is_strict_and_keeps_large_ranges_compact() {
+    use spill::protocol::magnet::{Error, Limits, Magnet};
+    let base = "magnet:?xt=urn:btih:000102030405060708090a0b0c0d0e0f10111213";
+    let parse = |selection: &str| Magnet::parse(&format!("{base}{selection}"), Limits::default());
+    assert!(parse("").unwrap().select_only().is_none());
+    let magnet = parse("&so=0,2,4-8&SO.1=6-10,2,0003").unwrap();
+    assert_eq!(
+        magnet.select_only().unwrap(),
+        &[0..=0, 2..=2, 3..=3, 4..=10]
+    );
+    assert_eq!(
+        parse("&so=0-4294967295").unwrap().select_only().unwrap(),
+        std::slice::from_ref(&(0..=u32::MAX))
+    );
+    assert_eq!(
+        parse("&so=0%2C2%2D4").unwrap().select_only().unwrap(),
+        &[0..=0, 2..=4]
+    );
+    for value in [
+        "",
+        "-1",
+        "1-",
+        "2-1",
+        "1--2",
+        "1-2-3",
+        "1,",
+        ",1",
+        "1,,2",
+        "a",
+        "1+2",
+        "%2B1",
+        "4294967296",
+        "0-4294967296",
+        "%ff",
+    ] {
+        assert_eq!(
+            parse(&format!("&so={value}")).unwrap_err(),
+            Error::InvalidSelection,
+            "{value}"
+        );
+    }
+    assert_eq!(parse("&so=0&so=").unwrap_err(), Error::InvalidSelection);
+}
+
+#[test]
 fn extension_updates_are_directional_and_atomic() {
     use spill::protocol::peer::extension::{ExtensionMap, Handshake};
     let parse = |wire| Handshake::parse(wire, Limits::default()).unwrap();

@@ -41,6 +41,19 @@ async fn main() -> std::io::Result<()> {
 
 For magnets, parse the URI with `spill::protocol::magnet::Magnet::parse` and
 pass `TorrentSource::Magnet`. Private torrents require metainfo, not magnets.
+BEP 53 `so` ranges apply after metadata resolution unless
+`TorrentOptions.settings.file_priorities` is non-empty, in which case explicit
+priorities take precedence. `Magnet::select_only()` exposes compact inclusive
+ranges; `FileSelection::select_only(meta.layout(), ranges)` converts them to
+normal/skip priorities, preserving padding as skip, ignoring out-of-range indices
+and clipping ranges to the manifest. Malformed selections fail parsing; a
+selection containing only out-of-range indices selects no data files. See [File selection](torrents.md#file-selection) for the syntax.
+
+When restarting from saved metainfo instead of the original magnet, also save
+and restore effective `file_priorities`; metainfo alone does not carry `so`.
+The daemon persists both atomically. `Session::admit` still rejects duplicate
+executions; the daemon's additive duplicate-selection behavior is control-layer
+policy, not implicit mutation of an existing library handle.
 See the [API reference](https://docs.rs/spill) for exact signatures.
 
 The protocol parsers can inspect v1, v2 and hybrid metainfo and magnets.

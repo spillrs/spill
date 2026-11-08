@@ -8,7 +8,8 @@ pub struct TorrentSettings {
     /// Bytes/second; zero means unlimited.
     pub download_limit: u64,
     pub upload_limit: u64,
-    /// Empty selects every non-padding file at normal priority.
+    /// Explicit priorities override a magnet's BEP 53 selection. Empty uses `so`
+    /// when present, otherwise every non-padding file at normal priority.
     pub file_priorities: Vec<FilePriority>,
     pub trackers: bool,
     /// Enable DHT and, when the session permits it, local service discovery.

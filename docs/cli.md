@@ -34,7 +34,11 @@ known full-hash alias, case-insensitively, and any prefix matching exactly one
 torrent. Exact matches take precedence; an ambiguous prefix is an input error.
 Both hashes of a hybrid address the same torrent, destination and accounting.
 Adding metainfo or a magnet with an already-known hash is a duplicate, even if
-the other hash or destination differs. `list`, `get` and `--json` output
+the other hash or destination differs. Exception: a magnet with BEP 53 `so`
+enables its referenced skipped files in the existing torrent and returns that
+ID, preserving other priorities, settings, destination and pause state. No-op
+selection updates do not restart the torrent. All supplied hash topics must
+already identify the same entry. `list`, `get` and `--json` output
 preserve full IDs; use prefixes when entering commands.
 
 ## Commands
@@ -42,7 +46,7 @@ preserve full IDs; use prefixes when entering commands.
 | Command | What it does |
 |---|---|
 | `create TARGET [OPTIONS]` | Create a v1, v2 or hybrid `.torrent` from a file or directory, without a daemon. See below. |
-| `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the new ID. Adding a torrent that already exists is an error. |
+| `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the torrent ID. Existing torrents are errors except for magnet `so` selection updates; see [File selection](torrents.md#file-selection). |
 | `list [--watch]` | All torrents: full ID, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
 | `status` | Same data as `list`, plus daemon health. Most useful with `--json`. |
 | `get ID` | Everything about one torrent: settings, state, progress, lifetime downloaded/uploaded bytes, timestamps, seeding time, errors, tracker messages, and live transfer details (rates, peers, trackers). |
@@ -296,7 +300,7 @@ spill set ID 'file_priorities=[]'      # back to all files
 - A running torrent is stopped and restarted with the new settings. A paused
   torrent stays paused.
 - `file_priorities` needs one entry per file in `files` order, including
-  padding files, which must be `"skip"`. File selection needs metadata, so wait
+  padding files, which must be `"skip"`. Explicit file priorities need metadata, so wait
   for a magnet to resolve first.
 - `dht` and `pex` cannot be enabled on private torrents.
 

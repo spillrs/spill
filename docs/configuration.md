@@ -155,7 +155,7 @@ interface.
 | `upload_limit` | `0` | Upload rate limit, same units. |
 | `seed_ratio` | `0.0` | Pause after uploading this multiple of the torrent's size. `0` disables the rule. Must be finite and not negative. |
 | `seed_time` | `0` | Pause after this many seconds of active seeding. Paused time and downtime do not count. `0` disables the rule. |
-| `file_priorities` | `[]` | `[]` downloads every file. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in the order `spill files` shows. Only meaningful per torrent. |
+| `file_priorities` | `[]` | `[]` downloads every file, except that magnet `so` supplies the initial selection when the list is empty. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in the order `spill files` shows. Only meaningful per torrent. |
 | `trackers` | `true` | Announce to the torrent's trackers. |
 | `dht` | `true` | Use the DHT over the address families supported by `listen`, and local service discovery when `allow_local_network = true`. Always off for private torrents. |
 | `pex` | `true` | Exchange peers with connected peers. Always off for private torrents. |

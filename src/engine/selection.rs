@@ -75,6 +75,30 @@ impl FileSelection {
         Ok(selection)
     }
 
+    /// Select only the BEP 53 inclusive file-index ranges at normal priority.
+    /// Indices match `Layout::files`, including padding (which stays skipped).
+    /// Clip ranges to the manifest and ignore out-of-manifest indices. Empty
+    /// (descending) ranges select nothing. Range spans are never expanded.
+    pub fn select_only(layout: &Layout<'_>, ranges: &[std::ops::RangeInclusive<u32>]) -> Self {
+        let mut priorities = vec![FilePriority::Skip; layout.files().len()];
+        for range in ranges {
+            let start = *range.start() as usize;
+            let end = (u64::from(*range.end()) + 1).min(priorities.len() as u64) as usize;
+            if start >= end {
+                continue;
+            }
+            for (file, priority) in layout.files()[start..end]
+                .iter()
+                .zip(&mut priorities[start..end])
+            {
+                if file.kind() == FileKind::Data {
+                    *priority = FilePriority::Normal;
+                }
+            }
+        }
+        Self::new(layout, &priorities).expect("matching manifest and padding priorities")
+    }
+
     pub fn all(layout: &Layout<'_>) -> Self {
         let priorities: Vec<_> = layout
             .files()

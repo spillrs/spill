@@ -48,8 +48,9 @@ peers need not advertise a listening port or reconnect after metadata validates.
 Magnet parameter names are case-insensitive and numeric suffixes such as `tr.1`
 are ignored. Invalid tracker hints and malformed percent escapes in `tr`/`ws`
 values are skipped; input budgets and destination restrictions still apply.
-The last `dn` display name wins. `ws`, `x.pe`, `so` and `xl` do not supply web
-seeds, explicit peers, file selections or size hints. v1/v2 topics can be combined,
+The last `dn` display name wins. `so` selects files after metadata resolution
+(see [File selection](#file-selection)). `ws`, `x.pe` and `xl` do not supply web
+seeds, explicit peers or size hints. v1/v2 topics can be combined,
 but conflicting hashes of the same version are rejected.
 
 Use `spill add SOURCE --paused` to add without starting discovery or payload
@@ -79,6 +80,23 @@ of a file is verified, it is renamed to `NAME`. A file you've set to `skip`
 stays `.part` (and sparse) unless pieces shared with a selected file fill it.
 
 ## File selection
+
+Magnet links support BEP 53 `so=0,2,4-8`: select only those zero-based file
+indices, with inclusive ranges. Indices follow `spill files` order, including
+padding entries, which remain skipped. Repeated `so` parameters are unioned.
+Empty, malformed, descending or overflowing selections are input errors.
+Indices beyond the manifest are ignored, and ranges are clipped to the file
+list. If no data files remain selected, the target is empty; metadata is still
+saved so files can be selected later. Selection survives restart.
+
+Adding a magnet with `so` for an existing torrent enables referenced skipped
+files at normal priority without deselecting others or lowering high priorities.
+It returns the existing ID and preserves the destination, pause state and other
+settings; other add options do not replace them. A duplicate that adds no files
+leaves the running torrent and its connections untouched. Before metadata arrives, new
+indices extend the pending selection. An existing all-files selection stays all
+files. Without `so`, adding an existing torrent remains an error. All supplied
+hash topics must already identify the same entry.
 
 `spill files ID` lists every file with its priority. Set priorities with
 `set ID 'file_priorities=[...]'`, one of `skip`, `normal` or `high` per file:

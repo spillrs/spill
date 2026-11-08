@@ -232,6 +232,7 @@ impl Control {
                     retry_at: 0,
                     added_at: crate::catalog::now(),
                 };
+                let mut parsed_magnet = None;
                 let identity = match (&row.metainfo, &row.magnet) {
                     (Some(bytes), None) if bytes.len() <= spill::engine::profile::MAX_META => {
                         let meta = supervisor
@@ -251,7 +252,9 @@ impl Control {
                         let magnet =
                             spill::protocol::magnet::Magnet::parse(uri, Default::default())
                                 .map_err(|e| Error::Invalid(e.to_string()))?;
-                        magnet.info_hash()
+                        let identity = magnet.info_hash();
+                        parsed_magnet = Some(magnet);
+                        identity
                     }
                     (Some(_), None) => {
                         return Err(Error::Invalid("metainfo exceeds 16 MiB".into()));
@@ -262,12 +265,48 @@ impl Control {
                 row.id = id.clone();
                 row.v1 = identity.v1().map(|hash| hash.to_string());
                 row.v2 = identity.v2().map(|hash| hash.to_string());
-                validate_settings(&row, &row.settings)?;
+                let mut duplicate: Option<Arc<Row>> = None;
                 for hash in row.hashes() {
-                    if supervisor.db.row(hash)?.is_some() {
-                        return Err(crate::catalog::Error::Duplicate.into());
+                    if let Some(existing) = supervisor.db.row(hash)? {
+                        if duplicate.as_ref().is_some_and(|old| old.id != existing.id) {
+                            return Err(crate::catalog::Error::Duplicate.into());
+                        }
+                        duplicate = Some(existing);
                     }
                 }
+                if let Some(existing) = duplicate {
+                    let Some(magnet) = parsed_magnet.filter(|m| m.select_only().is_some()) else {
+                        return Err(crate::catalog::Error::Duplicate.into());
+                    };
+                    if row
+                        .v1
+                        .as_ref()
+                        .is_some_and(|hash| existing.v1.as_ref() != Some(hash))
+                        || row
+                            .v2
+                            .as_ref()
+                            .is_some_and(|hash| existing.v2.as_ref() != Some(hash))
+                    {
+                        return Err(crate::catalog::Error::Duplicate.into());
+                    }
+                    if magnet_selection(&existing, &magnet)?.is_some() {
+                        supervisor.stop(&existing.id).await?;
+                        // Resolution may have published metadata while stop was joining.
+                        let current = supervisor.db.row(&existing.id)?.expect("existing torrent");
+                        let updated = magnet_selection(&current, &magnet).and_then(|selection| {
+                            if let Some((settings, uri)) = selection {
+                                supervisor
+                                    .db
+                                    .selection(&existing.id, &settings, uri.as_deref())?;
+                            }
+                            Ok(())
+                        });
+                        supervisor.reconcile().await?;
+                        updated?;
+                    }
+                    return Ok(json!({"id":existing.id}));
+                }
+                validate_settings(&row, &row.settings)?;
                 std::fs::create_dir_all(&row.output_dir)?;
                 supervisor.db.insert(&row)?;
                 supervisor.reconcile().await?;
@@ -347,6 +386,61 @@ fn patch_settings(base: &Settings, values: Map<String, Value>) -> Result<Setting
     settings.as_object_mut().unwrap().extend(values);
     Ok(serde_json::from_value(settings)?)
 }
+fn magnet_selection(
+    row: &Row,
+    magnet: &spill::protocol::magnet::Magnet,
+) -> Result<Option<(Settings, Option<String>)>, Error> {
+    use spill::engine::selection::FilePriority;
+    let ranges = magnet.select_only().expect("select-only duplicate");
+    let mut settings = row.settings.clone();
+    let mut uri = row.magnet.clone();
+    if let Some(meta) = &row.parsed {
+        let selected = FileSelection::select_only(meta.layout(), ranges);
+        let mut priorities = if settings.file_priorities.is_empty() {
+            FileSelection::all(meta.layout()).file_priorities().to_vec()
+        } else {
+            settings.file_priorities.clone()
+        };
+        let mut changed = false;
+        for (priority, selected) in priorities.iter_mut().zip(selected.file_priorities()) {
+            if *priority == FilePriority::Skip && *selected == FilePriority::Normal {
+                *priority = FilePriority::Normal;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(None);
+        }
+        settings.file_priorities = priorities;
+    } else {
+        let uri = uri.as_mut().expect("unresolved magnet");
+        let original = spill::protocol::magnet::Magnet::parse(uri, Default::default())
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let Some(previous) = original.select_only() else {
+            return Ok(None);
+        };
+        if ranges.iter().all(|range| {
+            previous
+                .iter()
+                .any(|old| old.start() <= range.start() && old.end() >= range.end())
+        }) {
+            return Ok(None);
+        }
+        for parameter in magnet.parameters().iter().filter(|p| p.key() == b"so") {
+            uri.push_str("&so=");
+            uri.push_str(std::str::from_utf8(parameter.value()).expect("validated selection"));
+        }
+        let limits = spill::protocol::magnet::Limits::default();
+        if uri.len() > limits.max_input_bytes || uri[8..].split('&').count() > limits.max_parameters
+        {
+            return Err(Error::Invalid(
+                "merged magnet selection exceeds URI limits".into(),
+            ));
+        }
+    }
+    Ok(Some((settings, uri)))
+}
+
 fn validate_settings(row: &Row, settings: &Settings) -> Result<(), Error> {
     settings.validate()?;
     if row.parsed.as_ref().is_some_and(|meta| meta.is_private()) && (settings.dht || settings.pex) {

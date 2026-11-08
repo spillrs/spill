@@ -415,6 +415,19 @@ impl Catalog {
             Ok(())
         })
     }
+    pub fn selection(&self, id: &str, settings: &Settings, magnet: Option<&str>) -> Result<()> {
+        self.update(id, |c, row| {
+            row.settings = settings.clone();
+            row.magnet = magnet.map(str::to_owned);
+            row.checkpoint.complete = false;
+            row.last_error = None;
+            row.retry_count = 0;
+            row.retry_at = 0;
+            c.execute("UPDATE torrents SET settings=?2,magnet=?3,complete=0,last_error=NULL,retry_count=0,retry_at=0 WHERE id=?1",
+                params![id, serde_json::to_string(&row.settings)?, row.magnet])?;
+            Ok(())
+        })
+    }
     pub fn recovered(&self, id: &str) -> Result<()> {
         self.update(id, |c, row| {
             if row.last_error.is_some() {
@@ -432,12 +445,25 @@ impl Catalog {
     }
     pub fn resolved(&self, id: &str, meta: spill::protocol::metainfo::OwnedMetainfo) -> Result<()> {
         self.update(id, |c, row| {
+            if row.metainfo.is_none()
+                && row.settings.file_priorities.is_empty()
+                && let Some(uri) = &row.magnet
+            {
+                let magnet = spill::protocol::magnet::Magnet::parse(uri, Default::default())
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+                if let Some(ranges) = magnet.select_only() {
+                    row.settings.file_priorities =
+                        spill::engine::selection::FileSelection::select_only(meta.layout(), ranges)
+                            .file_priorities()
+                            .to_vec();
+                }
+            }
             let tx = c.unchecked_transaction()?;
             learn_identity(&tx, row, meta.info_hash())?;
             let bytes = meta.source_bytes();
             tx.execute(
-                "UPDATE torrents SET metainfo=?2 WHERE id=?1",
-                params![id, bytes],
+                "UPDATE torrents SET metainfo=?2,settings=?3 WHERE id=?1",
+                params![id, bytes, serde_json::to_string(&row.settings)?],
             )?;
             tx.commit()?;
             row.metainfo = Some(bytes.to_vec());

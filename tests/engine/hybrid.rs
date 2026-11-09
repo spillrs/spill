@@ -452,7 +452,7 @@ async fn corrupt_hybrid_bytes_are_retried_without_failing_the_torrent() {
         let meta = Profile::default().parse_owned(HYBRID).unwrap();
         let v1 = *meta.info_hash().v1().unwrap().as_bytes();
         let v2 = meta.info_hash().v2().unwrap().wire_key();
-        let bad = TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let bad = TcpListener::bind("[::1]:0").await.unwrap();
         let good = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let root = Temp::new();
         let session = session().await;

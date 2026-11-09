@@ -129,8 +129,10 @@ State and the control socket live in `~/Library/Application Support/spill`,
 and downloads in `~/Downloads`.
 
 To run at login, install the launchd user agent. Stop any manually running
-spill first. Obtain `deploy/` from the matching source tag, then run from that
-source directory:
+spill first, and unload any other spill service using the same state directory.
+The plist is a manual-install template: its executable and `@HOME@` paths must
+be replaced, not installed unchanged. Obtain `deploy/` from the matching source
+tag, then run from that source directory:
 
 ```sh
 mkdir -p "$HOME/Library/Application Support/spill" "$HOME/Library/LaunchAgents"

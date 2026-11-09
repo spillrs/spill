@@ -270,8 +270,8 @@ it does not authenticate DHT nodes or prevent all DHT attacks.
 
 ### Local service discovery
 
-BEP 14 finds nearby peers without a tracker or DHT bootstrap, including peers
-that can resolve a trackerless magnet. The daemon enables it with
+On Linux and macOS, BEP 14 finds nearby peers without a tracker or DHT bootstrap,
+including peers that can resolve a trackerless magnet. The daemon enables it with
 `allow_local_network = true`; library sessions must explicitly set both
 `NetworkOptions::lsd` and `allow_local_network`. The per-torrent `dht` setting
 gates LSD independently of whether the session has DHT capability.

@@ -247,13 +247,16 @@ async fn created_directory_is_reproducible_and_transfers_across_file_boundaries(
 async fn empty_sources_use_normalized_names_and_links_keep_their_names() {
     let root = Temp::new();
     let name = OsString::from_vec(b"empty-\xff".to_vec());
-    let source = root.0.join(&name);
+    // APFS rejects non-UTF-8 filenames; metainfo names need not be filesystem names.
+    let source = root.0.join("empty");
     std::fs::write(&source, []).unwrap();
-    let options = Options {
+    let mut options = Options {
+        name: Some(name.clone()),
         creation_date: None,
         ..Default::default()
     };
     let created = create::create(&source, &options, &mut |_, _| Ok(())).unwrap();
+    options.name = None;
     assert_eq!(created.name, name);
     assert_eq!(created.piece_count, 0);
     let meta = Profile::default().parse_owned(&created.metainfo).unwrap();

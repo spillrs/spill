@@ -199,8 +199,14 @@ impl Service {
                 } else {
                     socket.set_multicast_ttl_v4(1)?;
                     socket.set_multicast_loop_v4(true)?;
-                    // Binding the group also excludes unrelated multicast groups sharing 6771.
-                    socket.bind(&SocketAddr::from((V4, 6771)).into())?;
+                    // Darwin cannot send from a socket bound to the multicast group.
+                    // Elsewhere the group bind excludes unrelated groups sharing 6771.
+                    let bind = if cfg!(target_os = "macos") {
+                        Ipv4Addr::UNSPECIFIED
+                    } else {
+                        V4
+                    };
+                    socket.bind(&SocketAddr::from((bind, 6771)).into())?;
                     #[cfg(target_os = "linux")]
                     socket.set_multicast_all_v4(false)?;
                 }

@@ -19,7 +19,9 @@ then open <http://127.0.0.1:8080> locally.
   lifetime downloaded/uploaded totals, rates, peers, ETA and TRK/DHT/PEX/WEB
   discovery policy. Torrent errors appear in the status cell with an alert icon
   and danger colour; hover over status for tracker warnings. Tracker failures
-  stay in Sources and do not put a torrent in the error filter.
+  also appear in the status cell, Overview and error filter until recovery or
+  successful fallback, without changing torrent state. Sources retains individual
+  tracker errors, including backups hidden by a working selected tracker.
   On narrow screens, scroll the table horizontally to see all columns; torrent
   names keep their space rather than collapsing.
 - Adding a `.torrent` file, magnet link, or HTTP(S) torrent URL, with an optional

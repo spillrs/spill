@@ -126,6 +126,7 @@ pub(in crate::engine) enum Input<'a> {
     Flushed,
     Tick,
     Stop,
+    TrackerChanged,
     Contacts(Vec<SocketAddr>),
     Settings(TorrentSettings),
 }
@@ -424,6 +425,13 @@ impl Torrent {
     }
     fn dispatch(&mut self, input: Input<'_>) -> io::Result<()> {
         match input {
+            Input::TrackerChanged => {
+                assert!(self.meta.is_private());
+                self.dialing.clear();
+                for position in 0..self.remotes.len() {
+                    self.retire_peer(position, io::Error::other("private tracker changed"))?;
+                }
+            }
             Input::PeerAttached { id, attachment } => self.on_attach(id, attachment)?,
             Input::PeerConnected { id, handshake } => {
                 if !self.remote_slots.contains_key(&id) {

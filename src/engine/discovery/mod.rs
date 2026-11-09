@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::time::{Instant, timeout};
+use tokio::time::{Instant, timeout, timeout_at};
 use url::Url;
 
 const MIN_INTERVAL: Duration = Duration::from_secs(300);
@@ -60,9 +60,17 @@ struct Reply {
     error: Option<io::Error>,
     disabled: bool,
 }
+pub(in crate::engine) enum Event {
+    Peers(Vec<SocketAddr>),
+    TrackerChanged { previous: usize },
+}
 struct Tracker {
     url: Option<Url>,
     registered: bool,
+    restart: bool,
+    baseline: Option<Counters>,
+    // Frozen wire counters must survive a new baseline on the same URL.
+    stopped_counters: Option<Counters>,
     tracker_id: Option<Vec<u8>>,
     status: TrackerStatus,
     last_reply: Option<Instant>,
@@ -72,11 +80,26 @@ struct Tracker {
     disabled: bool,
     pending: Option<(Option<AnnounceEvent>, Pending)>,
 }
+impl Tracker {
+    fn session_counters(&self, counters: Counters) -> Counters {
+        let Some(baseline) = self.baseline else {
+            return counters;
+        };
+        Counters {
+            // Later hash failures can reduce the net download total below its baseline.
+            downloaded: counters.downloaded.saturating_sub(baseline.downloaded),
+            uploaded: counters.uploaded - baseline.uploaded,
+            corrupt: counters.corrupt - baseline.corrupt,
+            ..counters
+        }
+    }
+}
 pub(in crate::engine) struct AnnounceOptions {
     pub(in crate::engine) hash: [u8; 20],
     pub(in crate::engine) peer: [u8; 20],
     pub(in crate::engine) port: tokio::sync::watch::Receiver<u16>,
     pub(in crate::engine) left: u64,
+    pub(in crate::engine) private: bool,
     pub(in crate::engine) allow_local_network: bool,
     pub(in crate::engine) client: reqwest::Client,
     pub(in crate::engine) udp: crate::engine::session::udp::Transport,
@@ -85,6 +108,8 @@ pub(in crate::engine) struct AnnounceOptions {
 }
 pub(in crate::engine) struct Announcer {
     trackers: Vec<Tracker>,
+    private: bool,
+    selected: usize,
     pub(in crate::engine) hash: [u8; 20],
     peer: [u8; 20],
     port: tokio::sync::watch::Receiver<u16>,
@@ -109,6 +134,7 @@ impl Announcer {
             peer,
             port,
             left,
+            private,
             allow_local_network,
             client,
             udp,
@@ -137,6 +163,9 @@ impl Announcer {
                     Tracker {
                         url,
                         registered: false,
+                        restart: true,
+                        baseline: None,
+                        stopped_counters: None,
                         tracker_id: None,
                         last_reply: None,
                         next_allowed: Instant::now(),
@@ -150,6 +179,7 @@ impl Announcer {
                             tier,
                             slot,
                             state: "Idle",
+                            active: false,
                             exchanges: 0,
                             failures: 0,
                             last_reply_ago_ms: None,
@@ -168,24 +198,28 @@ impl Announcer {
         if parsed.is_empty() {
             return Ok(None);
         }
-        // Prefer UDP on the same host, without announcing to both transports.
-        for i in 0..parsed.len() {
-            let Some(url) = parsed[i].url.as_ref() else {
-                continue;
-            };
-            if url.scheme() != "udp" {
-                continue;
-            }
-            if let Some(j) = (0..i).find(|&j| {
-                parsed[j].url.as_ref().is_some_and(|other| {
-                    other.scheme() != "udp" && other.host_str() == url.host_str()
-                })
-            }) {
-                parsed.swap(i, j);
+        // Private URLs can have different authorization even on the same host.
+        if !private {
+            for i in 0..parsed.len() {
+                let Some(url) = parsed[i].url.as_ref() else {
+                    continue;
+                };
+                if url.scheme() != "udp" {
+                    continue;
+                }
+                if let Some(j) = (0..i).find(|&j| {
+                    parsed[j].url.as_ref().is_some_and(|other| {
+                        other.scheme() != "udp" && other.host_str() == url.host_str()
+                    })
+                }) {
+                    parsed.swap(i, j);
+                }
             }
         }
         Ok(Some(Self {
             trackers: parsed,
+            private,
+            selected: 0,
             hash,
             peer,
             port,
@@ -291,6 +325,14 @@ impl Announcer {
         }
     }
     fn next_due(&self) -> Instant {
+        if self.private {
+            let tracker = &self.trackers[self.selected];
+            return if tracker.disabled || tracker.pending.is_some() {
+                Instant::now() + Duration::from_secs(60)
+            } else {
+                tracker.next_announce.max(tracker.next_allowed)
+            };
+        }
         let mut earliest = None;
         for tracker in self.trackers.iter().filter(|t| !t.disabled) {
             if tracker.pending.is_none() {
@@ -304,10 +346,21 @@ impl Announcer {
         earliest.unwrap_or_else(|| Instant::now() + Duration::from_secs(60))
     }
     pub(in crate::engine) fn snapshots(&self) -> Vec<TrackerStatus> {
+        let selected = if self.private {
+            self.selected
+        } else {
+            self.trackers
+                .iter()
+                .position(|tracker| !tracker.disabled && tracker.fails == 0)
+                .or_else(|| self.trackers.iter().position(|tracker| !tracker.disabled))
+                .unwrap_or(0)
+        };
         self.trackers
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(index, t)| {
                 let mut status = t.status.clone();
+                status.active = index == selected;
                 status.last_reply_ago_ms = t.last_reply.map(|at| at.elapsed().as_millis() as u64);
                 status.next_announce_ms = (!t.disabled).then(|| {
                     t.next_announce
@@ -323,16 +376,23 @@ impl Announcer {
         let url = tracker.url.clone();
         let allow_local_network = self.allow_local_network;
         let tracker_id = tracker.tracker_id.clone();
-        let corrupt = self.counters.corrupt;
+        let counters = if event == Some(AnnounceEvent::Stopped) {
+            tracker
+                .stopped_counters
+                .unwrap_or_else(|| tracker.session_counters(self.counters))
+        } else {
+            tracker.session_counters(self.counters)
+        };
+        let corrupt = counters.corrupt;
         let client = self.client.clone();
         let udp = self.udp.clone();
         let a = udp::Announce {
             info_hash: self.hash,
             peer_id: self.peer,
             port: *self.port.borrow(),
-            downloaded: self.counters.downloaded,
-            uploaded: self.counters.uploaded,
-            left: self.counters.left,
+            downloaded: counters.downloaded,
+            uploaded: counters.uploaded,
+            left: counters.left,
             event: match event {
                 Some(AnnounceEvent::Started) => udp::EVENT_STARTED,
                 Some(AnnounceEvent::Completed) => udp::EVENT_COMPLETED,
@@ -349,12 +409,13 @@ impl Announcer {
             },
         };
         Box::pin(async move {
-            let deadline = if matches!(event, Some(AnnounceEvent::Stopped)) {
-                Duration::from_secs(5)
-            } else {
-                Duration::from_secs(30)
-            };
-            timeout(deadline, async {
+            let deadline = Instant::now()
+                + if matches!(event, Some(AnnounceEvent::Stopped)) {
+                    Duration::from_secs(5)
+                } else {
+                    Duration::from_secs(30)
+                };
+            timeout_at(deadline, async {
                 let url = url.ok_or_else(invalid)?;
                 if url.scheme() == "udp" {
                     udp_announce(url, a, allow_local_network, udp).await
@@ -366,6 +427,7 @@ impl Announcer {
                         allow_local_network,
                         tracker_id.as_deref(),
                         client,
+                        deadline,
                     )
                     .await
                 }
@@ -375,13 +437,13 @@ impl Announcer {
         })
     }
     /// Retain each exchange across select! cancellation; never restart network I/O on a tick.
-    pub(in crate::engine) async fn next(&mut self) -> io::Result<Vec<SocketAddr>> {
+    pub(in crate::engine) async fn next(&mut self) -> io::Result<Event> {
         self.acknowledge().await?;
         loop {
             let now = Instant::now();
             for index in 0..self.trackers.len() {
                 let tracker = &self.trackers[index];
-                if tracker.disabled {
+                if tracker.disabled || (self.private && index != self.selected) {
                     continue;
                 }
                 let working = tracker.fails == 0;
@@ -392,7 +454,7 @@ impl Announcer {
                 {
                     let event = if self.counters.partial_seed {
                         Some(AnnounceEvent::Paused)
-                    } else if !tracker.registered {
+                    } else if tracker.restart {
                         Some(AnnounceEvent::Started)
                     } else {
                         self.completed_pending.then_some(AnnounceEvent::Completed)
@@ -401,7 +463,7 @@ impl Announcer {
                     self.trackers[index].pending = Some((event, exchange));
                 }
                 // A known failure must not hold up the next working tracker.
-                if working {
+                if working || self.private {
                     break;
                 }
             }
@@ -438,6 +500,8 @@ impl Announcer {
                         tracing::debug!(swarm=?self.hash,tier=tracker.status.tier,slot=tracker.status.slot,"tracker_recovered");
                     }
                     tracker.registered = true;
+                    tracker.restart = false;
+                    tracker.stopped_counters = None;
                     tracker.last_reply = Some(Instant::now());
                     tracker.status.state = "Success";
                     tracker.status.error = None;
@@ -461,7 +525,7 @@ impl Announcer {
                         self.start_checkpoint(true);
                         self.acknowledge().await?;
                     }
-                    return Ok(reply.peers);
+                    return Ok(Event::Peers(reply.peers));
                 }
                 Err(error) => {
                     tracker.status.state = "Error";
@@ -478,17 +542,53 @@ impl Announcer {
                     if changed {
                         tracing::debug!(swarm=?self.hash,tier=tracker.status.tier,slot=tracker.status.slot,kind=?error.kind(),%error,retry_secs=delay.as_secs(),disabled=tracker.disabled,"tracker_failed");
                     }
-                    let failed = self.trackers.remove(index);
-                    let mut end = index;
-                    while end < self.trackers.len()
-                        && self.trackers[end].status.tier == failed.status.tier
-                    {
-                        end += 1;
+                    if self.private {
+                        let replacement = (1..self.trackers.len())
+                            .map(|offset| (index + offset) % self.trackers.len())
+                            .filter(|&candidate| !self.trackers[candidate].disabled)
+                            .min_by_key(|&candidate| {
+                                let tracker = &self.trackers[candidate];
+                                tracker.next_announce.max(tracker.next_allowed)
+                            });
+                        if let Some(replacement) = replacement {
+                            let current = &self.trackers[index];
+                            let next = &self.trackers[replacement];
+                            if current.disabled
+                                || next.next_announce.max(next.next_allowed)
+                                    <= current.next_announce.max(current.next_allowed)
+                            {
+                                if !self.trackers[index].restart {
+                                    self.trackers[index].stopped_counters =
+                                        Some(self.trackers[index].session_counters(self.counters));
+                                }
+                                self.trackers[replacement].restart = true;
+                                self.selected = replacement;
+                                return Ok(Event::TrackerChanged { previous: index });
+                            }
+                        }
+                    } else {
+                        let failed = self.trackers.remove(index);
+                        let mut end = index;
+                        while end < self.trackers.len()
+                            && self.trackers[end].status.tier == failed.status.tier
+                        {
+                            end += 1;
+                        }
+                        self.trackers.insert(end, failed);
                     }
-                    self.trackers.insert(end, failed);
                 }
             }
         }
+    }
+    pub(in crate::engine) async fn retire_tracker(&mut self, previous: usize, counters: Counters) {
+        if !self.trackers[previous].restart {
+            self.trackers[previous].stopped_counters =
+                Some(self.trackers[previous].session_counters(counters));
+        }
+        self.update_counters(counters);
+        // Old stop attempts must retain their original session's baseline.
+        self.stop_trackers(&[previous, self.selected]).await;
+        self.trackers[self.selected].baseline = Some(counters);
     }
     pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
         for tracker in &mut self.trackers {
@@ -496,22 +596,43 @@ impl Announcer {
         }
         self.join_checkpoint().await.map(|_| ())
     }
+    async fn stop_trackers(&mut self, indices: &[usize]) {
+        let mut exchanges: Vec<_> = indices
+            .iter()
+            .copied()
+            .filter(|&index| self.trackers[index].registered && !self.trackers[index].disabled)
+            .map(|index| {
+                (
+                    index,
+                    self.exchange(&self.trackers[index], Some(AnnounceEvent::Stopped)),
+                )
+            })
+            .collect();
+        let _ = timeout(
+            Duration::from_secs(5),
+            std::future::poll_fn(|cx| {
+                exchanges.retain_mut(|(index, exchange)| match exchange.as_mut().poll(cx) {
+                    std::task::Poll::Pending => true,
+                    std::task::Poll::Ready(reply) => {
+                        if reply.is_ok_and(|reply| reply.error.is_none()) {
+                            self.trackers[*index].registered = false;
+                        }
+                        false
+                    }
+                });
+                if exchanges.is_empty() {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            }),
+        )
+        .await;
+    }
     pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
         let checkpoint = self.drain().await;
-        let exchanges: Vec<_> = self
-            .trackers
-            .iter()
-            .filter(|t| t.registered && !t.disabled)
-            .map(|tracker| self.exchange(tracker, Some(AnnounceEvent::Stopped)))
-            .collect();
-        let _ = timeout(Duration::from_secs(5), async move {
-            for exchange in exchanges {
-                if exchange.await.is_ok_and(|reply| reply.error.is_none()) {
-                    break;
-                }
-            }
-        })
-        .await;
+        self.stop_trackers(&(0..self.trackers.len()).collect::<Vec<_>>())
+            .await;
         checkpoint
     }
 }
@@ -537,6 +658,7 @@ async fn http_announce(
     allow_local_network: bool,
     tracker_id: Option<&[u8]>,
     client: reqwest::Client,
+    deadline: Instant,
 ) -> io::Result<Reply> {
     if !crate::engine::network::http_destination_allowed(&url, allow_local_network) {
         return Err(invalid());
@@ -570,30 +692,31 @@ async fn http_announce(
         .send()
         .await
         .map_err(|e| io::Error::other(e.without_url()))?;
-    if response.status() != reqwest::StatusCode::OK {
-        return Ok(failed_reply(
-            io::Error::other(format!("tracker HTTP status {}", response.status())),
-            Duration::ZERO,
-            response.status() == reqwest::StatusCode::GONE,
-        ));
-    }
-    if response
-        .content_length()
-        .is_some_and(|n| n > BODY_CAP as u64)
-    {
-        return Err(invalid());
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| io::Error::other(e.without_url()))?
-    {
-        if bytes.len() + chunk.len() > BODY_CAP {
+    let status = response.status();
+    // A stalled error body must not hide the status, especially HTTP 410.
+    let body = timeout_at(deadline, async {
+        if response
+            .content_length()
+            .is_some_and(|n| n > BODY_CAP as u64)
+        {
             return Err(invalid());
         }
-        bytes.extend_from_slice(&chunk);
-    }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| io::Error::other(e.without_url()))?
+        {
+            if bytes.len() + chunk.len() > BODY_CAP {
+                return Err(invalid());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))
+    .and_then(|body| body);
     // Validate the entire reply before retaining a bounded prefix of contacts.
     let limits = bencode::Limits {
         max_input_len: BODY_CAP,
@@ -602,6 +725,31 @@ async fn http_announce(
         max_nodes: BODY_CAP,
         max_depth: 16,
     };
+    if status != reqwest::StatusCode::OK {
+        let reply = body
+            .as_ref()
+            .ok()
+            .and_then(|bytes| http::AnnounceResponse::parse(bytes, limits, BODY_CAP / 6).ok());
+        let reason = reply.as_ref().and_then(|reply| reply.failure_reason());
+        let error = reason.map_or_else(
+            || io::Error::other(format!("tracker HTTP status {status}")),
+            tracker_failure,
+        );
+        let interval = reply
+            .as_ref()
+            .and_then(|reply| reply.interval_secs())
+            .and_then(|seconds| u32::try_from(seconds).ok())
+            .map_or(Duration::ZERO, |seconds| {
+                Duration::from_secs(seconds.into()).max(MIN_INTERVAL)
+            });
+        let mut failure = failed_reply(error, interval, status == reqwest::StatusCode::GONE);
+        failure.warning = reply
+            .as_ref()
+            .and_then(|reply| reply.warning_message())
+            .map(|message| String::from_utf8_lossy(message).into_owned());
+        return Ok(failure);
+    }
+    let bytes = body?;
     let reply =
         http::AnnounceResponse::parse(&bytes, limits, BODY_CAP / 6).map_err(|_| invalid())?;
     let interval = Duration::from_secs(u64::from(
@@ -823,7 +971,11 @@ impl Discovery {
             None
         };
         if options.settings.trackers {
-            for hash in crate::engine::core::swarm_identity(&options.metainfo).wire_keys() {
+            let identity = crate::engine::core::swarm_identity(&options.metainfo);
+            for hash in identity
+                .wire_keys()
+                .filter(|hash| !options.metainfo.is_private() || *hash == identity.wire_key())
+            {
                 if let Some(announcer) = Announcer::new(
                     Announcer::metainfo(&options.metainfo),
                     AnnounceOptions {
@@ -831,6 +983,7 @@ impl Discovery {
                         peer: options.peer_id,
                         port: session.advertised_port.clone(),
                         left,
+                        private: options.metainfo.is_private(),
                         allow_local_network: session.allow_local_network,
                         client: session.tracker_http.clone(),
                         udp: session.tracker_udp.clone(),

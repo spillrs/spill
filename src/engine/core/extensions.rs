@@ -38,11 +38,15 @@ pub(in crate::engine) fn handshake(
     pex: bool,
     holepunch: bool,
     upload_only: bool,
+    private: bool,
 ) -> io::Result<Vec<u8>> {
-    let mut map = BTreeMap::from([(
-        b"ut_metadata".as_slice(),
-        Node::new(Value::Integer(i64::from(METADATA_ID))),
-    )]);
+    let mut map = BTreeMap::new();
+    if !private {
+        map.insert(
+            b"ut_metadata".as_slice(),
+            Node::new(Value::Integer(i64::from(METADATA_ID))),
+        );
+    }
     // Omission cannot disable an extension already negotiated on this connection.
     if size.is_some() {
         map.insert(
@@ -85,7 +89,9 @@ pub(in crate::engine) fn handshake(
         )),
     );
     if let Some(size) = size {
-        fields.insert(b"metadata_size", Node::new(Value::Integer(size as i64)));
+        if !private {
+            fields.insert(b"metadata_size", Node::new(Value::Integer(size as i64)));
+        }
         fields.insert(
             b"upload_only",
             Node::new(Value::Integer(i64::from(upload_only))),
@@ -169,7 +175,7 @@ impl Extensions {
         {
             self.pex
                 .receive(payload, crate::engine::profile::MAX_QUEUED, now)?;
-        } else if id == METADATA_ID {
+        } else if id == METADATA_ID && !meta.is_private() {
             let message = metadata::Message::parse(
                 payload,
                 limits(),

@@ -224,6 +224,9 @@ fn text(data: &Value) {
                 row["total_bytes"],
                 clean(row["name"].as_str().unwrap_or("magnet"))
             );
+            if let Some(error) = row["tracker_error"].as_str() {
+                println!("  Tracker: {}", clean(error));
+            }
         }
     } else if let Some(files) = data["files"].as_array() {
         for file in files {

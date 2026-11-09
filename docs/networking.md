@@ -136,15 +136,22 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
 - Trackers are grouped in tiers (BEP 12). Each valid magnet `tr=` gets its own
   tier in link order; duplicate URLs keep only their first occurrence, and the
   retained tracker list has no empty duplicate tiers.
-  `.torrent` tiers retain their listed order without shuffling. UDP is preferred
-  over an earlier HTTP(S) tracker on the same hostname, even across tiers.
-- Working trackers use sequential fallback: try the next in the tier, then the
+  `.torrent` tiers retain their listed order without shuffling. For public torrents,
+  UDP is preferred over an earlier HTTP(S) tracker on the same hostname, even across tiers.
+- Public torrents use sequential fallback: try the next in the tier, then the
   next tier, on failure. Failed trackers move to the back of their tier.
   When a failed tracker's backoff expires, its retry can run alongside the next
   eligible working tracker, so the retry's timeout does not delay that tracker.
   Each tracker has at most one exchange in flight. Selection starts from the
   beginning again; a working tracker that is not due blocks lower-priority
   trackers. This is not an announce-to-all-tiers or all-trackers policy.
+- Private torrents keep one selected URL, switching only after failure and never
+  retrying preferred URLs alongside a working fallback. Switching disconnects all
+  peers, cancels pending dials and discards old contacts before another URL is used.
+  Each switch starts upload, download and corrupt counters at zero, including
+  a return to an earlier URL; `left` still covers the whole torrent. Different
+  URLs are distinct trackers even on one hostname. See
+  [Private trackers](private-trackers.md).
 - Failed trackers wait before retrying and are skipped while waiting. Consecutive
   failures use `min(3600, 5 + failures² × 12.5)` seconds, rounded down: 17, 55,
   117, 205… seconds. A tracker error reply's retry interval can extend that wait.
@@ -160,7 +167,8 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
   exchanges each have a 10-second inactivity deadline, without in-exchange
   retransmissions. UDP trackers share the session's UDP socket. A silent tracker
   only delays its own torrent. Stopped announces are best-effort within five
-  seconds and select among trackers that accepted a `started` or `paused` announce.
+  seconds. Peer transfers stop before final counters are sampled, and stopping
+  during private tracker failover interrupts the switch's tracker cleanup.
 - Partial seeds (BEP 21) have finished their selected files but not the whole
   torrent. Every active announce uses `event=paused` (UDP event 4), including the
   first announce and tracker fallback. `left` still counts all unverified torrent
@@ -177,11 +185,18 @@ against bundled Mozilla roots, not the OS trust store; this also applies to
   restrictions as the original URL. HTTPS-to-HTTP redirects are refused.
   Redirects use the supplied `Location` without copying the original query or
   sending a `Referer` header; stored tracker URLs are unchanged.
-- Tracker failure reasons appear as the torrent's `last_error`; warnings appear
-  as `tracker_message`. Both are shown in `get` and on the web page.
+- Tracker failures appear as `tracker_error` in `get`, `list` and the web UI,
+  clearing after recovery or successful fallback. `last_error` remains reserved
+  for torrent failures. Selected-tracker warnings appear as `tracker_message`.
+  Per-tracker diagnostics retain backup errors and identify the selected entry
+  with `active=true`.
+- Non-200 HTTP bodies are inspected under the same size limit for bencoded failure
+  messages; malformed or oversized bodies fall back to the HTTP status. HTTP 410
+  still disables the URL. Transport errors omit request URLs, but remote messages
+  may themselves contain secrets.
 
-These choices follow the audited libtorrent 2.1.2 defaults for tracker tiers,
-backoff and request scheduling, not full tracker parity. spill does not announce
+Public tracker tiers, backoff and request scheduling follow the audited libtorrent
+2.1.2 defaults, not full tracker parity. Private tracker switching follows BEP 27. spill does not announce
 separately per listen address or send private-torrent `ipv4`/`ipv6` overrides.
 Metadata resolution starts a separate announce lifecycle, so failure history,
 tracker IDs and keys are not carried into payload download. Keys are random per
@@ -300,7 +315,9 @@ window may only be found on a later attempt.
 By default spill never connects out to private, loopback or link-local
 addresses, whether it got them from a tracker, the DHT, PEX or a web seed URL.
 This keeps a malicious torrent from making spill probe your local network.
-Set `allow_local_network = true` to use LAN peers or trackers. Multicast,
+Peer destinations below port 1024 (including tracker-returned peers on port 443)
+are also refused unless `allow_local_network = true`; this can exclude seedboxes
+using low ports. Set `allow_local_network = true` to use LAN peers or trackers. Multicast,
 broadcast, unspecified peer addresses and port 0 are always refused. LSD is the
 multicast peer-discovery exception, only when enabled (router mapping also uses
 SSDP as described above). Scoped link-local IPv6 peers learned by LSD retain

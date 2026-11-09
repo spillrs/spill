@@ -111,6 +111,7 @@ impl crate::engine::torrent::Network {
                         peer: peer_id,
                         port: self.advertised_port.clone(),
                         left: 16 * 1024,
+                        private: false,
                         allow_local_network: self.allow_local_network,
                         client: self.tracker_http.clone(),
                         udp: self.tracker_udp.clone(),
@@ -191,7 +192,10 @@ impl crate::engine::torrent::Network {
                     _=stop.changed()=>{},
                     _=tokio::time::sleep_until(deadline)=>return Err(io::Error::new(io::ErrorKind::TimedOut,"metadata resolution deadline")),
                     event=announce(managers)=>{
-                        let (key, peers) = event?;
+                        let (key, event) = event?;
+                        let crate::engine::discovery::Event::Peers(peers) = event else {
+                            unreachable!("private metadata is rejected");
+                        };
                         let _ = contacts.add_tracker(key, &peers);
                     }
                     result=&mut lookup=>{result?;return Err(invalid("metadata lookup ended"));}
@@ -294,7 +298,7 @@ impl crate::engine::torrent::Network {
 }
 async fn announce(
     managers: &mut [([u8; 20], Announcer)],
-) -> io::Result<([u8; 20], Vec<SocketAddr>)> {
+) -> io::Result<([u8; 20], crate::engine::discovery::Event)> {
     next_ready(
         managers
             .iter_mut()

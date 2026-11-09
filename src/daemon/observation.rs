@@ -22,7 +22,7 @@ pub fn transfer(s: &TorrentStatus) -> Value {
         .map(peer)
         .collect();
     let trackers: Vec<_> = s.diagnostics.iter().flat_map(|d| &d.trackers).map(|t| json!({
-        "swarm":hex_key(t.swarm),"url":t.url,"tier":t.tier,"slot":t.slot,"state":t.state,"exchanges":t.exchanges,
+        "swarm":hex_key(t.swarm),"url":t.url,"tier":t.tier,"slot":t.slot,"state":t.state,"active":t.active,"exchanges":t.exchanges,
         "failures":t.failures,"last_reply_ago_ms":t.last_reply_ago_ms,"next_announce_ms":t.next_announce_ms,
         "seeders":t.seeders,"leechers":t.leechers,"peers_returned":t.peers_returned,"error":t.error,"warning":t.warning,
     })).collect();

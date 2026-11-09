@@ -13,12 +13,6 @@ use tracing::{debug, trace};
 
 type Status = watch::Sender<TorrentStatus>;
 
-fn tracker_event(hash: [u8; 20], peers: Vec<std::net::SocketAddr>, discovery: &mut Discovery) {
-    if let Some(queue) = &mut discovery.contacts {
-        let _ = queue.add_tracker(hash, &peers);
-    }
-}
-
 async fn start_discovery(
     options: &RuntimeOptions,
     transfer: &mut Task,
@@ -172,7 +166,26 @@ async fn serve(
                 discovery_dirty = true;
             },
             (hash, event) = tracker => {
-                tracker_event(hash, event?, network);
+                match event? {
+                    crate::engine::discovery::Event::Peers(peers) => {
+                        if let Some(queue) = &mut network.contacts {
+                            let _ = queue.add_tracker(hash, &peers);
+                        }
+                    }
+                    crate::engine::discovery::Event::TrackerChanged { previous } => {
+                        progress.tracker_changed(transfer, network).await?;
+                        while inbound.try_recv().is_ok() {}
+                        let counters = super::observation::tracker_counters(transfer)?;
+                        let announcer = network.announces.iter_mut().find(|a| a.hash == hash)
+                            .expect("announcer swarm");
+                        tokio::select! {
+                            biased;
+                            // Freeze departure counters before stop can interrupt cleanup.
+                            _ = announcer.retire_tracker(previous, counters) => {},
+                            _ = stop.changed() => return Ok(TorrentExit::StopRequested),
+                        }
+                    }
+                }
                 discovery_dirty = true;
             },
             (hash, address) = async {
@@ -268,8 +281,15 @@ async fn finish(
         s.progress.phase = TorrentPhase::Stopping;
         s.progress.exit = result.as_ref().ok().copied();
     });
+    let peers = transfer.quiesce().await;
+    let counters = super::observation::tracker_counters(transfer);
+    if let Ok(counters) = counters {
+        for announcer in &mut network.announces {
+            announcer.update_counters(counters);
+        }
+    }
     let setup = network.shutdown(run).await;
-    let peers = transfer.shutdown().await;
+    let storage = transfer.drain().await;
     let p = transfer.progress();
     let uploaded = transfer.uploaded_bytes();
     let pieces: std::sync::Arc<[bool]> = (0..piece_count).map(|i| transfer.contains(i)).collect();
@@ -300,7 +320,13 @@ async fn finish(
         }
     });
     let exit = result.as_ref().ok().copied();
-    let result = result.map(|_| ()).and(setup).and(peers).and(p.map(|_| ()));
+    let result = result
+        .map(|_| ())
+        .and(peers)
+        .and(counters.map(|_| ()))
+        .and(setup)
+        .and(storage)
+        .and(p.map(|_| ()));
     debug!(clean = result.is_ok(),
         ?exit, error_kind = ?result.as_ref().err().map(|e| e.kind()),
         error = %result.as_ref().err().map(ToString::to_string).unwrap_or_default(),

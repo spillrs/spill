@@ -204,6 +204,15 @@ struct Known {
     transport: Option<Transport>,
 }
 impl Contacts {
+    pub(in crate::engine) fn clear(&mut self) {
+        self.queue
+            .0
+            .lock()
+            .unwrap()
+            .entries
+            .retain(|entry| entry.owner != self.owner);
+        self.known.clear();
+    }
     pub(in crate::engine) fn try_utp(&self, address: SocketAddr) -> bool {
         let known = &self.known[&address];
         known.punch

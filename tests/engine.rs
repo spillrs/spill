@@ -38,6 +38,8 @@ mod magnets_v2;
 mod outcomes;
 #[path = "engine/priority.rs"]
 mod priority;
+#[path = "engine/private_trackers.rs"]
+mod private_trackers;
 #[path = "engine/session.rs"]
 mod session;
 #[path = "engine/v2.rs"]

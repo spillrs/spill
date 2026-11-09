@@ -531,13 +531,32 @@ impl Shell {
         self.feed(Input::PeerAttached { id, attachment })?;
         Ok(id)
     }
-    pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
-        if self.stopped {
-            return self.drain().await;
+    pub(in crate::engine) async fn tracker_changed(&mut self) -> io::Result<()> {
+        self.feed(Input::TrackerChanged)?;
+        while self.peers.has_work() {
+            if let Some(event @ (PeerEvent::Closed { .. } | PeerEvent::Frame { .. })) =
+                self.peers.next().await
+            {
+                self.peer_event(event)?;
+            }
         }
-        self.stopped = true;
-        let stopped = self.feed(Input::Stop);
-        stopped.and(self.drain().await)
+        self.negotiating.clear();
+        self.negotiated.clear();
+        self.connects.clear();
+        Ok(())
+    }
+    pub(in crate::engine) async fn quiesce(&mut self) -> io::Result<()> {
+        let stopped = if self.stopped {
+            Ok(())
+        } else {
+            self.stopped = true;
+            self.feed(Input::Stop)
+        };
+        stopped.and(self.peers.cancel_and_join().await)
+    }
+    pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
+        let peers = self.quiesce().await;
+        peers.and(self.drain().await)
     }
     pub(in crate::engine) async fn drain(&mut self) -> io::Result<()> {
         let peers = self.peers.cancel_and_join().await;

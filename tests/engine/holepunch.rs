@@ -65,13 +65,18 @@ impl Peer {
                 let hello = extension::Handshake::parse(&bytes[2..], Default::default()).unwrap();
                 assert!(matches!(hello.extension_id(b"ut_holepunch"), Some(0 | 3)));
                 assert!(matches!(hello.extension_id(b"ut_pex"), Some(0 | 2)));
+                if meta.is_private() {
+                    assert!(hello.extension_id(b"ut_metadata").is_none());
+                }
                 let mut map = extension::ExtensionMap::new(&[(b"ut_holepunch", 0)]).unwrap();
                 map.apply(&hello).unwrap();
                 break map.id_for(b"ut_holepunch") == Some(3);
             }
         };
-        send(&mut socket, b"\x01d8:msg_typei0e5:piecei0ee").await;
-        while !frame(&mut socket).await.starts_with(&[20, 1]) {}
+        if !meta.is_private() {
+            send(&mut socket, b"\x01d8:msg_typei0e5:piecei0ee").await;
+            while !frame(&mut socket).await.starts_with(&[20, 1]) {}
+        }
         Self {
             socket,
             address,

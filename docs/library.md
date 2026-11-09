@@ -41,6 +41,10 @@ async fn main() -> std::io::Result<()> {
 
 For magnets, parse the URI with `spill::protocol::magnet::Magnet::parse` and
 pass `TorrentSource::Magnet`. Private torrents require metainfo, not magnets.
+`Session::admit` rejects nonempty `TorrentOptions.peers` for private metainfo;
+private outgoing peers must come from its active tracker. Private torrents also
+suppress metadata serving and alternate peer discovery. See
+[Private trackers](private-trackers.md) for switching and accounting policy.
 BEP 53 `so` ranges apply after metadata resolution unless
 `TorrentOptions.settings.file_priorities` is non-empty, in which case explicit
 priorities take precedence. `Magnet::select_only()` exposes compact inclusive

@@ -17,9 +17,12 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
     let (sent, mut requests) = tokio::sync::mpsc::unbounded_channel();
     let release = std::sync::Arc::new(tokio::sync::Notify::new());
     let gate = release.clone();
+    let stop_release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let stop_gate = stop_release.clone();
     let tracker = tokio::spawn(async move {
         let mut first = true;
         let mut fail_completion = true;
+        let mut first_stop = true;
         loop {
             let (socket, _) = listener.accept().await.unwrap();
             let mut socket = BufReader::new(socket);
@@ -57,7 +60,12 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
             );
             let drop_reply =
                 query.get("event").is_some_and(|event| event == "completed") && fail_completion;
+            let stopping = query.get("event").is_some_and(|event| event == "stopped");
             sent.send(query).unwrap();
+            if stopping && first_stop {
+                first_stop = false;
+                stop_gate.notified().await;
+            }
             if drop_reply {
                 fail_completion = false;
                 continue;
@@ -173,6 +181,8 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
                             spill::protocol::bencode::Value::Integer(0)
                         ))
                 );
+                assert!(hello.get(b"m").unwrap().get(b"ut_metadata").is_none());
+                assert!(hello.get(b"metadata_size").is_none());
                 break;
             }
         }
@@ -212,21 +222,27 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
                 break;
             }
         }
-        loop {
-            let row = daemon.call(json!({"op":"get","id":id})).await;
-            if row["transfer"]["uploaded_bytes"] == 3 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
     })
     .await
     .unwrap();
-    daemon.stop().await;
-    let stopped = requests.recv().await.unwrap();
-    assert_eq!(stopped["event"], "stopped");
-    assert_eq!(stopped["trackerid"], "tag");
-    assert_eq!(stopped["uploaded"], "3");
+    {
+        let stopping = daemon.stop();
+        tokio::pin!(stopping);
+        tokio::select! {
+            _ = &mut stopping => panic!("stopped response is gated"),
+            stopped = requests.recv() => {
+                let stopped = stopped.unwrap();
+                assert_eq!(stopped["event"], "stopped");
+                assert_eq!(stopped["trackerid"], "tag");
+                assert_eq!(stopped["uploaded"], "3");
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while peer.read_u8().await.is_ok() {}
+                }).await.expect("peers must close before stopped replies");
+                stop_release.notify_one();
+            }
+        }
+        stopping.await;
+    }
     let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
     daemon.state(&id, "seeding").await;
     let restarted = tokio::time::timeout(Duration::from_secs(5), requests.recv())
@@ -388,16 +404,19 @@ async fn private_tracker_failure_and_warning_reach_status() {
                     break;
                 }
             }
-            let body: &[u8] = if failed {
-                b"d8:intervali30e5:peers0:15:warning message9:Low ratioe"
+            let (status, body): (_, &[u8]) = if failed {
+                (
+                    "200 OK",
+                    b"d8:intervali30e5:peers0:15:warning message9:Low ratioe",
+                )
             } else {
                 failed = true;
-                b"d14:failure reason15:Passkey invalide"
+                ("403 Forbidden", b"d14:failure reason15:Passkey invalide")
             };
             socket
                 .write_all(
                     format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
                     )
                     .as_bytes(),
@@ -430,6 +449,9 @@ async fn private_tracker_failure_and_warning_reach_status() {
             let row = daemon.call(json!({"op":"get","id":id})).await;
             if row["transfer"]["trackers"][0]["error"] == "Passkey invalid" {
                 assert!(row["last_error"].is_null(), "{row}");
+                assert_eq!(row["tracker_error"], "Passkey invalid");
+                let list = daemon.call(json!({"op":"list"})).await;
+                assert_eq!(list["torrents"][0]["tracker_error"], "Passkey invalid");
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -437,13 +459,13 @@ async fn private_tracker_failure_and_warning_reach_status() {
     })
     .await
     .unwrap();
-    daemon.call(json!({"op":"pause","id":id})).await;
-    daemon.call(json!({"op":"resume","id":id})).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(25), async {
         loop {
             let row = daemon.call(json!({"op":"get","id":id})).await;
             if row["tracker_message"] == "Low ratio" {
                 assert!(row["last_error"].is_null(), "{row}");
+                assert!(row["tracker_error"].is_null(), "{row}");
+                assert!(row["transfer"]["trackers"][0]["error"].is_null(), "{row}");
                 assert_eq!(row["transfer"]["trackers"][0]["warning"], "Low ratio");
                 break;
             }

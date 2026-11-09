@@ -277,7 +277,29 @@ impl Supervisor {
         let tracker_message = status
             .as_ref()
             .and_then(|s| s.diagnostics.as_ref())
-            .and_then(|d| d.trackers.iter().find_map(|t| t.warning.as_ref()));
+            .and_then(|d| {
+                d.trackers
+                    .iter()
+                    .filter(|t| t.active)
+                    .find_map(|t| t.warning.as_ref())
+            });
+        let tracker_error = status
+            .as_ref()
+            .and_then(|s| s.diagnostics.as_ref())
+            .and_then(|d| {
+                d.trackers.iter().filter(|t| t.active).find_map(|active| {
+                    if active.state == "Success" {
+                        None
+                    } else {
+                        active.error.as_ref().or_else(|| {
+                            d.trackers
+                                .iter()
+                                .filter(|t| t.swarm == active.swarm)
+                                .find_map(|t| t.error.as_ref())
+                        })
+                    }
+                })
+            });
         json!({"id":row.id,"name":meta.as_ref().map(|m|String::from_utf8_lossy(m.name()).into_owned()),
             "intent":row.intent,"state":phase,"output_dir":row.output_dir,"settings":row.settings,
             "private":meta.as_ref().map(|m| m.is_private()),
@@ -299,7 +321,8 @@ impl Supervisor {
             "completed_announces":row.checkpoint.completed_announces.iter().map(|(key, delivered)|
                 json!({"swarm":crate::encoding::hex_key(*key),"delivered":delivered})).collect::<Vec<_>>(),
             "last_error":row.last_error,
-            "tracker_message":tracker_message,"retry_at":row.retry_at,"transfer":transfer})
+            "tracker_error":tracker_error,"tracker_message":tracker_message,
+            "retry_at":row.retry_at,"transfer":transfer})
     }
     pub async fn reannounce(
         &self,

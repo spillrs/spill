@@ -89,6 +89,7 @@ impl Torrent {
                 self.pex_enabled,
                 self.holepunch_enabled(),
                 upload_only,
+                self.meta.is_private(),
             )?;
             if !self.send(
                 peer,

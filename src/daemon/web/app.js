@@ -37,7 +37,7 @@ function resetFiles() {
   filePage = null; fileError = ''; fileLoading = null;
   fileOffset = 0; fileUpdated = 0; fileRequest++;
 }
-const matches = (t, key) => key === 'all' || (key === 'error' ? !!t.last_error : t.state === key);
+const matches = (t, key) => key === 'all' || (key === 'error' ? !!(t.last_error || t.tracker_error) : t.state === key);
 const visible = () => torrents.filter(t => matches(t, filter) && t.name.toLowerCase().includes(query.toLowerCase())).sort((a,b) => {
   const x = sortKey === 'size' ? a.total_bytes : sortKey === 'progress' ? progress(a) : a[sortKey];
   const y = sortKey === 'size' ? b.total_bytes : sortKey === 'progress' ? progress(b) : b[sortKey];
@@ -143,7 +143,7 @@ function render() {
       <td><div class="name-text"><strong title="${esc(t.name)}">${esc(t.name)}</strong></div></td>
       <td class="mono">${t.metadata_pending ? '—' : bytes(t.total_bytes)}</td>
       <td><div class="progress-wrap"><div class="progress-meta"><span>${p == null ? '—' : p.toFixed(1)+'%'}</span></div><div class="progress-track"><i style="width:${p || 0}%"></i></div></div></td>
-      <td><span class="status ${t.last_error ? 'has-error' : esc(t.state)}" title="${esc(t.tracker_message || '')}">${t.last_error ? icon('alert')+esc(t.last_error) : esc(t.state)}</span></td>
+      <td><span class="status ${(t.last_error || t.tracker_error) ? 'has-error' : esc(t.state)}" title="${esc(t.tracker_message || '')}">${(t.last_error || t.tracker_error) ? icon('alert')+esc(t.last_error || t.tracker_error) : esc(t.state)}</span></td>
       <td class="mono total" title="${esc(t.downloaded_bytes)} bytes, lifetime">${bytes(t.downloaded_bytes)}</td><td class="mono total" title="${esc(t.uploaded_bytes)} bytes, lifetime">${bytes(t.uploaded_bytes)}</td>
       <td class="mono speed-down">${rate(t.down)}</td><td class="mono speed-up">${rate(t.up)}</td><td class="mono">${t.peers}</td><td class="mono">${esc(t.eta)}</td>
       <td><span class="discovery-bits" title="Allowed by policy; not activity telemetry">${policy(t)}</span></td></tr>`;

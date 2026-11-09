@@ -21,6 +21,20 @@ use std::{
 use tokio::{sync::watch, time::Instant};
 use tracing::{debug, info, trace};
 type Status = watch::Sender<TorrentStatus>;
+
+pub(super) fn tracker_counters(transfer: &Shell) -> io::Result<crate::engine::discovery::Counters> {
+    let p = transfer.progress()?;
+    Ok(crate::engine::discovery::Counters {
+        // Failed-piece bytes include padding synthesized without receiving it.
+        downloaded: p
+            .received_payload_bytes()
+            .saturating_sub(p.hash_failed_bytes()),
+        corrupt: p.hash_failed_bytes(),
+        uploaded: transfer.uploaded_bytes(),
+        left: p.remaining_bytes(),
+        partial_seed: p.partial_seed(),
+    })
+}
 struct Peer {
     address: Option<SocketAddr>,
     direction: &'static str,
@@ -71,6 +85,28 @@ impl Progress {
             uploaded: 0,
         }
     }
+    pub(in crate::engine) async fn tracker_changed(
+        &mut self,
+        transfer: &mut Shell,
+        discovery: &mut Discovery,
+    ) -> io::Result<()> {
+        let dials = discovery
+            .dials
+            .as_mut()
+            .expect("online dials")
+            .shutdown()
+            .await;
+        discovery
+            .contacts
+            .as_mut()
+            .expect("online contacts")
+            .clear();
+        let peers = transfer.tracker_changed().await;
+        self.sources.clear();
+        self.pending = 0;
+        self.retain_peers(transfer);
+        dials.and(peers)
+    }
     pub(in crate::engine) fn retain_peers(&mut self, transfer: &Shell) {
         self.endpoints.retain(|id, _| transfer.has_peer(*id));
         self.active = self.endpoints.len();
@@ -87,17 +123,7 @@ impl Progress {
     ) -> io::Result<()> {
         let events = transfer.take_announces();
         for manager in &mut discovery.announces {
-            let p = transfer.progress()?;
-            manager.update_counters(crate::engine::discovery::Counters {
-                // Failed-piece bytes include padding synthesized without receiving it.
-                downloaded: p
-                    .received_payload_bytes()
-                    .saturating_sub(p.hash_failed_bytes()),
-                corrupt: p.hash_failed_bytes(),
-                uploaded: transfer.uploaded_bytes(),
-                left: p.remaining_bytes(),
-                partial_seed: p.partial_seed(),
-            });
+            manager.update_counters(tracker_counters(transfer)?);
             for event in &events {
                 manager.request(*event).await?;
             }

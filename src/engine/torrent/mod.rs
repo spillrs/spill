@@ -92,6 +92,7 @@ pub struct TorrentOptions {
     pub profile: Profile,
     pub settings: crate::engine::settings::TorrentSettings,
     pub run: RunPolicy,
+    /// Initial direct peers; must be empty for private metainfo.
     pub peers: Vec<SocketAddr>,
     pub diagnostics: bool,
     pub log_peer_endpoints: bool,

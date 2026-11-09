@@ -82,6 +82,8 @@ pub struct TrackerStatus {
     pub tier: usize,
     pub slot: usize,
     pub state: &'static str,
+    /// Selected tracker for this swarm; other entries are fallbacks.
+    pub active: bool,
     /// Announce attempts (UDP connect plus announce count as one attempt).
     pub exchanges: u32,
     pub failures: u32,

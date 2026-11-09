@@ -29,6 +29,12 @@ impl TorrentOptions {
         self.profile.validate()?;
         if let TorrentSource::Metainfo(meta) = &self.source {
             self.profile.validate_metainfo(meta.view())?;
+            if meta.is_private() && !self.peers.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "direct peers are disabled for private torrents",
+                ));
+            }
             selection(meta, &self.settings)?;
         }
         Ok(())

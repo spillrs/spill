@@ -181,26 +181,33 @@ progress. These counters are zero when no acquisition is needed at startup.
 V2-only magnets acquire layers before payload preparation; partial acquisition
 is discarded on stop. `layers_pending` identifies hybrids using SHA-1 while v2
 layers are absent. They rebuild layers from verified payload at full completion;
-the next start uses both swarms. See [v2 and hybrid torrents](v2.md).
+the next start uses both swarms for public torrents. Private hybrids announce
+only v1. See [v2 and hybrid torrents](v2.md).
 
 `completed_announces` is an array of `{ "swarm": "40 hex digits", "delivered":
 true }` records. `false` means pending; an absent record means no completion
 event was recorded for that swarm. Delivery is persisted independently for each
-hybrid swarm.
+public hybrid swarm; private hybrids record only v1 delivery.
 
-`last_error` reports torrent-level failures, not tracker failures. Tracker errors
-remain in `transfer.trackers[].error`, alongside each tracker's state, counters
-and reply age. A failed tracker can retain its last error while another tracker
-is succeeding; that does not make the torrent failed. `tracker_message` exposes
-a tracker warning, also available in `transfer.trackers[].warning`.
+`last_error` reports torrent-level failures, not tracker failures. `tracker_error`
+exposes a tracker failure while no selected tracker is succeeding for that swarm;
+recovery or successful fallback clears it. Non-JSON `list` prints it beneath the
+row, and the web UI includes it in the error filter without changing torrent state.
+Per-tracker errors remain in `transfer.trackers[].error`, alongside state,
+counters and reply age. `transfer.trackers[].active` identifies the selected
+tracker for each swarm. A failed backup can retain its error while the selected
+tracker succeeds; that does not make the torrent failed or set `tracker_error`.
+`tracker_message` exposes a selected tracker's warning, also available in
+`transfer.trackers[].warning`.
 
 `transfer.trackers[]` and `transfer.dht[]` identify their swarm with the same
 `swarm` key: SHA-1 for v1, the 20-byte SHA-256 prefix for v2. DHT observations
-are an array, empty when disabled. Hybrids with authenticated layers have
+are an array, empty when disabled. Public hybrids with authenticated layers have
 independent tracker/DHT state for both keys but shared payload progress and
-budgets. Pending-layer hybrids use only the v1 swarm. Each tracker swarm
-receives the same torrent-wide upload/download counters, not per-swarm traffic;
-summing tracker accounting across both swarms can double-count bytes.
+budgets. Pending-layer hybrids use only the v1 swarm. Private hybrids announce
+only v1, and private torrents disable DHT in every format. Each public hybrid
+tracker swarm receives the same torrent-wide upload/download counters, not
+per-swarm traffic; summing their accounting can double-count bytes.
 DHT entries also report `node_ids` (hexadecimal) and `external_addresses`, each
 an array in IPv4/IPv6 order. Disabled families have a `null` node ID; an address
 is `null` until a public bind address or DHT address votes establish it. Before

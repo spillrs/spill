@@ -9,7 +9,7 @@ const byteValue = value => `<span title="${esc(value)} bytes">${bytes(value)}</s
 function renderOverview(t) {
   const group = (title,rows) => `<div><h3 class="detail-name">${esc(title)}</h3>${rows.map(([label,value]) => detailRow(label,value)).join('')}</div>`;
   const announcements = t.completed_announces.map(s => [s.swarm, s.delivered]);
-  return (t.last_error ? `<div class="torrent-error">${esc(t.last_error)}</div>` : '') + `<div class="detail-grid">` +
+  return (t.last_error ? `<div class="torrent-error">${esc(t.last_error)}</div>` : '') + (t.tracker_error ? `<div class="torrent-error">Tracker: ${esc(t.tracker_error)}</div>` : '') + `<div class="detail-grid">` +
     group(t.name,[['ID',t.id],['Format',t.format],['SHA-1',t.v1 || '—'],['SHA-256',t.v2 || '—'],['Metadata',t.metadata_ready ? 'Ready' : t.info_validated ? `Hash layers: ${bytes(t.hash_bytes)} / ${bytes(t.hash_total_bytes)}` : 'Pending'],['V2 layers',!t.v2 ? '—' : t.layers_pending ? 'Pending (v1 mode)' : t.metadata_ready ? 'Ready' : 'Acquiring'],['Save to',t.output_dir],['Status',t.state],['Intent',t.intent],['Private',t.private === null ? 'Unknown' : t.private],['Tracker message',t.tracker_message || '—'],['Retry at',date(t.retry_at)]]) +
     group('Lifetime accounting',[
       ['Downloaded',bytes(t.downloaded_bytes)],['Uploaded',bytes(t.uploaded_bytes)],

@@ -128,16 +128,29 @@ fn unescape(value: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn http_trackers_download_each_swarm_and_checkpoint_completion_independently() {
+async fn http_trackers_preserve_public_swarms_without_double_announcing_private_hybrids() {
     tokio::time::timeout(Duration::from_secs(20), async {
-        for fixture in [V2, HYBRID] {
+        for (fixture, private) in [(V2, false), (HYBRID, false), (V2, true), (HYBRID, true)] {
+            let document = bencode::decode(fixture, Default::default()).unwrap();
+            let Value::Dictionary(fields) = document.value() else { unreachable!() };
+            let mut fields = fields.clone();
+            if private {
+                let Value::Dictionary(info) = fields[b"info".as_slice()].value() else { unreachable!() };
+                let mut info = info.clone();
+                info.insert(b"private", Node::new(Value::Integer(1)));
+                fields.insert(b"info", Node::new(Value::Dictionary(info)));
+            }
+            let fixture = bencode::encode(&Node::new(Value::Dictionary(fields)), Default::default()).unwrap();
             let tracker = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let meta = metainfo(fixture, &format!("http://{}/announce", tracker.local_addr().unwrap()));
-            let keys = swarm_keys(&meta);
+            let meta = metainfo(&fixture, &format!("http://{}/announce", tracker.local_addr().unwrap()));
+            let mut keys = swarm_keys(&meta);
+            if private { keys.truncate(1); }
             let mut endpoints = BTreeMap::new();
             let mut sources = Vec::new();
             for (index, &key) in keys.iter().enumerate() {
-                let bits = if keys.len() == 1 { 0xfc } else if index == 0 { 0x70 } else { 0x8e };
+                let bits = if keys.len() == 1 {
+                    if meta.info_hash().v1().is_some() { 0xfe } else { 0xfc }
+                } else if index == 0 { 0x70 } else { 0x8e };
                 let (address, task) = source(key, peers(&meta), bits).await;
                 endpoints.insert(key, address);
                 sources.push(task);
@@ -186,6 +199,7 @@ async fn http_trackers_download_each_swarm_and_checkpoint_completion_independent
             let outcome = tokio::time::timeout(Duration::from_secs(8), handle.outcome()).await.unwrap_or_else(|_| panic!("HTTP {:?} {:?}", handle.snapshot(), records.lock().unwrap()));
             assert!(outcome.full_complete && outcome.cleanup_complete, "{outcome:?}");
             let recovery = handle.recovery().unwrap();
+            assert_eq!(recovery.completed_announces.len(), keys.len());
             for key in &keys {
                 assert_eq!(delivery.lock().unwrap().iter().filter(|(k, _)| k == key).map(|(_, b)| *b).collect::<Vec<_>>(), [false, true]);
                 assert!(recovery.completed_announces.contains(&(*key, true)));

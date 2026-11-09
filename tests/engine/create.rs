@@ -74,6 +74,7 @@ fn created_v2_and_hybrid_match_reference_vectors() {
         };
         let created = create::create(&source, &options, &mut |_, _| Ok(())).unwrap();
         let actual = Profile::default().parse_owned(&created.metainfo).unwrap();
+        spill::engine::provisioning::NamedDestination::verify(&root.0, &actual).unwrap();
         let expected = Profile::default().parse_owned(fixture).unwrap();
         assert_eq!(created.info_hash, expected.info_hash());
         assert_eq!(actual.info_bytes(), expected.info_bytes());
@@ -91,6 +92,10 @@ fn created_v2_and_hybrid_match_reference_vectors() {
             };
             assert_eq!(layers.len(), 1);
         }
+        let missing = root.0.join(files[0].0);
+        std::fs::remove_file(&missing).unwrap();
+        assert!(spill::engine::provisioning::NamedDestination::verify(&root.0, &actual).is_err());
+        assert!(!missing.exists());
     }
 }
 

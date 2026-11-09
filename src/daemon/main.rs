@@ -14,6 +14,7 @@ mod observation;
 mod settings;
 mod storage;
 mod supervisor;
+mod verify;
 mod web;
 use clap::Parser;
 use std::{
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
     let offline = match &cli.command {
         cli::Command::Create(args) => Some(create::run(args, cli.json)),
         cli::Command::Inspect(args) => Some(inspect::run(args, cli.json)),
+        cli::Command::Verify(args) => Some(verify::run(args, cli.json)),
         _ => None,
     };
     if let Some(result) = offline {
@@ -59,7 +61,7 @@ fn main() -> ExitCode {
         .expect("runtime");
     let code = runtime.block_on(async {
         match cli.command {
-            cli::Command::Create(_) | cli::Command::Inspect(_) => {
+            cli::Command::Create(_) | cli::Command::Inspect(_) | cli::Command::Verify(_) => {
                 unreachable!("offline commands are dispatched before starting the runtime")
             }
             cli::Command::Serve { config } => {

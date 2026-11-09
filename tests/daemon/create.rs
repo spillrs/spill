@@ -136,7 +136,7 @@ fn offline_creation_supports_mktorrent_options_and_preserves_info_identity() {
 }
 
 #[test]
-fn offline_inspection_supports_all_formats_stdin_and_magnets() {
+fn offline_inspection_and_verification_support_all_formats() {
     let root = Temp::new();
     std::fs::write(root.0.join("payload"), vec![42; 70000]).unwrap();
     let inspect = |source: &str| {
@@ -198,6 +198,39 @@ fn offline_inspection_supports_all_formats_stdin_and_magnets() {
         assert_eq!(data["announce"], "https://tracker.example/announce");
         assert_eq!(data["comment"], "a comment");
         assert_eq!(data["source"], "source");
+        let verify = || {
+            Command::new(BIN)
+                .current_dir(&root.0)
+                .args([
+                    "--socket",
+                    "missing.sock",
+                    "verify",
+                    &name,
+                    "--path",
+                    ".",
+                    "--json",
+                ])
+                .output()
+                .unwrap()
+        };
+        let verified = verify();
+        assert!(
+            verified.status.success(),
+            "{}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+        let report: Value = serde_json::from_slice(&verified.stdout).unwrap();
+        assert_eq!(report["verified"], true);
+        assert_eq!(report["info_hash"], created["info_hash"]);
+        std::fs::write(root.0.join("payload"), vec![43; 70000]).unwrap();
+        let corrupt = verify();
+        assert_eq!(corrupt.status.code(), Some(1));
+        assert!(corrupt.stdout.is_empty());
+        assert_eq!(
+            std::fs::read(root.0.join("payload")).unwrap(),
+            vec![43; 70000]
+        );
+        std::fs::write(root.0.join("payload"), vec![42; 70000]).unwrap();
         let input = std::fs::File::open(root.0.join(&name)).unwrap();
         let stdin = Command::new(BIN)
             .args(["inspect", "-", "--json"])

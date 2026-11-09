@@ -105,6 +105,16 @@ or `None` for web seeds and unavailable/unnegotiated observations.
 Dropping the download future requests stop but cannot await cleanup. For timeouts
 or cancellation that must prove files have been released, use an explicit session.
 
+## Verify local payload
+
+`spill::engine::provisioning::NamedDestination::verify` checks complete existing
+payload against an `OwnedMetainfo`, without a session or Tokio runtime. Supply
+the parent download directory; paths use spill's normalized disk names. It is
+read-only, stops at the first failure, and does not use network or resume state.
+Keep files unchanged during the scan. Asynchronous callers should use
+`spawn_blocking`. See [CLI verification](cli.md#verifying-local-payload) and the
+[API reference](https://docs.rs/spill/latest/spill/engine/provisioning/struct.NamedDestination.html#method.verify).
+
 ## Create a torrent
 
 `spill::engine::create::create` hashes a file or directory without a session,

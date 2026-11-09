@@ -3,6 +3,28 @@
 use super::*;
 
 impl NamedDestination {
+    /// Check complete existing payload without creating or modifying files.
+    ///
+    /// `root` is the parent download directory. Paths use spill's normalized
+    /// disk names, including the torrent root for multi-file layouts. Missing,
+    /// incorrectly sized, partial (`.part`) or corrupt files fail verification;
+    /// symlinks beneath `root` and non-regular files are rejected. Padding files
+    /// are not read. Hybrids with missing v2 layers are checked using SHA-1.
+    ///
+    /// This blocks and stops at the first failure. It does not use networking,
+    /// acquire payload leases, or read/write resume data. Keep files unchanged
+    /// during the scan: it is not a filesystem snapshot. Async callers should
+    /// use `spawn_blocking`.
+    pub fn verify(root: &std::path::Path, meta: &OwnedMetainfo) -> io::Result<()> {
+        let root = File::open(root)?;
+        if !root.metadata()?.is_dir() {
+            return Err(invalid("output is not a directory"));
+        }
+        let mut files = PayloadPaths::new(meta)?
+            .complete_files(&root, meta.layout())?
+            .ok_or_else(|| invalid("payload is missing, partial or incorrectly sized"))?;
+        verify_content_cancellable(meta, &mut files, &|| false)
+    }
     /// Record writable paths before creating payloads so interrupted creation
     /// can be reopened for recovery. Complete existing seeds stay read-only.
     pub(in crate::engine) fn open_cancellable(

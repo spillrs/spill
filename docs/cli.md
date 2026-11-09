@@ -4,6 +4,7 @@
 spill serve [--config PATH]
 spill [--json] create [OPTIONS] TARGET
 spill [--json] inspect SOURCE
+spill [--json] verify FILE.torrent --path DIR
 spill [--socket PATH] [--json] COMMAND
 spill --version
 ```
@@ -12,7 +13,8 @@ spill --version
 stderr and appending detailed logs to `<state_dir>/debug.log`. See
 [Logging](configuration.md#logging-logging) for filters.
 `spill create` creates torrent files locally and `spill inspect` reads metainfo or
-magnet links without a daemon. Other commands talk to a running daemon over its
+magnet links without a daemon. `spill verify` checks existing payload locally.
+Other commands talk to a running daemon over its
 Unix socket. Without `--socket`, client commands use:
 
 - Linux: `$XDG_RUNTIME_DIR/spill.sock`, falling back to
@@ -47,6 +49,7 @@ preserve full IDs; use prefixes when entering commands.
 
 | Command | What it does |
 |---|---|
+| `verify FILE.torrent --path DIR` | Read-only, offline check of complete payload. Stops at the first failure. See below. |
 | `inspect SOURCE` | Inspect a local `.torrent`, a quoted magnet link, or `-` for metainfo on stdin, without a daemon or network access. See below. |
 | `create TARGET [OPTIONS]` | Create a v1, v2 or hybrid `.torrent` from a file or directory, without a daemon. See below. |
 | `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the torrent ID. Existing torrents are errors except for magnet `so` selection updates; see [File selection](torrents.md#file-selection). |
@@ -146,6 +149,31 @@ under the engine's stricter [limits](limits.md). Non-UTF-8 text is displayed wit
 replacement characters; hashes always use the original info bytes. Control
 characters are JSON-escaped. Output can contain private tracker passkeys: redact
 it before sharing.
+
+## Verifying local payload
+
+```sh
+spill verify download.torrent --path /downloads
+spill verify download.torrent --path /downloads --json
+```
+
+This is a complete-payload pass/fail check using the engine's existing
+verification. `--path` is the parent directory, as with `add --output`: directory
+torrents expect `DIR/NAME/`, single-file torrents `DIR/NAME`. Paths use spill's
+[normalized disk names](torrents.md#adding-torrents). Missing, wrong-size,
+corrupt or partial (`.part`) files fail; symlinks beneath `DIR` and non-regular
+files are rejected. The explicitly supplied root may be a symlink.
+
+V1, v2 and hybrid torrents are supported; hybrids without v2 layers use SHA-1.
+Padding files are not read. Metainfo must meet the engine's [limits](limits.md).
+The command never modifies files, uses networking, or reads/writes daemon or
+resume state. It does not repair data or provide a per-piece report. Keep payload
+unchanged throughout the scan: it is not a snapshot.
+
+Success prints `Verified HASH`, or `{"info_hash":"HASH","verified":true}` with
+`--json`, and exits 0. Verification stops at the first failure, writes the error
+to stderr, and exits 1 without stdout output. Malformed metainfo exits 2.
+Unlike `recheck ID`, it does not require adding the torrent or update daemon state.
 
 ## Creating torrents
 

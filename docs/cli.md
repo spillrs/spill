@@ -3,6 +3,7 @@
 ```text
 spill serve [--config PATH]
 spill [--json] create [OPTIONS] TARGET
+spill [--json] inspect SOURCE
 spill [--socket PATH] [--json] COMMAND
 spill --version
 ```
@@ -10,7 +11,8 @@ spill --version
 `spill serve` runs the daemon in the foreground, writing operational logs to
 stderr and appending detailed logs to `<state_dir>/debug.log`. See
 [Logging](configuration.md#logging-logging) for filters.
-`spill create` creates torrent files locally without a daemon. Other commands talk to a running daemon over its
+`spill create` creates torrent files locally and `spill inspect` reads metainfo or
+magnet links without a daemon. Other commands talk to a running daemon over its
 Unix socket. Without `--socket`, client commands use:
 
 - Linux: `$XDG_RUNTIME_DIR/spill.sock`, falling back to
@@ -45,6 +47,7 @@ preserve full IDs; use prefixes when entering commands.
 
 | Command | What it does |
 |---|---|
+| `inspect SOURCE` | Inspect a local `.torrent`, a quoted magnet link, or `-` for metainfo on stdin, without a daemon or network access. See below. |
 | `create TARGET [OPTIONS]` | Create a v1, v2 or hybrid `.torrent` from a file or directory, without a daemon. See below. |
 | `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the torrent ID. Existing torrents are errors except for magnet `so` selection updates; see [File selection](torrents.md#file-selection). |
 | `list [--watch]` | All torrents: full ID, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
@@ -115,6 +118,34 @@ since daemon startup, and `write_failed` for the most recent debug-file write.
 A successful write clears `write_failed`; it does not erase the drop count.
 These observations do not make health independent of slow control or cleanup
 work. Resource counts are sampled separately, not one atomic reservation view.
+
+## Inspecting torrents and magnets
+
+```sh
+spill inspect download.torrent
+spill inspect download.torrent --json
+spill inspect 'magnet:?xt=urn:btih:0123456789012345678901234567890123456789'
+spill inspect - < download.torrent
+```
+
+Output is formatted JSON by default; `--json` produces one compact JSON document
+for scripts. Both include `kind`, `info_hash`, `format`, `v1`, `v2`, and `name`.
+Metainfo inspection validates the content structure and reports the private flag,
+piece length/count, file paths, lengths, offsets and padding flags, plus available
+tracker tiers, web seeds, comment, creator, creation date and source. `total_bytes`
+includes virtual padding; `data_bytes` excludes it. File paths follow the metainfo
+layout (relative to the root for multi-file torrents), not sanitized disk paths.
+`layers_pending` indicates missing v2 layers in a hybrid.
+
+Magnet inspection reports decoded `parameters`, including discovery hints and
+file selections; it does not resolve metadata. The existing magnet parser skips
+invalid tracker hints. Inspection never contacts trackers or peers, reads payload,
+adds a torrent, or connects to the daemon. Metainfo uses the protocol parser's
+32 MiB input budget; successful inspection does not guarantee daemon admission
+under the engine's stricter [limits](limits.md). Non-UTF-8 text is displayed with
+replacement characters; hashes always use the original info bytes. Control
+characters are JSON-escaped. Output can contain private tracker passkeys: redact
+it before sharing.
 
 ## Creating torrents
 

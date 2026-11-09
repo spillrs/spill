@@ -136,6 +136,99 @@ fn offline_creation_supports_mktorrent_options_and_preserves_info_identity() {
 }
 
 #[test]
+fn offline_inspection_supports_all_formats_stdin_and_magnets() {
+    let root = Temp::new();
+    std::fs::write(root.0.join("payload"), vec![42; 70000]).unwrap();
+    let inspect = |source: &str| {
+        Command::new(BIN)
+            .current_dir(&root.0)
+            .args(["--socket", "missing.sock", "inspect", source, "--json"])
+            .output()
+            .unwrap()
+    };
+    for format in ["v1", "v2", "hybrid"] {
+        let name = format!("{format}.torrent");
+        let created = Command::new(BIN)
+            .current_dir(&root.0)
+            .args([
+                "create",
+                "payload",
+                "-F",
+                format,
+                "-o",
+                &name,
+                "-p",
+                "-a",
+                "https://tracker.example/announce",
+                "-c",
+                "a comment",
+                "-s",
+                "source",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "{}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let created: Value = serde_json::from_slice(&created.stdout).unwrap();
+        let output = inspect(&name);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let data: Value = serde_json::from_slice(&output.stdout).unwrap();
+        for key in [
+            "format",
+            "info_hash",
+            "v1",
+            "v2",
+            "piece_count",
+            "total_bytes",
+        ] {
+            assert_eq!(data[key], created[key], "{format}: {key}");
+        }
+        assert_eq!(data["private"], true);
+        assert_eq!(data["data_bytes"], 70000);
+        assert_eq!(data["files"][0]["path"], "payload");
+        assert_eq!(data["files"][0]["length"], 70000);
+        assert_eq!(data["announce"], "https://tracker.example/announce");
+        assert_eq!(data["comment"], "a comment");
+        assert_eq!(data["source"], "source");
+        let input = std::fs::File::open(root.0.join(&name)).unwrap();
+        let stdin = Command::new(BIN)
+            .args(["inspect", "-", "--json"])
+            .stdin(input)
+            .output()
+            .unwrap();
+        assert!(stdin.status.success());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&stdin.stdout).unwrap(),
+            data
+        );
+    }
+    let hash = "0123456789012345678901234567890123456789";
+    let output = inspect(&format!(
+        "MAGNET:?xt=urn:btih:{hash}&dn=hello%20world&so=1-3"
+    ));
+    assert!(output.status.success());
+    let data: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(data["kind"], "magnet");
+    assert_eq!(data["info_hash"], hash);
+    assert_eq!(data["name"], "hello world");
+    assert_eq!(data["parameters"][2]["value"], "1-3");
+    assert_eq!(inspect("magnet:?xt=invalid").status.code(), Some(2));
+    std::fs::write(root.0.join("bad.torrent"), b"not bencode").unwrap();
+    let invalid = inspect("bad.torrent");
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(invalid.stdout.is_empty());
+    assert_eq!(inspect("missing.torrent").status.code(), Some(1));
+}
+
+#[test]
 fn offline_creation_defaults_trackerless_web_seeds_and_output_errors() {
     let root = Temp::new();
     std::fs::create_dir(root.0.join("bundle")).unwrap();

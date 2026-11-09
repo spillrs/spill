@@ -17,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     name = "spill",
     version,
     about = "A modern torrent client built in Rust",
-    after_help = "Run `spill serve` in one terminal, then use client commands in another.\n`spill create` works offline. Torrent IDs and full-hash aliases accept unambiguous prefixes.\nUse --json for automation. Guide: https://spill.rs/docs/ | Rust engine: https://docs.rs/spill"
+    after_help = "Run `spill serve` in one terminal, then use client commands in another.\n`spill create` and `spill inspect` work offline. Torrent IDs and full-hash aliases accept unambiguous prefixes.\nUse --json for automation. Guide: https://spill.rs/docs/ | Rust engine: https://docs.rs/spill"
 )]
 pub struct Cli {
     #[arg(long, global = true)]
@@ -39,6 +39,8 @@ pub enum Command {
     },
     /// Create a .torrent from a file or directory without a running daemon.
     Create(crate::create::Arguments),
+    /// Inspect a .torrent file or magnet link without a running daemon.
+    Inspect(crate::inspect::Arguments),
     #[command(flatten)]
     Client(Operation),
 }

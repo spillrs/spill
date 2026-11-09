@@ -7,6 +7,7 @@ mod create;
 mod encoding;
 #[path = "../http.rs"]
 mod http;
+mod inspect;
 mod logging;
 mod metainfo_url;
 mod observation;
@@ -34,8 +35,13 @@ fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    if let cli::Command::Create(args) = &cli.command {
-        return match create::run(args, cli.json) {
+    let offline = match &cli.command {
+        cli::Command::Create(args) => Some(create::run(args, cli.json)),
+        cli::Command::Inspect(args) => Some(inspect::run(args, cli.json)),
+        _ => None,
+    };
+    if let Some(result) = offline {
+        return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error}");
@@ -53,8 +59,8 @@ fn main() -> ExitCode {
         .expect("runtime");
     let code = runtime.block_on(async {
         match cli.command {
-            cli::Command::Create(_) => {
-                unreachable!("creation is dispatched before starting the runtime")
+            cli::Command::Create(_) | cli::Command::Inspect(_) => {
+                unreachable!("offline commands are dispatched before starting the runtime")
             }
             cli::Command::Serve { config } => {
                 let mut logging = logging::Logging::init();

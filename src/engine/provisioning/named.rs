@@ -15,6 +15,20 @@ impl NamedDestination {
     /// acquire payload leases, or read/write resume data. Keep files unchanged
     /// during the scan: it is not a filesystem snapshot. Async callers should
     /// use `spawn_blocking`.
+    ///
+    /// Check `downloads/NAME` (or `downloads/NAME/` for a directory torrent)
+    /// before adding it to a session:
+    ///
+    /// ```no_run
+    /// use spill::engine::{profile::Profile, provisioning::NamedDestination};
+    /// use std::path::Path;
+    ///
+    /// let bytes = std::fs::read("example.torrent")?;
+    /// let meta = Profile::default().parse_owned(&bytes)?;
+    /// NamedDestination::verify(Path::new("downloads"), &meta)?;
+    /// println!("Verified {}", meta.info_hash());
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn verify(root: &std::path::Path, meta: &OwnedMetainfo) -> io::Result<()> {
         let root = File::open(root)?;
         if !root.metadata()?.is_dir() {

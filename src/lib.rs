@@ -49,6 +49,53 @@
 //! cannot await cleanup. Retain handles and explicitly join shutdown before reusing
 //! destinations.
 //!
+//! This example uses tracker discovery, reports wanted-content progress, and joins
+//! shutdown even when admission or the transfer fails. Enable DHT explicitly in
+//! [`engine::session::NetworkOptions`] when needed.
+//!
+//! ```no_run
+//! use spill::engine::{
+//!     profile::Profile,
+//!     session::{Limits, NetworkOptions, Session},
+//!     torrent::{Destination, RunPolicy, TorrentOptions, TorrentSource},
+//! };
+//!
+//! #[tokio::main(flavor = "current_thread")]
+//! async fn main() -> std::io::Result<()> {
+//!     let bytes = tokio::fs::read("example.torrent").await?;
+//!     let meta = Profile::default().parse_owned(&bytes)?;
+//!     tokio::fs::create_dir_all("downloads").await?;
+//!     let session = Session::bind(NetworkOptions::default(), Limits::default()).await?;
+//!     let result = async {
+//!         let mut options = TorrentOptions::new(
+//!             TorrentSource::Metainfo(meta),
+//!             Destination::Open("downloads".into()),
+//!         );
+//!         options.run = RunPolicy::UntilComplete;
+//!         let mut torrent = session.admit(options)?;
+//!         while torrent.changed().await {
+//!             let progress = torrent.snapshot().progress;
+//!             println!("{} / {} bytes", progress.wanted_verified_bytes, progress.wanted_bytes);
+//!             if progress.completed {
+//!                 break;
+//!             }
+//!         }
+//!         torrent.join().await?;
+//!         torrent.wait_complete().await
+//!     }.await;
+//!     let shutdown = session.shutdown().await;
+//!     result.and(shutdown)
+//! }
+//! ```
+//!
+//! ## Offline utilities
+//!
+//! [`engine::create::create`] builds torrent files from local payload, and
+//! [`engine::provisioning::NamedDestination::verify`] checks complete existing
+//! payload against metainfo. Both are blocking, read-only operations on the
+//! payload and need neither a session nor a Tokio runtime. Their API pages include
+//! examples.
+//!
 //! [`protocol`] exposes pure wire codecs; [`engine`] owns networking and storage.
 //! See the [library guide](https://spill.rs/docs/library/) and the `download` and
 //! `progress` examples in the matching source release. The

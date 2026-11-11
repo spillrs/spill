@@ -210,7 +210,7 @@ def transfer(lt, args, binary, root, torrent, payload, key, role):
                 "connect_to_syn_ms": filtering.delays(started), "transport_sample": transport, "daemon": row}
 
 
-def relay(lt, args, binary, root, torrent, payload, key):
+def relay(lt, args, binary, root, torrent, key):
     root.mkdir()
     with contextlib.ExitStack() as cleanup:
         daemon = Daemon(binary, root / "daemon", args.host, trackers=False, pex=True, utp=True)
@@ -218,14 +218,13 @@ def relay(lt, args, binary, root, torrent, payload, key):
         torrent_id = daemon.add(torrent)
         control(daemon.socket, "set", id=torrent_id, values={"file_priorities": ["skip"]})
         daemon.wait(torrent_id, lambda r: r["state"] == "seeding" and r["transfer"]["ready"], args.timeout)
-        output = root / "seed"
+        output = root / "target-payload"
         output.mkdir()
-        (output / "payload.bin").write_bytes(payload)
+        # Keep the target incomplete: spill retires seed-to-seed connections.
         # Disable target PEX so it cannot independently discover the probe;
         # its SYN must be caused by spill's connect message.
         target = libtorrent(lt, args, root / "libtorrent", torrent, output, pex=False)
         cleanup.callback(target.stop)
-        target.complete(args.timeout, seed=True)
         target.handle.connect_peer(daemon.address())
         daemon.wait(torrent_id, lambda r: any(p["detail"]["established"] and p["transport"] == "utp"
                     for p in r["transfer"]["peers"]), args.timeout)
@@ -279,7 +278,7 @@ def main():
     print(f"libtorrent {lt.__version__}; artifacts: {root}", flush=True)
     try:
         for role in ("initiator", "target", "relay") if args.role == "all" else (args.role,):
-            result["checks"].append(relay(lt, args, binary, root / role, torrent, payload, key) if role == "relay"
+            result["checks"].append(relay(lt, args, binary, root / role, torrent, key) if role == "relay"
                                     else transfer(lt, args, binary, root / role, torrent, payload, key, role))
         result["status"] = "passed"
     except Exception as error:

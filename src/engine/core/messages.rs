@@ -16,7 +16,7 @@ impl Torrent {
         let peer = &mut self.remotes[position];
         if has(&peer.pieces, index) {
             let old = peer.pieces.clone();
-            peer.pieces[index as usize / 8] &= !(0x80 >> (index % 8));
+            clear(&mut peer.pieces, index);
             peer.have_count -= 1;
             self.picker.availability_changed(&old, &peer.pieces);
             peer.first_needed = first_difference(&peer.pieces, &self.excluded, 0);
@@ -263,8 +263,7 @@ impl Torrent {
                     }
 
                     if peer.choked {
-                        peer.allowed_fast[request.index as usize / 8] &=
-                            !(0x80 >> (request.index % 8));
+                        clear(&mut peer.allowed_fast, request.index);
                     }
                 } else if let Err(error) = peer.unsolicited.charge(wire_bytes) {
                     self.retire_peer(position, error)?;

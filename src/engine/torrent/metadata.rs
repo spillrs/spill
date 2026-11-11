@@ -1,4 +1,4 @@
-//! Session discovery adapter for the core's metadata phase. No peer protocol state.
+//! Torrent discovery adapter for the core's metadata phase. No peer protocol state.
 use crate::engine::{
     core::extensions::invalid,
     discovery::{AnnounceOptions, Announcer},
@@ -17,7 +17,7 @@ use tokio::{
 pub(in crate::engine) struct Resources {
     pub(in crate::engine) lsd_peers: Vec<([u8; 20], SocketAddr)>,
     pub(in crate::engine) shell: Option<Shell>,
-    pub(in crate::engine) progress: Option<crate::engine::torrent::observation::Progress>,
+    pub(super) progress: Option<super::observation::Observer>,
     pub(in crate::engine) peer_id: Option<[u8; 20]>,
     dials: Option<crate::engine::session::dial::Client>,
     managers: Vec<([u8; 20], Announcer)>,
@@ -74,9 +74,7 @@ impl crate::engine::torrent::Network {
         };
         let peer_id = crate::engine::identity::generate_peer_id()?;
         resources.peer_id = Some(peer_id);
-        resources.progress = Some(crate::engine::torrent::observation::Progress::new(
-            status.clone(),
-        ));
+        resources.progress = Some(super::observation::Observer::new(status.clone()));
         let progress = resources.progress.as_mut().expect("metadata progress");
         let identity = magnet.info_hash();
         let mut lsd = self
@@ -93,12 +91,16 @@ impl crate::engine::torrent::Network {
         } else {
             0
         };
-        resources.shell = Some(Shell::magnet(identity, peer_id, profile, discovery_bytes)?);
+        resources.shell = Some(Shell::magnet(
+            identity,
+            peer_id,
+            profile,
+            discovery_bytes,
+            self,
+            bandwidth,
+            node.as_ref(),
+        )?);
         let shell = resources.shell.as_mut().expect("metadata shell");
-        shell.set_bandwidth(bandwidth);
-        shell.set_advertised_port(self.advertised_port.clone());
-        shell.set_addresses(self, node.as_ref())?;
-        shell.set_incoming(self.incoming.clone());
         let (mut contacts, dials) = self.dial_queue.client(profile);
         resources.dials = Some(dials);
         let dials = resources.dials.as_mut().expect("metadata dials");
@@ -213,7 +215,7 @@ impl crate::engine::torrent::Network {
                             contacts.dial_completed(event.address,event.transport(),event.utp_failed);
                             match event.result {
                                 Ok(socket)=>{
-                                    if !progress.attach_peer(socket, crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), shell, source, options.log_peer_endpoints, None)? {
+                                    if !super::admission::attach_peer(progress, socket, crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), shell, source, options.log_peer_endpoints, None)? {
                                         contacts.negotiated(event.address, crate::engine::session::dial::NegotiationOutcome::Failed);
                                         shell.connect_failed(event.address, false)?;
                                     }
@@ -226,14 +228,11 @@ impl crate::engine::torrent::Network {
                         }
                     }
                     Some(socket)=self.sockets.recv()=>{
-                        let (socket, prepared) = match socket {
-                            super::Inbound::Tcp(socket, prepared) => match tokio::net::TcpStream::from_std(socket) {
-                                Ok(socket) => (crate::engine::peer_io::Stream::Tcp(socket), prepared),
-                                Err(error) => { tracing::trace!(%error, "metadata_peer_register_failed"); continue; },
-                            },
-                            super::Inbound::Utp(socket, prepared) => (crate::engine::peer_io::Stream::Utp(socket), prepared),
+                        let (socket, prepared) = match socket.into_stream() {
+                            Ok(inbound) => inbound,
+                            Err(error) => { tracing::trace!(%error, "metadata_peer_register_failed"); continue; }
                         };
-                        progress.attach_peer(socket, crate::engine::peer_io::Role::Inbound, shell, "metadata", options.log_peer_endpoints, Some(prepared))?;
+                        super::admission::attach_peer(progress, socket, crate::engine::peer_io::Role::Inbound, shell, "metadata", options.log_peer_endpoints, Some(prepared))?;
                     }
                     event=shell.next()=>{
                         event?;

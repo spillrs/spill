@@ -192,7 +192,7 @@ pub async fn serve(
 ) -> io::Result<()> {
     let mut entropy = [0; 32];
     getrandom::fill(&mut entropy).map_err(io::Error::other)?;
-    let token = entropy.iter().map(|b| format!("{b:02x}")).collect();
+    let token = crate::encoding::hex_key(entropy);
     let address: SocketAddr = listener.local_addr()?;
     let app = App {
         control,

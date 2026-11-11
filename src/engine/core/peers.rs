@@ -106,7 +106,7 @@ impl Torrent {
         let uploads = requests::Uploads::with_capacity(crate::engine::profile::MAX_UPLOAD_REQUESTS);
         self.clear_wait_stall();
         self.remote_slots.insert(id, self.remotes.len());
-        self.remotes.push(Remote {
+        self.remotes.push(PeerState {
             connection: id,
             endpoint: remote,
             peer_id: None,

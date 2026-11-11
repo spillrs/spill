@@ -2,8 +2,8 @@
 //! supplied by provisioning. Operations are synchronous; Writer dispatches them to
 //! the blocking pool. Only the completion barrier syncs payload data.
 use super::FileStorage;
+use crate::engine::core::SharedBlock;
 use crate::engine::provisioning::paths::PayloadPaths;
-use crate::engine::{core::SharedBlock, storage::PieceSet};
 use crate::protocol::metainfo::{FileKind, OwnedMetainfo};
 use std::{
     fs::File,
@@ -252,7 +252,8 @@ impl FileStorage {
     pub(in crate::engine) fn fingerprint(&self) -> io::Result<Vec<u8>> {
         Self::fingerprint_files(self.files.entries.iter().filter_map(|e| e.file.as_ref()))
     }
-    pub(in crate::engine) fn changed_since(&self, old: &[u8]) -> io::Result<PieceSet> {
+    /// Piece indices whose stored bytes may have changed, sorted without duplicates.
+    pub(in crate::engine) fn changed_since(&self, old: &[u8]) -> io::Result<Vec<u32>> {
         let now = self.fingerprint()?;
         if old.len() != now.len() {
             return Ok((0..self.meta.layout().piece_count()).collect());

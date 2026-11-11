@@ -10,6 +10,7 @@
 #![warn(unreachable_pub)]
 
 pub(in crate::engine) mod bandwidth;
+mod bitfield;
 pub(in crate::engine) mod core;
 #[cfg(unix)]
 pub mod create;

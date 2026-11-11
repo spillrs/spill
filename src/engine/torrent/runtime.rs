@@ -1,8 +1,9 @@
 use super::{
     Network, Networking, RunPolicy, RuntimeOptions, TorrentExit, TorrentPhase, TorrentStatus,
-    observation::Progress,
+    admission::{self, Admission},
+    observation::Observer,
 };
-use crate::engine::{discovery::Discovery, torrent::shell::Shell as Task};
+use super::{discovery::Discovery, shell::Shell};
 use crate::engine::{next_ready, peer_io::Role};
 use std::{io, sync::Arc, time::Duration};
 use tokio::{
@@ -15,7 +16,7 @@ type Status = watch::Sender<TorrentStatus>;
 
 async fn start_discovery(
     options: &RuntimeOptions,
-    transfer: &mut Task,
+    transfer: &mut Shell,
     network: &mut Discovery,
     stop: &mut watch::Receiver<bool>,
     session: &Network,
@@ -32,15 +33,12 @@ async fn start_discovery(
 async fn drive(
     options: &mut RuntimeOptions,
     session: Network,
-    transfer: &mut Task,
+    transfer: &mut Shell,
     network: &mut Discovery,
     stop: &mut watch::Receiver<bool>,
     status: &Status,
-    progress: &mut Progress,
+    progress: &mut Observer,
 ) -> io::Result<TorrentExit> {
-    transfer.set_bandwidth(options.bandwidth.clone());
-    transfer.set_incoming(session.incoming.clone());
-    transfer.set_transport(session.utp, session.families, options.log_peer_endpoints);
     if *stop.borrow() {
         return Ok(TorrentExit::StopRequested);
     }
@@ -53,21 +51,12 @@ async fn drive(
             handle = dht.get() => handle?,
         });
     }
-    transfer.set_no_progress_timeout(options.no_progress_timeout);
-    transfer.set_advertised_port(session.advertised_port.clone());
-    transfer.set_addresses(&session, options.dht.as_ref())?;
-    transfer.set_dht_port(options.dht.as_ref().map(|h| h.local_addr().port()));
-    transfer.settings(options.settings.clone())?;
+    transfer.configure_payload(&session, options)?;
     let p = transfer.progress()?;
     status.send_modify(|s| {
         s.progress.phase = TorrentPhase::Downloading;
-        s.progress.verified_bytes = p.verified_bytes();
-        s.progress.total_bytes = p.total_bytes();
-        s.progress.wanted_bytes = p.wanted_bytes();
-        s.progress.wanted_verified_bytes = p.wanted_verified_bytes();
-        s.progress.processed_payload_bytes = p.received_payload_bytes();
-        s.progress.hash_failed_bytes = p.hash_failed_bytes();
-        s.progress.hash_failed_pieces = p.hash_failed_pieces();
+        super::observation::apply_progress(&p, &mut s.progress);
+        s.progress.total_bytes = p.total_bytes;
     });
     if let Some(exit) = start_discovery(options, transfer, network, stop, &session).await? {
         return Ok(exit);
@@ -81,13 +70,14 @@ async fn drive(
 
 async fn serve(
     options: &RuntimeOptions,
-    transfer: &mut Task,
+    transfer: &mut Shell,
     network: &mut Discovery,
     stop: &mut watch::Receiver<bool>,
     status: &Status,
     mut inbound: tokio::sync::mpsc::Receiver<crate::engine::session::Inbound>,
-    progress: &mut Progress,
+    progress: &mut Observer,
 ) -> io::Result<TorrentExit> {
+    let mut admission = Admission::default();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dial_tick = tokio::time::interval(Duration::from_millis(250));
@@ -120,7 +110,7 @@ async fn serve(
         if let Some(contacts) = &mut network.contacts {
             transfer.resolve_negotiations(contacts);
         }
-        progress.update_counters(transfer, network).await?;
+        network.update_counters(transfer).await?;
         if options.run == RunPolicy::UntilComplete && status.borrow().progress.completed {
             if !network.announces.iter().any(|a| a.completion_pending()) {
                 return Ok(TorrentExit::Complete);
@@ -132,10 +122,10 @@ async fn serve(
             }
         }
         if discovery_dirty {
-            progress.prepare_discovery(transfer, network, options)?;
+            admission::prepare_discovery(progress, transfer, network, options)?;
             discovery_dirty = false;
         }
-        progress.prepare_dials(transfer, network, options)?;
+        admission.prepare_dials(transfer, network, options)?;
         progress.publish_peers(status);
         let tracker = next_ready(
             network
@@ -173,7 +163,7 @@ async fn serve(
                         }
                     }
                     crate::engine::discovery::Event::TrackerChanged { previous } => {
-                        progress.tracker_changed(transfer, network).await?;
+                        admission.tracker_changed(transfer, network, progress).await?;
                         while inbound.try_recv().is_ok() {}
                         let counters = super::observation::tracker_counters(transfer)?;
                         let announcer = network.announces.iter_mut().find(|a| a.hash == hash)
@@ -218,24 +208,21 @@ async fn serve(
                     Err(error) => trace!(swarm=?hash,kind=?error.kind(),%error,"dht_lookup_failed"),
                 }
             },
-            event = direct, if progress.pending > 0 => {
+            event = direct, if admission.pending > 0 => {
                 let event = event?;
                 if let Some(event) = &event && let Some(q) = &mut network.contacts {
                     q.dial_completed(event.address, event.transport(), event.utp_failed);
                 }
-                progress.direct_event(event, transfer, options, network.contacts.as_mut().expect("online contacts"))?;
+                admission.direct_event(event, transfer, options, network.contacts.as_mut().expect("online contacts"), progress)?;
                 discovery_dirty = true;
             }
             socket = inbound.recv(), if inbound_open => {
                 if let Some(socket) = socket {
-                    let (socket, prepared) = match socket {
-                        crate::engine::session::Inbound::Tcp(socket, prepared) => match tokio::net::TcpStream::from_std(socket) {
-                            Ok(socket) => (crate::engine::peer_io::Stream::Tcp(socket), prepared),
-                            Err(error) => { debug!(kind = ?error.kind(), %error, "peer_register_failed"); continue; }
-                        },
-                        crate::engine::session::Inbound::Utp(socket, prepared) => (crate::engine::peer_io::Stream::Utp(socket), prepared),
+                    let (socket, prepared) = match socket.into_stream() {
+                        Ok(inbound) => inbound,
+                        Err(error) => { debug!(kind = ?error.kind(), %error, "peer_register_failed"); continue; }
                     };
-                    progress.attach_peer(socket, Role::Inbound, transfer, "inbound", options.log_peer_endpoints, Some(prepared))?;
+                    admission::attach_peer(progress, socket, Role::Inbound, transfer, "inbound", options.log_peer_endpoints, Some(prepared))?;
                     discovery_dirty = true;
                     progress.publish_peers(status);
                 } else {
@@ -248,7 +235,7 @@ async fn serve(
                     discovery_dirty = true;
                     observation_dirty = true;
                 }
-                if let Some(exit) = progress.event(event, transfer, status, options)? {
+                if let Some(exit) = progress.event(event, transfer, status)? {
                     return Ok(exit);
                 }
             }
@@ -270,10 +257,9 @@ async fn serve(
 }
 
 async fn finish(
-    transfer: &mut Task,
+    transfer: &mut Shell,
     network: &mut Discovery,
     status: &Status,
-    run: RunPolicy,
     piece_count: u32,
     result: io::Result<TorrentExit>,
 ) -> io::Result<()> {
@@ -288,7 +274,7 @@ async fn finish(
             announcer.update_counters(counters);
         }
     }
-    let setup = network.shutdown(run).await;
+    let setup = network.shutdown().await;
     let storage = transfer.drain().await;
     let p = transfer.progress();
     let uploaded = transfer.uploaded_bytes();
@@ -298,14 +284,9 @@ async fn finish(
         s.progress.verified_pieces = pieces.iter().filter(|&&p| p).count() as u32;
         s.progress.verified_piece_map = pieces;
         if let Ok(p) = &p {
-            s.progress.verified_bytes = p.verified_bytes();
-            s.progress.full_complete = p.verified_bytes() == p.total_bytes();
-            s.progress.total_bytes = p.total_bytes();
-            s.progress.wanted_bytes = p.wanted_bytes();
-            s.progress.wanted_verified_bytes = p.wanted_verified_bytes();
-            s.progress.processed_payload_bytes = p.received_payload_bytes();
-            s.progress.hash_failed_bytes = p.hash_failed_bytes();
-            s.progress.hash_failed_pieces = p.hash_failed_pieces();
+            super::observation::apply_progress(p, &mut s.progress);
+            s.progress.full_complete = p.verified_bytes == p.total_bytes;
+            s.progress.total_bytes = p.total_bytes;
         }
         s.progress.written_payload_bytes = uploaded;
         s.progress.download_bytes_per_second = 0.0;
@@ -336,8 +317,8 @@ async fn finish(
 
 pub(super) struct Resources {
     pub(super) writer: Option<crate::engine::storage::writer::Writer>,
-    pub(super) transfer: Option<Task>,
-    pub(super) progress: Option<Progress>,
+    pub(super) transfer: Option<Shell>,
+    pub(super) progress: Option<Observer>,
     network: Discovery,
 }
 impl Default for Resources {
@@ -413,21 +394,9 @@ pub(super) async fn run(
         }
     };
     let pieces: Arc<[bool]> = (0..options.metainfo.layout().piece_count())
-        .map(|i| verified[i as usize / 8] & (0x80 >> (i % 8)) != 0)
+        .map(|i| crate::engine::bitfield::has(&verified, i))
         .collect();
-    let bytes: u64 = pieces
-        .iter()
-        .enumerate()
-        .filter(|(_, passed)| **passed)
-        .map(|(i, _)| {
-            let range = options
-                .metainfo
-                .layout()
-                .piece_range(i as u32)
-                .expect("piece");
-            range.end - range.start
-        })
-        .sum();
+    let bytes = crate::engine::bitfield::verified_bytes(options.metainfo.layout(), &verified);
     status.send_modify(|s| {
         s.progress.recovered = true;
         s.progress.verified_bytes = bytes;
@@ -459,19 +428,21 @@ pub(super) async fn run(
             options.selection.clone(),
         )?;
     } else {
-        let mut download = Task::new(
+        let mut download = Shell::new(
             options.metainfo.clone(),
             options.peer_id,
             options.profile,
             writer,
             verified,
+            &session,
+            options.bandwidth.clone(),
         )?;
         download.select_files(options.selection.clone());
         *transfer = Some(download);
     }
     let transfer = transfer.as_mut().expect("installed shell");
     transfer.attach_writer(writer_slot.take().expect("startup writer"));
-    let progress = progress.get_or_insert_with(|| Progress::new(status.clone()));
+    let progress = progress.get_or_insert_with(|| Observer::new(status.clone()));
     progress.retain_peers(transfer);
     let result = drive(
         &mut options,
@@ -487,7 +458,6 @@ pub(super) async fn run(
         transfer,
         network,
         &status,
-        options.run,
         options.metainfo.layout().piece_count(),
         result,
     )

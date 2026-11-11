@@ -183,8 +183,7 @@ impl Torrent {
                             }
                         }
                         for (request, _) in &remote.kept {
-                            self.request_available[request.index as usize / 8] &=
-                                !(0x80 >> (request.index % 8));
+                            clear(&mut self.request_available, request.index);
                         }
                         self.request_available.as_slice()
                     } else {

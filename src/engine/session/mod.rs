@@ -8,7 +8,6 @@ pub(in crate::engine) mod dial;
 pub(in crate::engine) mod incoming;
 mod listener;
 pub(in crate::engine) mod lsd;
-pub(in crate::engine) mod metadata;
 pub mod port_map;
 pub(in crate::engine) mod udp;
 pub(in crate::engine) mod utp;
@@ -134,6 +133,22 @@ impl Default for Limits {
 pub(in crate::engine) enum Inbound {
     Tcp(std::net::TcpStream, crate::engine::peer_io::Prepared),
     Utp(utp::Stream, crate::engine::peer_io::Prepared),
+}
+impl Inbound {
+    pub(in crate::engine) fn into_stream(
+        self,
+    ) -> io::Result<(
+        crate::engine::peer_io::Stream,
+        crate::engine::peer_io::Prepared,
+    )> {
+        use crate::engine::peer_io::Stream;
+        match self {
+            Self::Tcp(socket, prepared) => {
+                Ok((Stream::Tcp(TcpStream::from_std(socket)?), prepared))
+            }
+            Self::Utp(socket, prepared) => Ok((Stream::Utp(socket), prepared)),
+        }
+    }
 }
 #[derive(Default)]
 struct RouteTable {
@@ -369,6 +384,11 @@ impl Tasks {
         })
     }
 }
+struct Online {
+    tracker_http: reqwest::Client,
+    tracker_udp: udp::Transport,
+    utp: Arc<Mutex<utp::Mux>>,
+}
 struct Shared {
     bandwidth: crate::engine::bandwidth::Budget,
     rechecks: Arc<Semaphore>,
@@ -380,10 +400,8 @@ struct Shared {
     limits: Limits,
     routes: Routes,
     dial_queue: dial::Queue,
-    tracker_http: Option<reqwest::Client>,
-    tracker_udp: Option<udp::Transport>,
+    online: Option<Online>,
     udp_stop: watch::Sender<bool>,
-    utp: Option<Arc<Mutex<utp::Mux>>>,
     utp_stop: watch::Sender<bool>,
     pending: Pending,
     registry: Arc<Mutex<Registry>>,
@@ -469,12 +487,14 @@ impl Session {
         )));
         session.utp_enabled = network.utp;
         session.dial_queue.set_utp(network.utp.then(|| mux.clone()));
-        session.utp = Some(mux.clone());
-        udp.utp = Some(mux);
+        udp.utp = Some(mux.clone());
         session.tasks.get_mut().udp =
             Some(tokio::spawn(udp.clone().run(session.udp_stop.subscribe())));
-        session.tracker_udp = Some(udp);
-        session.tracker_http = Some(client);
+        session.online = Some(Online {
+            tracker_http: client,
+            tracker_udp: udp,
+            utp: mux,
+        });
         if let Some(gateway) = network.port_mapping {
             let (status, receiver) = watch::channel(port_map::Status {
                 enabled: true,
@@ -552,10 +572,8 @@ impl Shared {
                 allow_local_network,
                 peer_encryption,
             ),
-            tracker_http: None,
-            tracker_udp: None,
+            online: None,
             udp_stop: watch::channel(false).0,
-            utp: None,
             utp_stop: watch::channel(false).0,
             pending,
             registry: Arc::new(Mutex::new(Registry {
@@ -592,11 +610,10 @@ impl Session {
         let (pending_dials, pending_dials_limit, queued_contacts) =
             self.shared.dial_queue.snapshot();
         let pending_handshakes = self.shared.pending.counts.lock().unwrap().values().sum();
-        let (utp_connections, utp_connections_limit) = self
-            .shared
-            .utp
-            .as_ref()
-            .map_or((0, 0), |mux| mux.lock().unwrap().capacity_status());
+        let (utp_connections, utp_connections_limit) =
+            self.shared.online.as_ref().map_or((0, 0), |online| {
+                online.utp.lock().unwrap().capacity_status()
+            });
         NetworkStatus {
             pending_dials,
             pending_dials_limit,
@@ -694,7 +711,7 @@ impl Session {
         options.validate()?;
         let shared = &self.shared;
         let magnet = matches!(options.source, TorrentSource::Magnet(_));
-        if magnet && shared.tracker_http.is_none() {
+        if magnet && shared.online.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "offline verification requires metainfo",
@@ -705,7 +722,7 @@ impl Session {
         let profile = options.profile;
         let recheck = matches!(options.run, RunPolicy::Recheck);
         if registry.is_closed()
-            || (shared.tracker_http.is_none() && !recheck)
+            || (shared.online.is_none() && !recheck)
             || registry.torrents.values().any(|owner| {
                 owner
                     .known
@@ -743,6 +760,7 @@ impl Session {
         let networking = if !online {
             Networking::Recheck
         } else {
+            let online = shared.online.as_ref().expect("online session");
             Networking::Online(Network {
                 incoming: shared.incoming.clone(),
                 advertised_port: shared.advertised_port.subscribe(),
@@ -750,13 +768,9 @@ impl Session {
                 sockets,
                 dial_queue: shared.dial_queue.clone(),
                 utp: shared.utp_enabled,
-                families: shared
-                    .tracker_udp
-                    .as_ref()
-                    .expect("online UDP socket")
-                    .families,
-                tracker_http: shared.tracker_http.clone().expect("online session"),
-                tracker_udp: shared.tracker_udp.clone().expect("online session"),
+                families: online.tracker_udp.families,
+                tracker_http: online.tracker_http.clone(),
+                tracker_udp: online.tracker_udp.clone(),
                 allow_local_network: shared.allow_local_network,
                 dht: shared.dht.clone(),
                 lsd: shared.lsd.clone(),
@@ -811,26 +825,14 @@ impl Session {
         if tasks.joined {
             return tasks.result();
         }
-        if let Some(task) = tasks.lsd.as_mut() {
-            let result = task.await.map_err(io::Error::other);
-            tasks.lsd = None;
-            tasks.record(result);
-        }
-        if let Some(task) = tasks.utp_router.as_mut() {
-            let result = task.await.map_err(io::Error::other).and_then(|r| r);
-            tasks.utp_router = None;
-            tasks.record(result);
-        }
-        if let Some(task) = tasks.mapping.as_mut() {
-            let result = task.await.map_err(io::Error::other);
-            tasks.mapping = None;
-            tasks.record(result);
-        }
-        if let Some(task) = tasks.listener.as_mut() {
-            let result = task.await.map_err(io::Error::other).and_then(|r| r);
-            tasks.listener = None;
-            tasks.record(result);
-        }
+        let result = join_task(&mut tasks.lsd, |()| Ok(())).await;
+        tasks.record(result);
+        let result = join_task(&mut tasks.utp_router, |r| r).await;
+        tasks.record(result);
+        let result = join_task(&mut tasks.mapping, |()| Ok(())).await;
+        tasks.record(result);
+        let result = join_task(&mut tasks.listener, |r| r).await;
+        tasks.record(result);
         let result = drain_handshakes(&mut *tasks.tcp_handshakes.lock().await).await;
         tasks.record(result);
         let result = drain_handshakes(&mut *tasks.utp_handshakes.lock().await).await;
@@ -847,22 +849,16 @@ impl Session {
             tasks.record(handle.join().await);
         }
         shared.utp_stop.send_replace(true);
-        if let Some(task) = tasks.utp.as_mut() {
-            let result = task.await.map_err(io::Error::other);
-            tasks.utp = None;
-            tasks.record(result);
-        }
+        let result = join_task(&mut tasks.utp, |()| Ok(())).await;
+        tasks.record(result);
         if let Some(dht) = &shared.dht {
             let result = dht.shutdown().await;
             tasks.record(result);
         }
         // Stopped announces still need replies while torrents join.
         shared.udp_stop.send_replace(true);
-        if let Some(task) = tasks.udp.as_mut() {
-            let result = task.await.map_err(io::Error::other).and_then(|r| r);
-            tasks.udp = None;
-            tasks.record(result);
-        }
+        let result = join_task(&mut tasks.udp, |r| r).await;
+        tasks.record(result);
         tasks.joined = true;
         tasks.result()
     }
@@ -873,8 +869,8 @@ impl Shared {
         registry.closed = true;
         self.stop.send_replace(true);
         self.routes.lock().unwrap().clear();
-        if let Some(mux) = &self.utp {
-            mux.lock().unwrap().stop_accepting();
+        if let Some(online) = &self.online {
+            online.utp.lock().unwrap().stop_accepting();
         }
         for owner in registry.torrents.values() {
             owner.handle.request_stop();
@@ -1034,6 +1030,18 @@ async fn route_utp(
     };
     result.and(drain_handshakes(&mut pending).await)
 }
+async fn join_task<T>(
+    task: &mut Option<JoinHandle<T>>,
+    result: impl FnOnce(T) -> io::Result<()>,
+) -> io::Result<()> {
+    let Some(handle) = task.as_mut() else {
+        return Ok(());
+    };
+    let joined = handle.await.map_err(io::Error::other);
+    *task = None;
+    joined.and_then(result)
+}
+
 async fn drain_handshakes(pending: &mut JoinSet<()>) -> io::Result<()> {
     pending.abort_all();
     let mut result = Ok(());

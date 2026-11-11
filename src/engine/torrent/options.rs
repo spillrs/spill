@@ -35,19 +35,11 @@ impl TorrentOptions {
                     "direct peers are disabled for private torrents",
                 ));
             }
-            selection(meta, &self.settings)?;
+            crate::engine::selection::FileSelection::from_priorities(
+                meta.layout(),
+                &self.settings.file_priorities,
+            )?;
         }
         Ok(())
-    }
-}
-
-pub(super) fn selection(
-    meta: &crate::protocol::metainfo::OwnedMetainfo,
-    settings: &crate::engine::settings::TorrentSettings,
-) -> io::Result<crate::engine::selection::FileSelection> {
-    if settings.file_priorities.is_empty() {
-        Ok(crate::engine::selection::FileSelection::all(meta.layout()))
-    } else {
-        crate::engine::selection::FileSelection::new(meta.layout(), &settings.file_priorities)
     }
 }

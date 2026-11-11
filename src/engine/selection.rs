@@ -34,6 +34,16 @@ pub struct FileSelection {
     wanted_bytes: u64,
 }
 impl FileSelection {
+    /// Empty priorities select every data file at normal priority.
+    /// Otherwise, validate and apply the explicit manifest priorities.
+    pub fn from_priorities(layout: &Layout<'_>, priorities: &[FilePriority]) -> io::Result<Self> {
+        if priorities.is_empty() {
+            Ok(Self::all(layout))
+        } else {
+            Self::new(layout, priorities)
+        }
+    }
+
     /// Indices follow `Layout::files`, including padding entries (which must be
     /// Skip). Reject a mismatched manifest rather than silently selecting files.
     pub fn new(layout: &Layout<'_>, priorities: &[FilePriority]) -> io::Result<Self> {

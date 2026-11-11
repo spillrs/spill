@@ -29,13 +29,11 @@ pub(in crate::engine) struct Shell {
     holepunches: Vec<std::net::SocketAddr>,
     log_peer_endpoints: bool,
     announces: Vec<core::AnnounceEvent>,
-    listen: Option<u16>,
-    advertised_port: Option<tokio::sync::watch::Receiver<u16>>,
-    local_address: Option<std::net::IpAddr>,
-    mapping: Option<tokio::sync::watch::Receiver<crate::engine::session::port_map::Status>>,
+    advertised_port: tokio::sync::watch::Receiver<u16>,
+    local_address: std::net::IpAddr,
+    mapping: tokio::sync::watch::Receiver<crate::engine::session::port_map::Status>,
     address_source: Option<crate::engine::session::dht::Handle>,
     dht: Option<u16>,
-    pex: bool,
     stopped: bool,
     negotiating: std::collections::HashMap<ConnectionId, std::net::SocketAddr>,
     negotiated: Vec<(
@@ -50,6 +48,8 @@ impl Shell {
         profile: Profile,
         writer: &Writer,
         verified: Vec<u8>,
+        network: &super::Network,
+        bandwidth: crate::engine::bandwidth::Throttle,
     ) -> io::Result<Self> {
         let mut entropy = [0; 8];
         getrandom::fill(&mut entropy).map_err(io::Error::other)?;
@@ -59,10 +59,19 @@ impl Shell {
             profile,
             verified,
             u64::from_ne_bytes(entropy),
+            bandwidth.clone(),
         )?;
         let upgrade =
             matches!(meta.info_hash(), TorrentIdentity::Hybrid(..)) && !meta.layers_pending();
-        Self::with_core(core, upgrade, peer_id, profile, Some(writer))
+        Self::with_core(
+            core,
+            upgrade,
+            peer_id,
+            profile,
+            Some(writer),
+            network,
+            bandwidth,
+        )
     }
     fn with_core(
         mut core: Torrent,
@@ -70,11 +79,13 @@ impl Shell {
         peer_id: [u8; 20],
         profile: Profile,
         writer: Option<&Writer>,
+        network: &super::Network,
+        bandwidth: crate::engine::bandwidth::Throttle,
     ) -> io::Result<Self> {
         core.set_identity(peer_id);
         let capacity_changed =
             writer.map_or_else(|| Arc::new(Notify::new()), Writer::capacity_changed);
-        let peers = Peers::new(
+        let mut peers = Peers::new(
             core.info_hash(),
             upgrade,
             peer_id,
@@ -82,7 +93,10 @@ impl Shell {
             capacity_changed.clone(),
         )?;
         capacity_changed.notify_one();
-        let changes = peers.bandwidth.changes();
+        peers.incoming = Some(network.incoming.clone());
+        let changes = bandwidth.changes();
+        peers.bandwidth = bandwidth;
+        core.set_ports(Some(*network.advertised_port.borrow()), None);
         Ok(Self {
             core,
             peers,
@@ -102,13 +116,11 @@ impl Shell {
             holepunches: Vec::new(),
             log_peer_endpoints: false,
             announces: Vec::new(),
-            listen: None,
-            advertised_port: None,
-            local_address: None,
-            mapping: None,
+            advertised_port: network.advertised_port.clone(),
+            local_address: network.tracker_udp.socket.local_addr()?.ip().to_canonical(),
+            mapping: network.mapping.clone(),
             address_source: None,
             dht: None,
-            pex: false,
             stopped: false,
             negotiating: std::collections::HashMap::new(),
             negotiated: Vec::new(),
@@ -119,15 +131,29 @@ impl Shell {
         peer_id: [u8; 20],
         profile: Profile,
         discovery_bytes: usize,
+        network: &super::Network,
+        bandwidth: crate::engine::bandwidth::Throttle,
+        dht: Option<&crate::engine::session::dht::Handle>,
     ) -> io::Result<Self> {
-        let core = Torrent::magnet(Instant::now().into_std(), hash, profile, discovery_bytes)?;
-        Self::with_core(
+        let core = Torrent::magnet(
+            Instant::now().into_std(),
+            hash,
+            profile,
+            discovery_bytes,
+            bandwidth.clone(),
+        )?;
+        let mut shell = Self::with_core(
             core,
             matches!(hash, TorrentIdentity::Hybrid(..)),
             peer_id,
             profile,
             None,
-        )
+            network,
+            bandwidth,
+        )?;
+        shell.address_source = dht.cloned();
+        shell.refresh_addresses();
+        Ok(shell)
     }
     pub(in crate::engine) fn metadata_error(&self) -> Option<&str> {
         self.core.metadata_error()
@@ -182,21 +208,15 @@ impl Shell {
         let external = self.address_source.as_ref().map_or([None; 2], |dht| {
             (*dht.identities.borrow()).map(|(_, ip)| ip)
         });
-        let mapped = self
-            .mapping
-            .as_ref()
-            .and_then(|mapping| mapping.borrow().external_ip);
+        let mapped = self.mapping.borrow().external_ip;
         self.core
-            .set_addresses(external, mapped, self.local_address);
+            .set_addresses(external, mapped, Some(self.local_address));
     }
     fn feed(&mut self, input: Input<'_>) -> io::Result<()> {
         self.refresh_addresses();
-        if let Some(port) = &self.advertised_port {
-            let port = *port.borrow();
-            self.listen = Some(port);
-            self.dht = self.dht.map(|_| port);
-            self.core.set_ports(self.listen, self.dht, self.pex);
-        }
+        let port = *self.advertised_port.borrow();
+        self.dht = self.dht.map(|_| port);
+        self.core.set_ports(Some(port), self.dht);
         let mut actions = self.core.handle(Instant::now().into_std(), input);
         self.wake_at = None;
         let result = actions.drain(..).try_for_each(|action| self.apply(action));
@@ -516,7 +536,7 @@ impl Shell {
                         crate::engine::peer_io::Stream::Tcp(s) => {
                             Some(s.local_addr()?.ip().to_canonical())
                         }
-                        crate::engine::peer_io::Stream::Utp(_) => self.local_address,
+                        crate::engine::peer_io::Stream::Utp(_) => Some(self.local_address),
                     },
                     inbound,
                     web_seed: false,
@@ -568,43 +588,20 @@ impl Shell {
         self.stopped = true;
         peers.and(writer)
     }
-    pub(in crate::engine) fn set_incoming(
-        &mut self,
-        incoming: std::sync::Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
-    ) {
-        self.peers.incoming = Some(incoming);
-    }
-    pub(in crate::engine) fn set_bandwidth(
-        &mut self,
-        bandwidth: crate::engine::bandwidth::Throttle,
-    ) {
-        self.core.set_bandwidth(bandwidth.clone());
-        self.changes = bandwidth.changes();
-        self.peers.bandwidth = bandwidth;
-    }
-    pub(in crate::engine) fn set_advertised_port(
-        &mut self,
-        port: tokio::sync::watch::Receiver<u16>,
-    ) {
-        self.listen = Some(*port.borrow());
-        self.advertised_port = Some(port);
-        self.core.set_ports(self.listen, self.dht, self.pex);
-    }
-    pub(in crate::engine) fn set_addresses(
+    pub(super) fn configure_payload(
         &mut self,
         network: &super::Network,
-        dht: Option<&crate::engine::session::dht::Handle>,
+        options: &super::RuntimeOptions,
     ) -> io::Result<()> {
-        self.local_address = Some(network.tracker_udp.socket.local_addr()?.ip().to_canonical());
-        self.mapping = Some(network.mapping.clone());
-        self.address_source = dht.cloned();
+        self.core.set_transport(network.utp, network.families);
+        self.log_peer_endpoints = options.log_peer_endpoints;
+        self.core
+            .set_no_progress_timeout(options.no_progress_timeout);
+        self.address_source = options.dht.clone();
         self.refresh_addresses();
-        Ok(())
-    }
-    pub(in crate::engine) fn set_dht_port(&mut self, port: Option<u16>) {
-        self.dht = port;
-        self.peers.set_dht_enabled(port.is_some());
-        self.core.set_ports(self.listen, self.dht, self.pex);
+        self.dht = options.dht.as_ref().map(|h| h.local_addr().port());
+        self.peers.set_dht_enabled(self.dht.is_some());
+        self.feed(Input::Settings(options.settings.clone()))
     }
     pub(in crate::engine) fn drain_pex(
         &mut self,
@@ -615,15 +612,6 @@ impl Shell {
         for contacts in self.peer_hints.drain(..) {
             let _ = queue.add_pex(hash, &contacts);
         }
-    }
-    pub(in crate::engine) fn set_transport(
-        &mut self,
-        utp: bool,
-        families: [bool; 2],
-        log_peer_endpoints: bool,
-    ) {
-        self.core.set_transport(utp, families);
-        self.log_peer_endpoints = log_peer_endpoints;
     }
     pub(in crate::engine) fn drain_holepunches(
         &mut self,
@@ -638,14 +626,6 @@ impl Shell {
         for addr in self.dht_hints.drain(..) {
             let _ = node.try_ping(addr);
         }
-    }
-    pub(in crate::engine) fn settings(
-        &mut self,
-        settings: crate::engine::settings::TorrentSettings,
-    ) -> io::Result<()> {
-        self.pex = settings.pex;
-        self.core.set_ports(self.listen, self.dht, self.pex);
-        self.feed(Input::Settings(settings))
     }
     pub(in crate::engine) fn contact(
         &mut self,
@@ -665,9 +645,6 @@ impl Shell {
         punchable: bool,
     ) -> io::Result<()> {
         self.feed(Input::ConnectFailed { addr, punchable })
-    }
-    pub(in crate::engine) fn set_no_progress_timeout(&mut self, timeout: std::time::Duration) {
-        self.core.set_no_progress_timeout(timeout);
     }
     pub(in crate::engine) fn take_announces(&mut self) -> Vec<core::AnnounceEvent> {
         std::mem::take(&mut self.announces)

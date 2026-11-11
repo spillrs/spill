@@ -1,7 +1,6 @@
 use super::*;
 use crate::engine::{
     provisioning::{FileStorage, NamedDestination},
-    session::metadata,
     storage::writer::Writer,
 };
 use std::fs::File;
@@ -115,7 +114,10 @@ pub(super) async fn run(
                         .file_priorities()
                         .to_vec();
             }
-            super::options::selection(&meta, &options.settings)?;
+            crate::engine::selection::FileSelection::from_priorities(
+                meta.layout(),
+                &options.settings.file_priorities,
+            )?;
             context
                 .metadata
                 .send_modify(|m| m.metainfo = Some(meta.clone()));
@@ -155,7 +157,10 @@ pub(super) async fn run(
         options.settings.dht = false;
         options.settings.pex = false;
     }
-    let selection = super::options::selection(&meta, &options.settings)?;
+    let selection = crate::engine::selection::FileSelection::from_priorities(
+        meta.layout(),
+        &options.settings.file_priorities,
+    )?;
     let peer_id = match resources.metadata.peer_id {
         Some(peer_id) => peer_id,
         None => crate::engine::identity::generate_peer_id()?,

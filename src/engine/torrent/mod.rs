@@ -2,7 +2,10 @@
 //! one separate bounded writer task. Network consent is explicit; stop then join
 //! before releasing storage or starting a replacement torrent owner.
 
+mod admission;
+mod discovery;
 mod lifecycle;
+mod metadata;
 pub(in crate::engine) mod observation;
 mod options;
 mod runtime;

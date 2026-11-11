@@ -39,8 +39,9 @@ impl Torrent {
         hash: TorrentIdentity,
         limits: Profile,
         discovery_bytes: usize,
+        bandwidth: bandwidth::Throttle,
     ) -> io::Result<Self> {
-        let mut torrent = Self::empty(now, limits, Picker::new(1, 1, 1, 1)?);
+        let mut torrent = Self::empty(now, limits, Picker::new(1, 1, 1, 1)?, bandwidth);
         torrent.metadata = Some(Fetch {
             hash,
             info: None,
@@ -68,7 +69,14 @@ impl Torrent {
         selection: crate::engine::selection::FileSelection,
     ) -> io::Result<Vec<Action>> {
         let fetch = self.metadata.take().expect("resolved metadata phase");
-        let mut payload = Self::new(now, meta, self.limits, verified, seed)?;
+        let mut payload = Self::new(
+            now,
+            meta,
+            self.limits,
+            verified,
+            seed,
+            self.bandwidth.clone(),
+        )?;
         payload.own_peer_id = self.own_peer_id;
         payload.utp_enabled = self.utp_enabled;
         payload.families = self.families;

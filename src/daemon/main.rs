@@ -12,7 +12,6 @@ mod logging;
 mod metainfo_url;
 mod observation;
 mod settings;
-mod storage;
 mod supervisor;
 mod verify;
 mod web;

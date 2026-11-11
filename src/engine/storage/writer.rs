@@ -6,6 +6,7 @@ use super::cache::{self, CacheView};
 use crate::engine::profile::{AdmissionError, MAX_UPLOAD_READS, Profile};
 use crate::engine::torrent::{Persistence, telemetry::StorageStatus};
 use crate::engine::{
+    bitfield::has,
     core::{ConnectionId, SharedBlock, live},
     provisioning::FileStorage,
 };
@@ -84,7 +85,7 @@ pub(in crate::engine) enum Output {
 struct Jobs {
     inline: Option<JoinHandle<io::Result<()>>>,
     fingerprint: Option<JoinHandle<io::Result<Vec<u8>>>>,
-    changed: Option<JoinHandle<io::Result<super::PieceSet>>>,
+    changed: Option<JoinHandle<io::Result<Vec<u32>>>>,
     layers: Option<JoinHandle<io::Result<Option<OwnedMetainfo>>>>,
     recovery: JoinSet<(u32, io::Result<Option<bool>>)>,
     hashes: JoinSet<io::Result<(u32, bool)>>,
@@ -595,15 +596,11 @@ fn operation(observation: &StdMutex<StorageStatus>, name: &'static str) {
         status.since = tokio::time::Instant::now().into_std();
     }
 }
-fn has(bits: &[u8], index: u32) -> bool {
-    bits[index as usize / 8] & (0x80 >> (index % 8)) != 0
-}
 fn set(bits: &mut [u8], index: u32, value: bool) {
-    let mask = 0x80 >> (index % 8);
     if value {
-        bits[index as usize / 8] |= mask;
+        crate::engine::bitfield::set(bits, index);
     } else {
-        bits[index as usize / 8] &= !mask;
+        crate::engine::bitfield::clear(bits, index);
     }
 }
 fn start_layers(

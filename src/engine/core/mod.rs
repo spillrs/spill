@@ -3,6 +3,7 @@ mod bitfield;
 mod block;
 pub(in crate::engine) mod choker;
 pub(in crate::engine) mod connection;
+mod error;
 pub(in crate::engine) mod extensions;
 pub(in crate::engine) mod fault;
 pub(in crate::engine) mod file_progress;
@@ -26,6 +27,7 @@ mod wire;
 pub(in crate::engine) use crate::engine::torrent::telemetry::PeerDiagnostics;
 use crate::engine::{
     bandwidth,
+    bitfield::{clear, has, set},
     network::{IpAddr, SocketAddr},
     profile::Profile,
     selection,
@@ -44,10 +46,10 @@ pub(in crate::engine) use block::SharedBlock;
 use choker::{Candidate, Choker};
 pub(in crate::engine) use connection::ConnectionId;
 use connection::UnsolicitedBudget;
+use error::*;
 pub(in crate::engine) use message::Frame;
 pub(in crate::engine) use observation::{Event, Progress, Stall};
-use peer::PeerState as Remote;
-pub(in crate::engine) use picker::PIECE_BYTES as PIECE_BUDGET;
+use peer::PeerState;
 use picker::Picker;
 use std::{
     collections::{HashMap, VecDeque},
@@ -235,7 +237,7 @@ pub(in crate::engine) struct Torrent {
     punches: Vec<holepunch::Pending>,
     holepunch_status: crate::engine::torrent::telemetry::HolepunchStatus,
     duplex: Duplex,
-    remotes: Vec<Remote>,
+    remotes: Vec<PeerState>,
     remote_slots: HashMap<ConnectionId, usize>,
     peer_cursor: usize,
     banned: VecDeque<([u8; 20], Option<IpAddr>, Instant)>,
@@ -279,6 +281,7 @@ impl Torrent {
         limits: Profile,
         verified: Vec<u8>,
         seed: u64,
+        bandwidth: bandwidth::Throttle,
     ) -> io::Result<Self> {
         let source_limit = (u64::from(meta.layout().piece_length())
             .div_ceil(u64::from(crate::engine::profile::BLOCK_LEN))
@@ -287,15 +290,9 @@ impl Torrent {
         let mut picker = Picker::bounded(window, source_limit, meta.layout(), seed)?;
         picker.restore_missing(meta.layout().piece_count(), &verified);
         let verified_count = verified.iter().map(|b| b.count_ones()).sum();
-        let verified_bytes = (0..meta.layout().piece_count())
-            .filter(|&i| has(&verified, i))
-            .map(|i| {
-                let r = meta.layout().piece_range(i).expect("piece");
-                r.end - r.start
-            })
-            .sum();
+        let verified_bytes = crate::engine::bitfield::verified_bytes(meta.layout(), &verified);
         let wanted_remaining = meta.layout().piece_count() - verified_count;
-        let mut torrent = Self::empty(now, limits, picker);
+        let mut torrent = Self::empty(now, limits, picker, bandwidth);
         if !meta.layers_pending() {
             for (index, file) in meta.layout().files().iter().enumerate() {
                 if let Some(root) = file.pieces_root() {
@@ -313,7 +310,12 @@ impl Torrent {
         torrent.wanted_verified_bytes = verified_bytes;
         Ok(torrent)
     }
-    fn empty(now: Instant, limits: Profile, picker: Picker) -> Self {
+    fn empty(
+        now: Instant,
+        limits: Profile,
+        picker: Picker,
+        bandwidth: bandwidth::Throttle,
+    ) -> Self {
         Self {
             now,
             started: false,
@@ -321,7 +323,7 @@ impl Torrent {
             meta: Manifest(None),
             metadata: None,
             limits,
-            bandwidth: bandwidth::Throttle::default(),
+            bandwidth,
             rate_deadline: None,
             listen_port: None,
             external_addresses: [None; 2],
@@ -561,15 +563,14 @@ impl Torrent {
             }
             Input::Settings(settings) => {
                 self.bandwidth.set_local(self.now, settings.bandwidth());
-                self.set_ports(self.listen_port, self.dht_port, settings.pex);
+                self.set_pex(settings.pex);
                 if !settings.dht {
                     self.dht_port = None;
                 }
-                let selected = if settings.file_priorities.is_empty() {
-                    selection::FileSelection::all(self.meta.layout())
-                } else {
-                    selection::FileSelection::new(self.meta.layout(), &settings.file_priorities)?
-                };
+                let selected = selection::FileSelection::from_priorities(
+                    self.meta.layout(),
+                    &settings.file_priorities,
+                )?;
                 let previous = self
                     .selection
                     .clone()
@@ -727,9 +728,6 @@ impl Torrent {
     pub(in crate::engine) fn set_identity(&mut self, peer_id: [u8; 20]) {
         self.own_peer_id = Some(peer_id);
     }
-    pub(in crate::engine) fn set_bandwidth(&mut self, bandwidth: bandwidth::Throttle) {
-        self.bandwidth = bandwidth;
-    }
     pub(in crate::engine) fn can_connect(&self) -> bool {
         self.metadata.as_ref().map_or_else(
             || {
@@ -802,14 +800,11 @@ impl Torrent {
             .get(piece as usize / 8)
             .is_some_and(|byte| byte & (0x80 >> (piece % 8)) != 0)
     }
-    pub(in crate::engine) fn set_ports(
-        &mut self,
-        listen: Option<u16>,
-        dht: Option<u16>,
-        pex: bool,
-    ) {
+    pub(in crate::engine) fn set_ports(&mut self, listen: Option<u16>, dht: Option<u16>) {
         self.listen_port = listen;
         self.dht_port = dht;
+    }
+    fn set_pex(&mut self, pex: bool) {
         if self.pex_enabled != pex {
             for remote in &mut self.remotes {
                 remote.extensions.pex.enabled = pex;

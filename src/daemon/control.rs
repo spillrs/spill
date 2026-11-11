@@ -213,27 +213,13 @@ impl Control {
                 paused,
                 settings,
             } => {
-                let parsed = Default::default();
-                let mut row = Row {
-                    id: String::new(),
-                    v1: None,
-                    v2: None,
-                    metainfo,
-                    parsed,
-                    magnet,
-                    output_dir: output_dir
-                        .unwrap_or_else(|| supervisor.config.download_dir.clone()),
-                    intent: if paused { Intent::Paused } else { Intent::Run },
-                    settings: patch_settings(&supervisor.config.defaults, settings)?,
-                    checkpoint: Checkpoint::default(),
-                    created_files: None,
-                    last_error: None,
-                    retry_count: 0,
-                    retry_at: 0,
-                    added_at: crate::catalog::now(),
-                };
+                let output_dir =
+                    output_dir.unwrap_or_else(|| supervisor.config.download_dir.clone());
+                let mut settings = patch_settings(&supervisor.config.defaults, settings)?;
+                let added_at = crate::catalog::now();
+                let mut parsed = None;
                 let mut parsed_magnet = None;
-                let identity = match (&row.metainfo, &row.magnet) {
+                let identity = match (&metainfo, &magnet) {
                     (Some(bytes), None) if bytes.len() <= spill::engine::profile::MAX_META => {
                         let meta = supervisor
                             .config
@@ -241,11 +227,11 @@ impl Control {
                             .parse_owned(bytes)
                             .map_err(io::Error::from)?;
                         if meta.is_private() {
-                            row.settings.dht = false;
-                            row.settings.pex = false;
+                            settings.dht = false;
+                            settings.pex = false;
                         }
                         let identity = meta.info_hash();
-                        row.parsed = Some(Arc::new(meta));
+                        parsed = Some(Arc::new(meta));
                         identity
                     }
                     (None, Some(uri)) => {
@@ -262,12 +248,25 @@ impl Control {
                     _ => unreachable!("add source validated before dispatch"),
                 };
                 let id = identity.to_string();
-                row.id = id.clone();
-                row.v1 = identity.v1().map(|hash| hash.to_string());
-                row.v2 = identity.v2().map(|hash| hash.to_string());
+                let row = Row {
+                    id: id.clone(),
+                    identity,
+                    metainfo,
+                    parsed,
+                    magnet,
+                    output_dir,
+                    intent: if paused { Intent::Paused } else { Intent::Run },
+                    settings,
+                    checkpoint: Checkpoint::default(),
+                    created_files: None,
+                    last_error: None,
+                    retry_count: 0,
+                    retry_at: 0,
+                    added_at,
+                };
                 let mut duplicate: Option<Arc<Row>> = None;
                 for hash in row.hashes() {
-                    if let Some(existing) = supervisor.db.row(hash)? {
+                    if let Some(existing) = supervisor.db.row(&hash)? {
                         if duplicate.as_ref().is_some_and(|old| old.id != existing.id) {
                             return Err(crate::catalog::Error::Duplicate.into());
                         }
@@ -278,14 +277,12 @@ impl Control {
                     let Some(magnet) = parsed_magnet.filter(|m| m.select_only().is_some()) else {
                         return Err(crate::catalog::Error::Duplicate.into());
                     };
-                    if row
-                        .v1
-                        .as_ref()
-                        .is_some_and(|hash| existing.v1.as_ref() != Some(hash))
-                        || row
-                            .v2
-                            .as_ref()
-                            .is_some_and(|hash| existing.v2.as_ref() != Some(hash))
+                    if identity
+                        .v1()
+                        .is_some_and(|hash| existing.identity.v1() != Some(hash))
+                        || identity
+                            .v2()
+                            .is_some_and(|hash| existing.identity.v2() != Some(hash))
                     {
                         return Err(crate::catalog::Error::Duplicate.into());
                     }
@@ -317,7 +314,7 @@ impl Control {
                 if !row.settings.trackers {
                     return Err(Error::Invalid("trackers are disabled".into()));
                 }
-                supervisor.reannounce(row.identity()).await?;
+                supervisor.reannounce(row.identity).await?;
                 Ok(json!({}))
             }
             Request::Get { id } => {
@@ -340,11 +337,8 @@ impl Control {
                     .as_deref()
                     .ok_or_else(|| Error::Invalid("metadata is not available".into()))?;
                 let meta = row.meta()?;
-                let priorities = if row.settings.file_priorities.is_empty() {
-                    FileSelection::all(meta.layout())
-                } else {
-                    FileSelection::new(meta.layout(), &row.settings.file_priorities)?
-                };
+                let priorities =
+                    FileSelection::from_priorities(meta.layout(), &row.settings.file_priorities)?;
                 Ok(
                     json!({"id":row.id,"files":meta.layout().files().iter().enumerate().map(|(index,f)|
                     json!({"index":index,"path":f.path().iter().map(|s|String::from_utf8_lossy(s)).collect::<Vec<_>>().join("/"),

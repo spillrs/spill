@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-pub(in crate::engine) const BUDGET: u64 = crate::engine::core::PIECE_BUDGET;
+use super::picker::PIECE_BYTES;
 struct Piece {
     epoch: Weak<()>,
     range: Range<u64>,
@@ -107,7 +107,7 @@ impl Live {
             .expect("validated live piece");
         let length = range.end - range.start;
         if !self.pieces.contains_key(&index) {
-            if length > BUDGET - self.reserved || self.hashing.contains_key(&index) {
+            if length > PIECE_BYTES - self.reserved || self.hashing.contains_key(&index) {
                 // Over-budget or already-hashing pieces are verified by disk read-back.
                 return;
             }
@@ -143,7 +143,7 @@ impl Live {
         let range = meta.layout().piece_range(index)?;
         let length = range.end - range.start;
         let Some(piece) = self.pieces.get(&index) else {
-            if length <= BUDGET - self.reserved && self.padding(range.start, range.end) {
+            if length <= PIECE_BYTES - self.reserved && self.padding(range.start, range.end) {
                 self.reserved += length;
                 self.hashing.insert(index, length);
                 return Some(Buffered {

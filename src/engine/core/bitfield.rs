@@ -1,12 +1,12 @@
 use super::*;
 
-pub(super) fn ready(peer: &Remote) -> bool {
+pub(super) fn ready(peer: &PeerState) -> bool {
     peer.established
         && !peer.retiring
         && peer.interested
         && (!peer.choked || peer.fast && peer.allowed_fast.iter().any(|&byte| byte != 0))
 }
-pub(super) fn eligible(peer: &Remote, index: u32) -> bool {
+pub(super) fn eligible(peer: &PeerState, index: u32) -> bool {
     ready(peer) && has(&peer.pieces, index) && (!peer.choked || has(&peer.allowed_fast, index))
 }
 // First set bit in `present & !excluded`, at/after start. Both wire-order
@@ -32,22 +32,4 @@ pub(super) fn first_difference(present: &[u8], excluded: &[u8], start: u32) -> O
         skip = 0;
     }
     None
-}
-pub(super) fn has(bits: &[u8], index: u32) -> bool {
-    bits[index as usize / 8] & (0x80 >> (index % 8)) != 0
-}
-pub(super) fn set(bits: &mut [u8], index: u32) {
-    bits[index as usize / 8] |= 0x80 >> (index % 8);
-}
-pub(super) fn request_timeout() -> io::Error {
-    io::Error::new(io::ErrorKind::TimedOut, "block request deadline")
-}
-pub(super) fn invalid(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, message)
-}
-pub(super) fn invalid_data_text(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
-pub(super) fn invalid_data(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
 }

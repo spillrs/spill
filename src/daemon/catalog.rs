@@ -88,8 +88,7 @@ impl FromSql for Intent {
 #[derive(Clone)]
 pub struct Row {
     pub id: String,
-    pub v1: Option<String>,
-    pub v2: Option<String>,
+    pub identity: TorrentIdentity,
     pub metainfo: Option<Vec<u8>>,
     pub parsed: Option<Arc<spill::protocol::metainfo::OwnedMetainfo>>,
     pub magnet: Option<String>,
@@ -104,28 +103,13 @@ pub struct Row {
     pub added_at: u64,
 }
 impl Row {
-    pub fn identity(&self) -> TorrentIdentity {
-        let v1 = self.v1.as_ref().map(|hash| {
-            InfoHashV1::from_bytes(std::array::from_fn(|i| {
-                u8::from_str_radix(&hash[i * 2..i * 2 + 2], 16).expect("catalog v1 hash")
-            }))
-        });
-        let v2 = self.v2.as_ref().map(|hash| {
-            InfoHashV2::from_bytes(std::array::from_fn(|i| {
-                u8::from_str_radix(&hash[i * 2..i * 2 + 2], 16).expect("catalog v2 hash")
-            }))
-        });
-        match (v1, v2) {
-            (Some(v1), Some(v2)) => TorrentIdentity::Hybrid(v1, v2),
-            (Some(v1), None) => TorrentIdentity::V1(v1),
-            (None, Some(v2)) => TorrentIdentity::V2(v2),
-            (None, None) => unreachable!("catalog identity"),
-        }
-    }
-    pub fn hashes(&self) -> impl Iterator<Item = &str> {
-        [self.v1.as_deref(), self.v2.as_deref()]
-            .into_iter()
-            .flatten()
+    pub fn hashes(&self) -> impl Iterator<Item = String> {
+        [
+            self.identity.v1().map(|hash| hash.to_string()),
+            self.identity.v2().map(|hash| hash.to_string()),
+        ]
+        .into_iter()
+        .flatten()
     }
     pub fn meta(&self) -> std::io::Result<&spill::protocol::metainfo::OwnedMetainfo> {
         self.parsed.as_deref().ok_or_else(|| {
@@ -276,8 +260,8 @@ impl Catalog {
                 r.get(19)?,
                 r.get(20)?,
                 r.get(21)?,
-                r.get(22)?,
-                r.get(23)?,
+                r.get::<_, Option<String>>(22)?,
+                r.get::<_, Option<String>>(23)?,
             ))
         })?;
         raw.map(|r| {
@@ -318,10 +302,25 @@ impl Catalog {
             let created_files = created_files
                 .map(|text| serde_json::from_str(&text))
                 .transpose()?;
+            let v1 = v1
+                .as_deref()
+                .map(encoding::decode_key)
+                .transpose()?
+                .map(InfoHashV1::from_bytes);
+            let v2 = v2
+                .as_deref()
+                .map(encoding::decode_key)
+                .transpose()?
+                .map(InfoHashV2::from_bytes);
+            let identity = match (v1, v2) {
+                (Some(v1), Some(v2)) => TorrentIdentity::Hybrid(v1, v2),
+                (Some(v1), None) => TorrentIdentity::V1(v1),
+                (None, Some(v2)) => TorrentIdentity::V2(v2),
+                (None, None) => unreachable!("catalog identity"),
+            };
             Ok(Row {
                 id,
-                v1,
-                v2,
+                identity,
                 metainfo,
                 parsed,
                 magnet,
@@ -368,7 +367,8 @@ impl Catalog {
                 row.checkpoint.seed_seconds,row.checkpoint.complete,encoding::encode_records(&row.checkpoint.completed_announces)?,
                 row.checkpoint.downloaded,row.added_at,row.checkpoint.completed_at,
                 row.checkpoint.last_download_at,row.checkpoint.last_upload_at,
-                row.checkpoint.hash_failed_bytes,row.checkpoint.hash_failed_pieces,row.v1,row.v2])?;
+                row.checkpoint.hash_failed_bytes,row.checkpoint.hash_failed_pieces,
+                row.identity.v1().map(|hash| hash.to_string()),row.identity.v2().map(|hash| hash.to_string())])?;
         state.rows.push(Arc::new(row.clone()));
         Ok(())
     }
@@ -608,7 +608,7 @@ impl Catalog {
 fn learn_identity(c: &Connection, row: &mut Row, identity: TorrentIdentity) -> Result<()> {
     let v1 = identity.v1().map(|hash| hash.to_string());
     let v2 = identity.v2().map(|hash| hash.to_string());
-    if row.v1 == v1 && row.v2 == v2 {
+    if row.identity == identity {
         return Ok(());
     }
     let duplicate: bool = c.query_row(
@@ -623,8 +623,7 @@ fn learn_identity(c: &Connection, row: &mut Row, identity: TorrentIdentity) -> R
         "UPDATE torrents SET v1=?2,v2=?3 WHERE id=?1",
         params![row.id, v1, v2],
     )?;
-    row.v1 = v1;
-    row.v2 = v2;
+    row.identity = identity;
     Ok(())
 }
 

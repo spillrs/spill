@@ -164,7 +164,7 @@ impl Torrent {
                 ) {
                     return Ok(());
                 }
-                let matches = |p: &Remote| {
+                let matches = |p: &PeerState| {
                     p.extensions.pex.endpoint == Some(target)
                         || p.extensions.pex.observed == Some(target)
                 };

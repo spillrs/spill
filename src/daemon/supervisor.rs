@@ -21,20 +21,9 @@ use tokio::{sync::watch, time::Instant};
 struct Running {
     handle: TorrentHandle,
     recheck: bool,
-    previous_seeding: f64,
-    downloaded: u64,
-    uploaded: u64,
-    seed_seconds: f64,
-    previous_downloaded: u64,
-    hash_failed_bytes: u64,
-    hash_failed_pieces: u64,
-    previous_hash_failed_bytes: u64,
-    previous_hash_failed_pieces: u64,
-    previous_uploaded: u64,
-    last_download_at: Option<u64>,
-    last_upload_at: Option<u64>,
+    checkpoint: catalog::Checkpoint,
+    previous: spill::engine::torrent::TorrentProgress,
     saved: Instant,
-    complete: bool,
     /// Cleanup was not proven; its failure is recorded once and the session
     /// admits nothing more until restart.
     quarantined: bool,
@@ -48,6 +37,10 @@ pub struct Supervisor {
     failure_recording_failed: bool,
     running: HashMap<String, Running>,
     pub shutdown: watch::Sender<bool>,
+}
+fn inferred_completion(p: &spill::engine::torrent::TorrentProgress) -> Option<bool> {
+    (p.recovered && (p.completed || p.wanted_verified_bytes < p.wanted_bytes))
+        .then_some(p.completed)
 }
 fn io_error(e: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::other(e)
@@ -124,51 +117,48 @@ impl Supervisor {
     }
     fn sample(db: &Catalog, id: &str, running: &mut Running, stopping: bool) -> io::Result<()> {
         let p = running.handle.snapshot().progress;
-        let complete = (p.recovered && (p.completed || p.wanted_verified_bytes < p.wanted_bytes))
-            .then_some(p.completed);
+        let complete = inferred_completion(&p);
         if p.ready {
             db.recovered(id).map_err(io_error)?;
         }
-        let downloaded = p.processed_payload_bytes - running.previous_downloaded;
-        let uploaded = p.written_payload_bytes - running.previous_uploaded;
-        running.downloaded += downloaded;
-        running.uploaded += uploaded;
-        running.hash_failed_bytes += p.hash_failed_bytes - running.previous_hash_failed_bytes;
-        running.hash_failed_pieces += p.hash_failed_pieces - running.previous_hash_failed_pieces;
-        running.previous_hash_failed_bytes = p.hash_failed_bytes;
-        running.previous_hash_failed_pieces = p.hash_failed_pieces;
-        running.previous_downloaded = p.processed_payload_bytes;
-        running.previous_uploaded = p.written_payload_bytes;
+        let c = &mut running.checkpoint;
+        let downloaded = p.processed_payload_bytes - running.previous.processed_payload_bytes;
+        let uploaded = p.written_payload_bytes - running.previous.written_payload_bytes;
+        c.downloaded += downloaded;
+        c.uploaded += uploaded;
+        c.hash_failed_bytes += p.hash_failed_bytes - running.previous.hash_failed_bytes;
+        c.hash_failed_pieces += p.hash_failed_pieces - running.previous.hash_failed_pieces;
         if downloaded != 0 {
-            running.last_download_at = Some(catalog::now());
+            c.last_download_at = Some(catalog::now());
         }
         if uploaded != 0 {
-            running.last_upload_at = Some(catalog::now());
+            c.last_upload_at = Some(catalog::now());
         }
-        let seeding = p.seeding_duration.as_secs_f64();
-        running.seed_seconds += seeding - running.previous_seeding;
-        running.previous_seeding = seeding;
+        c.seed_seconds +=
+            p.seeding_duration.as_secs_f64() - running.previous.seeding_duration.as_secs_f64();
+        running.previous = p;
         if stopping
-            || p.joined
+            || running.previous.joined
             || running.saved.elapsed().as_secs() >= 60
-            || complete.is_some_and(|complete| complete != running.complete)
+            || complete.is_some_and(|complete| complete != c.complete)
         {
-            db.checkpoint(id, |c| {
-                c.downloaded = running.downloaded;
-                c.hash_failed_bytes = running.hash_failed_bytes;
-                c.hash_failed_pieces = running.hash_failed_pieces;
-                c.uploaded = running.uploaded;
-                c.last_download_at = running.last_download_at;
-                c.last_upload_at = running.last_upload_at;
-                c.seed_seconds = running.seed_seconds;
+            // Resume data and announce delivery belong to engine callbacks.
+            db.checkpoint(id, |saved| {
+                saved.downloaded = c.downloaded;
+                saved.hash_failed_bytes = c.hash_failed_bytes;
+                saved.hash_failed_pieces = c.hash_failed_pieces;
+                saved.uploaded = c.uploaded;
+                saved.last_download_at = c.last_download_at;
+                saved.last_upload_at = c.last_upload_at;
+                saved.seed_seconds = c.seed_seconds;
                 if let Some(complete) = complete {
-                    c.complete = complete;
+                    saved.complete = complete;
                 }
             })
             .map_err(io_error)?;
             running.saved = Instant::now();
             if let Some(complete) = complete {
-                running.complete = complete;
+                c.complete = complete;
             }
         }
         Ok(())
@@ -182,7 +172,10 @@ impl Supervisor {
             .ok_or(io::ErrorKind::NotFound)?;
         if delete && let Some(binding) = row.created_files.clone() {
             tokio::task::spawn_blocking(move || {
-                crate::storage::remove_payload(&row.output_dir, &binding)
+                spill::engine::provisioning::NamedDestination::remove(
+                    std::fs::File::open(&row.output_dir)?,
+                    &binding,
+                )
             })
             .await
             .map_err(io_error)??;
@@ -212,15 +205,11 @@ impl Supervisor {
                 (phase, None)
             });
         let selected = row.meta().ok().filter(|_| status.is_none()).map(|meta| {
-            let selection = if row.settings.file_priorities.is_empty() {
-                spill::engine::selection::FileSelection::all(meta.layout())
-            } else {
-                spill::engine::selection::FileSelection::new(
-                    meta.layout(),
-                    &row.settings.file_priorities,
-                )
-                .expect("validated file priorities")
-            };
+            let selection = spill::engine::selection::FileSelection::from_priorities(
+                meta.layout(),
+                &row.settings.file_priorities,
+            )
+            .expect("validated file priorities");
             let verified = spill::protocol::resume::decode(meta, &row.checkpoint.resume)
                 .map(|resume| selection.verified_bytes(meta.layout(), &resume.verified))
                 .unwrap_or(0);
@@ -238,11 +227,7 @@ impl Supervisor {
             .or_else(|| selected.map(|p| p.1));
         let completed = status
             .as_ref()
-            .and_then(|s| {
-                let p = &s.progress;
-                (p.recovered && (p.completed || p.wanted_verified_bytes < p.wanted_bytes))
-                    .then_some(p.completed)
-            })
+            .and_then(|s| inferred_completion(&s.progress))
             .unwrap_or(row.checkpoint.complete);
         let verified = status
             .as_ref()
@@ -257,22 +242,7 @@ impl Supervisor {
             });
         let acquisition = running.map(|r| r.handle.snapshot().progress);
         let meta = row.meta().ok();
-        let (uploaded, seed_seconds) = running
-            .map(|r| (r.uploaded, r.seed_seconds))
-            .unwrap_or((row.checkpoint.uploaded, row.checkpoint.seed_seconds));
-        let (downloaded, last_download_at, last_upload_at) = running
-            .map(|r| (r.downloaded, r.last_download_at, r.last_upload_at))
-            .unwrap_or((
-                row.checkpoint.downloaded,
-                row.checkpoint.last_download_at,
-                row.checkpoint.last_upload_at,
-            ));
-        let (hash_failed_bytes, hash_failed_pieces) = running
-            .map(|r| (r.hash_failed_bytes, r.hash_failed_pieces))
-            .unwrap_or((
-                row.checkpoint.hash_failed_bytes,
-                row.checkpoint.hash_failed_pieces,
-            ));
+        let counters = running.map_or(&row.checkpoint, |r| &r.checkpoint);
         let transfer = status.as_ref().map(crate::observation::transfer);
         let tracker_message = status
             .as_ref()
@@ -304,16 +274,16 @@ impl Supervisor {
             "intent":row.intent,"state":phase,"output_dir":row.output_dir,"settings":row.settings,
             "private":meta.as_ref().map(|m| m.is_private()),
             "verified_bytes":verified,"total_bytes":meta.as_ref().map(|m|m.layout().total_length()),
-            "downloaded_bytes":downloaded,"uploaded_bytes":uploaded,"seed_seconds":seed_seconds,
-            "hash_failed_bytes":hash_failed_bytes,"hash_failed_pieces":hash_failed_pieces,
+            "downloaded_bytes":counters.downloaded,"uploaded_bytes":counters.uploaded,"seed_seconds":counters.seed_seconds,
+            "hash_failed_bytes":counters.hash_failed_bytes,"hash_failed_pieces":counters.hash_failed_pieces,
             "completed":completed,"wanted_bytes":wanted_bytes,"wanted_verified_bytes":wanted_verified_bytes,
             "added_at":row.added_at,"completed_at":row.checkpoint.completed_at,
-            "last_download_at":last_download_at,"last_upload_at":last_upload_at,
-            "format":match (row.v1.is_some(), row.v2.is_some()) {
+            "last_download_at":counters.last_download_at,"last_upload_at":counters.last_upload_at,
+            "format":match (row.identity.v1().is_some(), row.identity.v2().is_some()) {
                 (true, true) => "hybrid", (true, false) => "v1", (false, true) => "v2",
                 (false, false) => unreachable!("catalog identity"),
             },
-            "v1":row.v1,"v2":row.v2,"metadata_ready":row.parsed.is_some(),
+            "v1":row.identity.v1().map(|hash| hash.to_string()),"v2":row.identity.v2().map(|hash| hash.to_string()),"metadata_ready":row.parsed.is_some(),
             "info_validated":row.parsed.is_some() || acquisition.as_ref().is_some_and(|p| p.info_validated),
             "hash_bytes":acquisition.as_ref().map_or(0, |p| p.hash_bytes),
             "hash_total_bytes":acquisition.as_ref().map_or(0, |p| p.hash_total_bytes),
@@ -409,10 +379,10 @@ impl Supervisor {
             }
             let running = self.running.get(&row.id);
             let complete = running
-                .map(|r| r.complete)
+                .map(|r| r.checkpoint.complete)
                 .unwrap_or(row.checkpoint.complete);
             let (uploaded, seed_seconds) = running
-                .map(|r| (r.uploaded, r.seed_seconds))
+                .map(|r| (r.checkpoint.uploaded, r.checkpoint.seed_seconds))
                 .unwrap_or((row.checkpoint.uploaded, row.checkpoint.seed_seconds));
             let seed_goal = complete
                 && ((row.settings.seed_time != 0 && seed_seconds >= row.settings.seed_time as f64)
@@ -458,20 +428,19 @@ impl Supervisor {
                     Running {
                         handle,
                         recheck: row.intent == Intent::Recheck,
-                        previous_seeding: 0.0,
-                        downloaded: row.checkpoint.downloaded,
-                        uploaded: row.checkpoint.uploaded,
-                        seed_seconds: row.checkpoint.seed_seconds,
-                        previous_downloaded: 0,
-                        hash_failed_bytes: row.checkpoint.hash_failed_bytes,
-                        hash_failed_pieces: row.checkpoint.hash_failed_pieces,
-                        previous_hash_failed_bytes: 0,
-                        previous_hash_failed_pieces: 0,
-                        previous_uploaded: 0,
-                        last_download_at: row.checkpoint.last_download_at,
-                        last_upload_at: row.checkpoint.last_upload_at,
+                        checkpoint: catalog::Checkpoint {
+                            downloaded: row.checkpoint.downloaded,
+                            uploaded: row.checkpoint.uploaded,
+                            seed_seconds: row.checkpoint.seed_seconds,
+                            hash_failed_bytes: row.checkpoint.hash_failed_bytes,
+                            hash_failed_pieces: row.checkpoint.hash_failed_pieces,
+                            last_download_at: row.checkpoint.last_download_at,
+                            last_upload_at: row.checkpoint.last_upload_at,
+                            complete: row.checkpoint.complete,
+                            ..Default::default()
+                        },
+                        previous: Default::default(),
                         saved: Instant::now(),
-                        complete: row.checkpoint.complete,
                         quarantined: false,
                     },
                 );

@@ -4,6 +4,3 @@
 
 pub(in crate::engine) mod cache;
 pub(in crate::engine) mod writer;
-
-/// Piece indices whose stored bytes may have changed. Sorted, without duplicates.
-pub(in crate::engine) type PieceSet = Vec<u32>;

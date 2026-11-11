@@ -1,5 +1,5 @@
 //! Pure incremental file-completion geometry; the writer performs the resulting renames.
-use crate::protocol::metainfo::OwnedMetainfo;
+use crate::{engine::bitfield::has, protocol::metainfo::OwnedMetainfo};
 /// Per-file count of overlapping pieces not yet verified. A hashed piece only
 /// touches the files it overlaps, so completion tracking stays O(files per
 /// piece) instead of rescanning every file or every piece of a large file.
@@ -72,7 +72,4 @@ impl FileProgress {
         }
         done
     }
-}
-fn has(bits: &[u8], index: u32) -> bool {
-    super::has(bits, index)
 }

@@ -8,7 +8,7 @@ impl Torrent {
             .filter_map(|p| {
                 Some(SocketAddr::new(
                     p.extensions.pex.local_ip?,
-                    self.listen_port?,
+                    self.listen_port,
                 ))
             })
             .collect();
@@ -85,7 +85,7 @@ impl Torrent {
         {
             let payload = crate::engine::core::extensions::handshake(
                 Some(self.meta.info_bytes().len()),
-                self.listen_port,
+                Some(self.listen_port),
                 self.pex_enabled,
                 self.holepunch_enabled(),
                 upload_only,

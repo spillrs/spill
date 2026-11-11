@@ -162,7 +162,7 @@ pub(in crate::engine) enum PeerEvent {
 }
 
 struct SocketContext {
-    incoming: Option<Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>>,
+    incoming: Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
     bandwidth: crate::engine::bandwidth::Throttle,
     read_pause: watch::Receiver<bool>,
     local: Handshake,
@@ -212,9 +212,8 @@ enum Finished {
 }
 
 pub(in crate::engine) struct Peers {
-    pub(in crate::engine) incoming:
-        Option<Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>>,
-    pub(in crate::engine) bandwidth: crate::engine::bandwidth::Throttle,
+    incoming: Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
+    bandwidth: crate::engine::bandwidth::Throttle,
     read_pause: watch::Sender<bool>,
     capacity_changed: Arc<Notify>,
     local: Handshake,
@@ -239,11 +238,13 @@ impl Peers {
         peer_id: [u8; 20],
         limits: crate::engine::profile::Profile,
         capacity_changed: Arc<Notify>,
+        incoming: Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
+        bandwidth: crate::engine::bandwidth::Throttle,
     ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::channel(crate::engine::profile::EVENT_QUEUE);
         Ok(Self {
-            incoming: None,
-            bandwidth: crate::engine::bandwidth::Throttle::default(),
+            incoming,
+            bandwidth,
             read_pause: watch::channel(false).0,
             capacity_changed,
             // The scheduling owners implement BEP 10 and BEP 9.

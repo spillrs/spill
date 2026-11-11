@@ -37,10 +37,7 @@ pub(super) async fn run_socket(
             .await?;
             let _incoming = address.map(|address| {
                 crate::engine::session::incoming::Incoming::connected(
-                    context
-                        .incoming
-                        .as_ref()
-                        .expect("online inbound statistics"),
+                    &context.incoming,
                     true,
                     address,
                 )
@@ -80,10 +77,7 @@ pub(super) async fn run_socket(
             .await?;
             let _incoming = address.map(|address| {
                 crate::engine::session::incoming::Incoming::connected(
-                    context
-                        .incoming
-                        .as_ref()
-                        .expect("online inbound statistics"),
+                    &context.incoming,
                     false,
                     address,
                 )

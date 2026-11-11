@@ -72,8 +72,14 @@ pub(super) async fn run(
             });
             Ok(())
         });
-    let meta = match &options.source {
-        TorrentSource::Metainfo(meta) => meta.clone(),
+    let (meta, selection) = match &options.source {
+        TorrentSource::Metainfo(meta) => (
+            meta.clone(),
+            crate::engine::selection::FileSelection::from_priorities(
+                meta.layout(),
+                &options.settings.file_priorities,
+            )?,
+        ),
         TorrentSource::Magnet(magnet) => {
             context
                 .status
@@ -114,7 +120,7 @@ pub(super) async fn run(
                         .file_priorities()
                         .to_vec();
             }
-            crate::engine::selection::FileSelection::from_priorities(
+            let selection = crate::engine::selection::FileSelection::from_priorities(
                 meta.layout(),
                 &options.settings.file_priorities,
             )?;
@@ -134,7 +140,7 @@ pub(super) async fn run(
                     .send_modify(|m| m.error = Some(error.clone()));
                 return Err(io::Error::new(error.kind(), error));
             }
-            meta
+            (meta, selection)
         }
     };
     context.status.send_modify(|s| {
@@ -157,10 +163,6 @@ pub(super) async fn run(
         options.settings.dht = false;
         options.settings.pex = false;
     }
-    let selection = crate::engine::selection::FileSelection::from_priorities(
-        meta.layout(),
-        &options.settings.file_priorities,
-    )?;
     let peer_id = match resources.metadata.peer_id {
         Some(peer_id) => peer_id,
         None => crate::engine::identity::generate_peer_id()?,

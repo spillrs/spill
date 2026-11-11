@@ -11,6 +11,7 @@ use spill::engine::{
         TorrentPhase, TorrentSource,
     },
 };
+use spill::protocol::identity::TorrentIdentity;
 use std::{
     collections::HashMap,
     io,
@@ -21,7 +22,8 @@ use tokio::{sync::watch, time::Instant};
 struct Running {
     handle: TorrentHandle,
     recheck: bool,
-    checkpoint: catalog::Checkpoint,
+    counters: catalog::Counters,
+    complete: bool,
     previous: spill::engine::torrent::TorrentProgress,
     saved: Instant,
     /// Cleanup was not proven; its failure is recorded once and the session
@@ -121,7 +123,7 @@ impl Supervisor {
         if p.ready {
             db.recovered(id).map_err(io_error)?;
         }
-        let c = &mut running.checkpoint;
+        let c = &mut running.counters;
         let downloaded = p.processed_payload_bytes - running.previous.processed_payload_bytes;
         let uploaded = p.written_payload_bytes - running.previous.written_payload_bytes;
         c.downloaded += downloaded;
@@ -140,17 +142,11 @@ impl Supervisor {
         if stopping
             || running.previous.joined
             || running.saved.elapsed().as_secs() >= 60
-            || complete.is_some_and(|complete| complete != c.complete)
+            || complete.is_some_and(|complete| complete != running.complete)
         {
             // Resume data and announce delivery belong to engine callbacks.
             db.checkpoint(id, |saved| {
-                saved.downloaded = c.downloaded;
-                saved.hash_failed_bytes = c.hash_failed_bytes;
-                saved.hash_failed_pieces = c.hash_failed_pieces;
-                saved.uploaded = c.uploaded;
-                saved.last_download_at = c.last_download_at;
-                saved.last_upload_at = c.last_upload_at;
-                saved.seed_seconds = c.seed_seconds;
+                saved.counters = *c;
                 if let Some(complete) = complete {
                     saved.complete = complete;
                 }
@@ -158,7 +154,7 @@ impl Supervisor {
             .map_err(io_error)?;
             running.saved = Instant::now();
             if let Some(complete) = complete {
-                c.complete = complete;
+                running.complete = complete;
             }
         }
         Ok(())
@@ -242,7 +238,7 @@ impl Supervisor {
             });
         let acquisition = running.map(|r| r.handle.snapshot().progress);
         let meta = row.meta().ok();
-        let counters = running.map_or(&row.checkpoint, |r| &r.checkpoint);
+        let counters = running.map_or(&row.checkpoint.counters, |r| &r.counters);
         let transfer = status.as_ref().map(crate::observation::transfer);
         let tracker_message = status
             .as_ref()
@@ -279,9 +275,10 @@ impl Supervisor {
             "completed":completed,"wanted_bytes":wanted_bytes,"wanted_verified_bytes":wanted_verified_bytes,
             "added_at":row.added_at,"completed_at":row.checkpoint.completed_at,
             "last_download_at":counters.last_download_at,"last_upload_at":counters.last_upload_at,
-            "format":match (row.identity.v1().is_some(), row.identity.v2().is_some()) {
-                (true, true) => "hybrid", (true, false) => "v1", (false, true) => "v2",
-                (false, false) => unreachable!("catalog identity"),
+            "format":match row.identity {
+                TorrentIdentity::Hybrid(..) => "hybrid",
+                TorrentIdentity::V1(_) => "v1",
+                TorrentIdentity::V2(_) => "v2",
             },
             "v1":row.identity.v1().map(|hash| hash.to_string()),"v2":row.identity.v2().map(|hash| hash.to_string()),"metadata_ready":row.parsed.is_some(),
             "info_validated":row.parsed.is_some() || acquisition.as_ref().is_some_and(|p| p.info_validated),
@@ -378,17 +375,14 @@ impl Supervisor {
                 continue;
             }
             let running = self.running.get(&row.id);
-            let complete = running
-                .map(|r| r.checkpoint.complete)
-                .unwrap_or(row.checkpoint.complete);
-            let (uploaded, seed_seconds) = running
-                .map(|r| (r.checkpoint.uploaded, r.checkpoint.seed_seconds))
-                .unwrap_or((row.checkpoint.uploaded, row.checkpoint.seed_seconds));
+            let complete = running.map_or(row.checkpoint.complete, |r| r.complete);
+            let counters = running.map_or(&row.checkpoint.counters, |r| &r.counters);
             let seed_goal = complete
-                && ((row.settings.seed_time != 0 && seed_seconds >= row.settings.seed_time as f64)
+                && ((row.settings.seed_time != 0
+                    && counters.seed_seconds >= row.settings.seed_time as f64)
                     || (row.settings.seed_ratio > 0.0
                         && row.meta().ok().is_some_and(|m| {
-                            uploaded as f64
+                            counters.uploaded as f64
                                 >= m.layout().total_length() as f64 * row.settings.seed_ratio
                         })));
             if row.intent == Intent::Paused || seed_goal {
@@ -428,17 +422,8 @@ impl Supervisor {
                     Running {
                         handle,
                         recheck: row.intent == Intent::Recheck,
-                        checkpoint: catalog::Checkpoint {
-                            downloaded: row.checkpoint.downloaded,
-                            uploaded: row.checkpoint.uploaded,
-                            seed_seconds: row.checkpoint.seed_seconds,
-                            hash_failed_bytes: row.checkpoint.hash_failed_bytes,
-                            hash_failed_pieces: row.checkpoint.hash_failed_pieces,
-                            last_download_at: row.checkpoint.last_download_at,
-                            last_upload_at: row.checkpoint.last_upload_at,
-                            complete: row.checkpoint.complete,
-                            ..Default::default()
-                        },
+                        counters: row.checkpoint.counters,
+                        complete: row.checkpoint.complete,
                         previous: Default::default(),
                         saved: Instant::now(),
                         quarantined: false,

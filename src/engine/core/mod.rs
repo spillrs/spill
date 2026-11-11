@@ -227,7 +227,7 @@ pub(in crate::engine) struct Torrent {
     limits: Profile,
     bandwidth: bandwidth::Throttle,
     rate_deadline: Option<Instant>,
-    listen_port: Option<u16>,
+    listen_port: u16,
     external_addresses: [Option<IpAddr>; 2],
     local_address: Option<IpAddr>,
     dht_port: Option<u16>,
@@ -282,6 +282,7 @@ impl Torrent {
         verified: Vec<u8>,
         seed: u64,
         bandwidth: bandwidth::Throttle,
+        listen_port: u16,
     ) -> io::Result<Self> {
         let source_limit = (u64::from(meta.layout().piece_length())
             .div_ceil(u64::from(crate::engine::profile::BLOCK_LEN))
@@ -292,7 +293,7 @@ impl Torrent {
         let verified_count = verified.iter().map(|b| b.count_ones()).sum();
         let verified_bytes = crate::engine::bitfield::verified_bytes(meta.layout(), &verified);
         let wanted_remaining = meta.layout().piece_count() - verified_count;
-        let mut torrent = Self::empty(now, limits, picker, bandwidth);
+        let mut torrent = Self::empty(now, limits, picker, bandwidth, listen_port);
         if !meta.layers_pending() {
             for (index, file) in meta.layout().files().iter().enumerate() {
                 if let Some(root) = file.pieces_root() {
@@ -315,6 +316,7 @@ impl Torrent {
         limits: Profile,
         picker: Picker,
         bandwidth: bandwidth::Throttle,
+        listen_port: u16,
     ) -> Self {
         Self {
             now,
@@ -325,7 +327,7 @@ impl Torrent {
             limits,
             bandwidth,
             rate_deadline: None,
-            listen_port: None,
+            listen_port,
             external_addresses: [None; 2],
             local_address: None,
             dht_port: None,
@@ -800,7 +802,7 @@ impl Torrent {
             .get(piece as usize / 8)
             .is_some_and(|byte| byte & (0x80 >> (piece % 8)) != 0)
     }
-    pub(in crate::engine) fn set_ports(&mut self, listen: Option<u16>, dht: Option<u16>) {
+    pub(in crate::engine) fn set_ports(&mut self, listen: u16, dht: Option<u16>) {
         self.listen_port = listen;
         self.dht_port = dht;
     }

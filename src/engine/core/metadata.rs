@@ -40,8 +40,15 @@ impl Torrent {
         limits: Profile,
         discovery_bytes: usize,
         bandwidth: bandwidth::Throttle,
+        listen_port: u16,
     ) -> io::Result<Self> {
-        let mut torrent = Self::empty(now, limits, Picker::new(1, 1, 1, 1)?, bandwidth);
+        let mut torrent = Self::empty(
+            now,
+            limits,
+            Picker::new(1, 1, 1, 1)?,
+            bandwidth,
+            listen_port,
+        );
         torrent.metadata = Some(Fetch {
             hash,
             info: None,
@@ -76,13 +83,13 @@ impl Torrent {
             verified,
             seed,
             self.bandwidth.clone(),
+            self.listen_port,
         )?;
         payload.own_peer_id = self.own_peer_id;
         payload.utp_enabled = self.utp_enabled;
         payload.families = self.families;
         payload.external_addresses = self.external_addresses;
         payload.local_address = self.local_address;
-        payload.listen_port = self.listen_port;
         payload.select_files(selection);
         for (id, attachment) in fetch.attached {
             payload.on_attach(id, attachment)?;
@@ -155,7 +162,7 @@ impl Fetch {
         now: Instant,
         input: Input<'_>,
         profile: Profile,
-        listen_port: Option<u16>,
+        listen_port: u16,
         actions: &mut Vec<Action>,
     ) -> io::Result<Option<OwnedMetainfo>> {
         match input {
@@ -214,7 +221,7 @@ impl Fetch {
                         peer.queue(Message::HaveNone)?;
                     }
                     let hello =
-                        extensions::handshake(None, listen_port, false, false, false, false)?;
+                        extensions::handshake(None, Some(listen_port), false, false, false, false)?;
                     peer.queue(Message::Extended {
                         id: 0,
                         payload: &hello,

@@ -54,7 +54,6 @@ pub(super) struct Peer {
 pub(super) struct Observer {
     status: Status,
     seeding_since: Option<Instant>,
-    pub(super) active: usize,
     endpoints: HashMap<ConnectionId, Peer>,
     history: HashMap<String, (Instant, Option<String>)>,
     map_count: Option<u32>,
@@ -76,7 +75,6 @@ impl Observer {
         Self {
             status,
             seeding_since: None,
-            active: 0,
             endpoints: HashMap::new(),
             history: HashMap::new(),
             map_count: None,
@@ -88,16 +86,14 @@ impl Observer {
     }
     pub(super) fn retain_peers(&mut self, transfer: &Shell) {
         self.endpoints.retain(|id, _| transfer.has_peer(*id));
-        self.active = self.endpoints.len();
     }
     pub(super) fn publish_peers(&self, status: &Status) {
         status.send_modify(|s| {
-            s.progress.active_peers = self.active;
+            s.progress.active_peers = self.endpoints.len();
         });
     }
     pub(super) fn remember(&mut self, id: ConnectionId, peer: Peer) {
         self.endpoints.insert(id, peer);
-        self.active += 1;
     }
     fn retransmits(&self) -> u64 {
         self.closed_retransmits
@@ -136,7 +132,6 @@ impl Observer {
                 trace!(?connection, index, begin, length, "block_accepted");
             }
             Event::PeerClosed { connection, result } => {
-                self.active = self.active.saturating_sub(1);
                 if let Some(peer) = self.endpoints.remove(&connection) {
                     if let Some(n) = peer.retransmits {
                         self.closed_retransmits += n.load(Ordering::Relaxed);
@@ -320,7 +315,7 @@ impl Observer {
             s.progress.download_bytes_per_second = download_rate;
             s.progress.upload_bytes_per_second = upload_rate;
             s.progress.verified_pieces = transfer.verified_count();
-            s.progress.active_peers = self.active;
+            s.progress.active_peers = self.endpoints.len();
         });
         Ok(())
     }

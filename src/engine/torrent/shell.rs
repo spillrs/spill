@@ -60,6 +60,7 @@ impl Shell {
             verified,
             u64::from_ne_bytes(entropy),
             bandwidth.clone(),
+            *network.advertised_port.borrow(),
         )?;
         let upgrade =
             matches!(meta.info_hash(), TorrentIdentity::Hybrid(..)) && !meta.layers_pending();
@@ -85,18 +86,17 @@ impl Shell {
         core.set_identity(peer_id);
         let capacity_changed =
             writer.map_or_else(|| Arc::new(Notify::new()), Writer::capacity_changed);
-        let mut peers = Peers::new(
+        let changes = bandwidth.changes();
+        let peers = Peers::new(
             core.info_hash(),
             upgrade,
             peer_id,
             profile,
             capacity_changed.clone(),
+            network.incoming.clone(),
+            bandwidth,
         )?;
         capacity_changed.notify_one();
-        peers.incoming = Some(network.incoming.clone());
-        let changes = bandwidth.changes();
-        peers.bandwidth = bandwidth;
-        core.set_ports(Some(*network.advertised_port.borrow()), None);
         Ok(Self {
             core,
             peers,
@@ -141,6 +141,7 @@ impl Shell {
             profile,
             discovery_bytes,
             bandwidth.clone(),
+            *network.advertised_port.borrow(),
         )?;
         let mut shell = Self::with_core(
             core,
@@ -216,7 +217,7 @@ impl Shell {
         self.refresh_addresses();
         let port = *self.advertised_port.borrow();
         self.dht = self.dht.map(|_| port);
-        self.core.set_ports(Some(port), self.dht);
+        self.core.set_ports(port, self.dht);
         let mut actions = self.core.handle(Instant::now().into_std(), input);
         self.wake_at = None;
         let result = actions.drain(..).try_for_each(|action| self.apply(action));

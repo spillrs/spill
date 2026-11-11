@@ -6,7 +6,7 @@ use super::cache::{self, CacheView};
 use crate::engine::profile::{AdmissionError, MAX_UPLOAD_READS, Profile};
 use crate::engine::torrent::{Persistence, telemetry::StorageStatus};
 use crate::engine::{
-    bitfield::has,
+    bitfield::{clear, has, set},
     core::{ConnectionId, SharedBlock, live},
     provisioning::FileStorage,
 };
@@ -327,7 +327,7 @@ impl Writer {
                         Command::Hashed(index, passed) => {
                             live.complete(index);
                             if passed && !has(&verified, index) {
-                                set(&mut verified, index, true);
+                                set(&mut verified, index);
                                 for file in files.changed(&meta, index) {
                                     let storage = storage.clone();
                                     crate::engine::run_blocking(inline, move || storage.finish_file(file)).await?;
@@ -596,13 +596,6 @@ fn operation(observation: &StdMutex<StorageStatus>, name: &'static str) {
         status.since = tokio::time::Instant::now().into_std();
     }
 }
-fn set(bits: &mut [u8], index: u32, value: bool) {
-    if value {
-        crate::engine::bitfield::set(bits, index);
-    } else {
-        crate::engine::bitfield::clear(bits, index);
-    }
-}
 fn start_layers(
     storage: &Arc<FileStorage>,
     meta: &OwnedMetainfo,
@@ -768,7 +761,7 @@ async fn recover(
         (vec![0; count.div_ceil(8) as usize], (0..count).collect())
     };
     for &index in &candidates {
-        set(&mut verified, index, false);
+        clear(&mut verified, index);
     }
     let trusted: u32 = verified.iter().map(|b| b.count_ones()).sum();
     // Acquire session-wide capacity before spawning, never by blocking a pool
@@ -819,7 +812,8 @@ async fn recover(
                 return Ok(Some(()));
             };
             match result.map_err(io::Error::other)? {
-                (index, Ok(Some(passed))) => set(&mut verified, index, passed),
+                (index, Ok(Some(true))) => set(&mut verified, index),
+                (index, Ok(Some(false))) => clear(&mut verified, index),
                 (_, Ok(None)) => return Ok(None),
                 (_, Err(e))
                     if matches!(

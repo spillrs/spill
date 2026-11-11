@@ -15,8 +15,7 @@ use tracing::trace;
 
 #[derive(Default)]
 pub(super) struct Admission {
-    pub(super) pending: usize,
-    sources: HashMap<DialId, (&'static str, [u8; 20])>,
+    pub(super) sources: HashMap<DialId, (&'static str, [u8; 20])>,
 }
 impl Admission {
     pub(super) async fn tracker_changed(
@@ -38,7 +37,6 @@ impl Admission {
             .clear();
         let peers = transfer.tracker_changed().await;
         self.sources.clear();
-        self.pending = 0;
         observer.retain_peers(transfer);
         dials.and(peers)
     }
@@ -86,7 +84,6 @@ impl Admission {
             ) {
                 Ok(id) => {
                     self.sources.insert(id, (entry.source, entry.hash));
-                    self.pending += 1;
                     trace!(dial=?id,source=entry.source,transport=dials.transport(utp),endpoint=?options.log_peer_endpoints.then_some(address),"peer_dial_started");
                 }
                 Err(error) => {
@@ -110,7 +107,6 @@ impl Admission {
     ) -> io::Result<()> {
         let event = event.ok_or_else(|| io::Error::other("unexpected dial completion"))?;
         let _dial = tracing::trace_span!("dial", dial=?event.id).entered();
-        self.pending = self.pending.saturating_sub(1);
         let (source, hash) = self.sources.remove(&event.id).expect("admitted dial");
         match event.result {
             Ok(socket) => {

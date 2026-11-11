@@ -134,7 +134,7 @@ impl Budget {
         self.0.changed.send_replace(());
     }
 }
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(in crate::engine) struct Throttle {
     global: Budget,
     local: Budget,

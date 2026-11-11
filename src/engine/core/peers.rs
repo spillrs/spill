@@ -2,7 +2,7 @@ use super::*;
 
 fn priority(
     external: [Option<IpAddr>; 2],
-    port: Option<u16>,
+    port: u16,
     remote: Option<SocketAddr>,
     local: Option<IpAddr>,
 ) -> Option<u32> {
@@ -13,7 +13,7 @@ fn priority(
         local.filter(|ip| !ip.is_unspecified() && ip.is_ipv6() == remote.is_ipv6())
     }?;
     Some(crate::protocol::peer::priority::priority(
-        SocketAddr::new(local, port?),
+        SocketAddr::new(local, port),
         remote,
     ))
 }

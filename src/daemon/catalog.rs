@@ -37,18 +37,22 @@ struct State {
     rows: Vec<Arc<Row>>,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Checkpoint {
+pub(crate) struct Checkpoint {
     pub resume: Vec<u8>,
+    pub counters: Counters,
+    pub completed_at: Option<u64>,
+    pub complete: bool,
+    pub completed_announces: Vec<([u8; 20], bool)>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Counters {
     pub downloaded: u64,
     pub hash_failed_bytes: u64,
     pub hash_failed_pieces: u64,
     pub uploaded: u64,
-    pub completed_at: Option<u64>,
     pub last_download_at: Option<u64>,
     pub last_upload_at: Option<u64>,
     pub seed_seconds: f64,
-    pub complete: bool,
-    pub completed_announces: Vec<([u8; 20], bool)>,
 }
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -329,14 +333,16 @@ impl Catalog {
                 settings: serde_json::from_str(&settings)?,
                 checkpoint: Checkpoint {
                     resume,
-                    downloaded,
-                    hash_failed_bytes,
-                    hash_failed_pieces,
-                    uploaded,
+                    counters: Counters {
+                        downloaded,
+                        hash_failed_bytes,
+                        hash_failed_pieces,
+                        uploaded,
+                        last_download_at,
+                        last_upload_at,
+                        seed_seconds,
+                    },
                     completed_at,
-                    last_download_at,
-                    last_upload_at,
-                    seed_seconds,
                     complete,
                     completed_announces: encoding::decode_records(&completed_announces)?,
                 },
@@ -363,11 +369,11 @@ impl Catalog {
         let mut state = self.0.lock().unwrap();
         state.connection.execute("INSERT INTO torrents(id,metainfo,magnet,output_dir,intent,settings,resume,uploaded,seed_seconds,complete,completed_announces,downloaded,added_at,completed_at,last_download_at,last_upload_at,hash_failed_bytes,hash_failed_pieces,v1,v2) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             params![row.id,row.metainfo,row.magnet,row.output_dir.to_string_lossy(),row.intent,
-                serde_json::to_string(&row.settings)?,row.checkpoint.resume,row.checkpoint.uploaded,
-                row.checkpoint.seed_seconds,row.checkpoint.complete,encoding::encode_records(&row.checkpoint.completed_announces)?,
-                row.checkpoint.downloaded,row.added_at,row.checkpoint.completed_at,
-                row.checkpoint.last_download_at,row.checkpoint.last_upload_at,
-                row.checkpoint.hash_failed_bytes,row.checkpoint.hash_failed_pieces,
+                serde_json::to_string(&row.settings)?,row.checkpoint.resume,row.checkpoint.counters.uploaded,
+                row.checkpoint.counters.seed_seconds,row.checkpoint.complete,encoding::encode_records(&row.checkpoint.completed_announces)?,
+                row.checkpoint.counters.downloaded,row.added_at,row.checkpoint.completed_at,
+                row.checkpoint.counters.last_download_at,row.checkpoint.counters.last_upload_at,
+                row.checkpoint.counters.hash_failed_bytes,row.checkpoint.counters.hash_failed_pieces,
                 row.identity.v1().map(|hash| hash.to_string()),row.identity.v2().map(|hash| hash.to_string())])?;
         state.rows.push(Arc::new(row.clone()));
         Ok(())
@@ -505,29 +511,23 @@ impl Catalog {
                         params![id, row.checkpoint.resume],
                     )?;
                 }
-                if row.checkpoint.hash_failed_bytes != previous.hash_failed_bytes
-                    || row.checkpoint.hash_failed_pieces != previous.hash_failed_pieces
-                    || row.checkpoint.downloaded != previous.downloaded
+                if row.checkpoint.counters != previous.counters
                     || row.checkpoint.completed_at != previous.completed_at
-                    || row.checkpoint.last_download_at != previous.last_download_at
-                    || row.checkpoint.last_upload_at != previous.last_upload_at
-                    || row.checkpoint.uploaded != previous.uploaded
-                    || row.checkpoint.seed_seconds != previous.seed_seconds
                     || row.checkpoint.complete != previous.complete
                 {
                     tx.execute(
                         "UPDATE torrents SET uploaded=?2,seed_seconds=?3,complete=?4,downloaded=?5,completed_at=?6,last_download_at=?7,last_upload_at=?8,hash_failed_bytes=?9,hash_failed_pieces=?10 WHERE id=?1",
                         params![
                             id,
-                            row.checkpoint.uploaded,
-                            row.checkpoint.seed_seconds,
+                            row.checkpoint.counters.uploaded,
+                            row.checkpoint.counters.seed_seconds,
                             row.checkpoint.complete,
-                            row.checkpoint.downloaded,
+                            row.checkpoint.counters.downloaded,
                             row.checkpoint.completed_at,
-                            row.checkpoint.last_download_at,
-                            row.checkpoint.last_upload_at,
-                            row.checkpoint.hash_failed_bytes,
-                            row.checkpoint.hash_failed_pieces
+                            row.checkpoint.counters.last_download_at,
+                            row.checkpoint.counters.last_upload_at,
+                            row.checkpoint.counters.hash_failed_bytes,
+                            row.checkpoint.counters.hash_failed_pieces
                         ],
                     )?;
                 }

@@ -3,6 +3,7 @@ use super::{Network, RuntimeOptions};
 use crate::engine::discovery::{AnnounceOptions, Announcer};
 use std::{io, sync::Arc};
 
+#[derive(Default)]
 pub(super) struct Discovery {
     pub(super) lsd: Option<crate::engine::session::lsd::Registration>,
     pub(super) dht: Vec<crate::engine::dht::Discovery>,
@@ -12,16 +13,6 @@ pub(super) struct Discovery {
     pub(super) web_seeds: Option<crate::engine::webseed::WebSeeds>,
 }
 impl Discovery {
-    pub(super) fn empty() -> Self {
-        Self {
-            lsd: None,
-            dht: Vec::new(),
-            announces: Vec::new(),
-            contacts: None,
-            dials: None,
-            web_seeds: None,
-        }
-    }
     pub(super) async fn setup(
         &mut self,
         options: &RuntimeOptions,

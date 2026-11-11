@@ -208,7 +208,7 @@ async fn serve(
                     Err(error) => trace!(swarm=?hash,kind=?error.kind(),%error,"dht_lookup_failed"),
                 }
             },
-            event = direct, if admission.pending > 0 => {
+            event = direct, if !admission.sources.is_empty() => {
                 let event = event?;
                 if let Some(event) = &event && let Some(q) = &mut network.contacts {
                     q.dial_completed(event.address, event.transport(), event.utp_failed);
@@ -315,21 +315,12 @@ async fn finish(
     result
 }
 
+#[derive(Default)]
 pub(super) struct Resources {
     pub(super) writer: Option<crate::engine::storage::writer::Writer>,
     pub(super) transfer: Option<Shell>,
     pub(super) progress: Option<Observer>,
     network: Discovery,
-}
-impl Default for Resources {
-    fn default() -> Self {
-        Self {
-            writer: None,
-            transfer: None,
-            progress: None,
-            network: Discovery::empty(),
-        }
-    }
 }
 impl Resources {
     pub(super) async fn drain(&mut self) -> io::Result<()> {

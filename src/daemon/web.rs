@@ -10,7 +10,6 @@ use axum::{
 };
 use std::{
     io::{self, SeekFrom},
-    net::SocketAddr,
     path::PathBuf,
 };
 use tokio::{
@@ -23,25 +22,25 @@ static WEB: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs
 struct App {
     control: Control,
     token: String,
-    port: u16,
 }
-fn authorized_host(headers: &HeaderMap, port: u16) -> bool {
+fn authorized_host(headers: &HeaderMap) -> bool {
     let host = headers
         .get("host")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    let allowed = [
-        format!("127.0.0.1:{port}"),
-        format!("[::1]:{port}"),
-        format!("localhost:{port}"),
-    ];
-    allowed.iter().any(|h| h == host)
-        && headers
-            .get("origin")
-            .is_none_or(|o| o.to_str().ok() == Some(format!("http://{host}").as_str()))
+    // SSH forwarding preserves the browser's Host, including its local port.
+    ["127.0.0.1", "[::1]", "localhost"].iter().any(|name| {
+        host == *name
+            || host
+                .strip_prefix(*name)
+                .and_then(|s| s.strip_prefix(':'))
+                .is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok())
+    }) && headers
+        .get("origin")
+        .is_none_or(|o| o.to_str().ok() == Some(format!("http://{host}").as_str()))
 }
 async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Response {
-    if !authorized_host(&headers, app.port) {
+    if !authorized_host(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let defaults = {
@@ -65,7 +64,7 @@ async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Re
     response
 }
 async fn asset(State(app): State<App>, headers: HeaderMap, uri: Uri) -> axum::response::Response {
-    if !authorized_host(&headers, app.port) {
+    if !authorized_host(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     if uri.path() == "/index.html" {
@@ -94,7 +93,7 @@ async fn asset(State(app): State<App>, headers: HeaderMap, uri: Uri) -> axum::re
         .into_response()
 }
 fn authorized(app: &App, headers: &HeaderMap) -> bool {
-    authorized_host(headers, app.port)
+    authorized_host(headers)
         && headers.get("x-spill-token").and_then(|v| v.to_str().ok()) == Some(app.token.as_str())
 }
 #[derive(serde::Deserialize)]
@@ -193,12 +192,7 @@ pub async fn serve(
     let mut entropy = [0; 32];
     getrandom::fill(&mut entropy).map_err(io::Error::other)?;
     let token = crate::encoding::hex_key(entropy);
-    let address: SocketAddr = listener.local_addr()?;
-    let app = App {
-        control,
-        token,
-        port: address.port(),
-    };
+    let app = App { control, token };
     let routes = Router::new()
         .route("/", get(index))
         .route("/{*path}", get(asset))

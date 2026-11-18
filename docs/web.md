@@ -10,8 +10,8 @@ web_listen = "127.0.0.1:8080"
 ```
 
 Only loopback addresses (`127.0.0.1`, `::1`) are accepted. To use it from
-another machine, tunnel it, for example `ssh -L 8080:127.0.0.1:8080 server`,
-then open <http://127.0.0.1:8080> locally.
+another machine, tunnel it, for example `ssh -N -L 127.0.0.1:8081:127.0.0.1:8080 server`,
+then open <http://127.0.0.1:8081> locally. The local port need not match the remote port.
 
 ## The page
 
@@ -73,8 +73,9 @@ restarts. Hover over a table total for its exact byte count. See
 
 ## Security model
 
-- The server only answers requests whose `Host` is the loopback address and
-  port it listens on, which blocks DNS-rebinding attacks.
+- The server only accepts `127.0.0.1`, `[::1]` or `localhost` as the `Host`
+  hostname, including when SSH forwards a different local port. If `Origin`
+  is present it must match the browser-facing HTTP host and port.
 - Every API request must carry the `X-Spill-Token` header. The page embeds a
   random token generated when the daemon starts.
 - Cross-origin requests are rejected.

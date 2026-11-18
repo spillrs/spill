@@ -54,7 +54,8 @@ then open <http://127.0.0.1:8081> locally. The local port need not match the rem
 - A footer daemon indicator shows the version and a green connection dot.
   Click it for connection status, last update, PID, running torrents, admission
   state, TCP/UDP listeners, uTP/DHT settings, inbound peer counts and whether a
-  port mapping is active. An active mapping also shows NAT-PMP or UPnP. Mapping
+  port mapping is active, not established, or disabled. An active mapping also
+  shows NAT-PMP or UPnP. Mapping
   warnings belong in Logs, not the status panel. Green means connected, not
   that every network service is healthy. On disconnection the dot turns red, an error is shown, and the status
   panel labels its data as the last snapshot.

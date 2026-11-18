@@ -185,7 +185,7 @@ function renderHealth() {
       ['uTP enabled',network.utp_enabled], ['DHT enabled',network.dht_enabled],
       ['Inbound TCP peers',network.inbound_tcp.active], ['Inbound uTP peers',network.inbound_utp.active],
       ['Advertised port',health.advertised_port],
-      ['Port mapping active',mapping.enabled && !!mapping.protocol]
+      ['Port mapping',mapping.protocol ? 'Active' : mapping.enabled ? 'Not established' : 'Disabled']
     ].map(([label,value]) => detailRow(label,value)).join('');
     if (mapping.protocol) html += detailRow('Mapping protocol',mapping.protocol === 'nat-pmp' ? 'NAT-PMP' : 'UPnP');
   } else html += telemetryNote('No daemon status received yet.');

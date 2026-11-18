@@ -17,8 +17,9 @@ then open <http://127.0.0.1:8081> locally. The local port need not match the rem
 
 - A compact transfer table with search, sorting, multi-selection, state filters,
   lifetime downloaded/uploaded totals, rates, peers, ETA and TRK/DHT/PEX/WEB
-  discovery policy. Torrent errors appear in the status cell; tracker failures
-  add an amber icon beside the transfer state and a warning in Overview.
+  discovery policy. The status cell stays on one line: a torrent error shows
+  **Error**, while a tracker failure adds an amber icon beside the transfer
+  state. Hover over the cell or open Overview to read the full message.
   Tracker failures remain in Needs attention until recovery or successful
   fallback, without marking the torrent itself as failed. Sources retains individual
   tracker errors, including backups hidden by a working selected tracker.

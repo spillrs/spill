@@ -67,6 +67,7 @@ tbody tr.selected,tbody tr.selected:nth-child(even){background:var(--selected)}t
 .status{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--muted)}.status:before{content:'';width:5px;height:5px;background:currentColor;border-radius:50%}
 .status.downloading,.status.seeding{color:var(--success)}.status.checking,.status.retrying{color:var(--warning)}.status.metadata{color:var(--cobalt)}
 .status.has-error{color:var(--danger);white-space:normal;overflow-wrap:anywhere;align-items:flex-start;padding:4px 0}.status.has-error:before{display:none}.status.has-error svg{width:12px;height:12px;flex-shrink:0;margin-top:2px}
+.tracker-warning svg{width:12px;height:12px;vertical-align:middle}
 .discovery-bits{display:flex;gap:5px}.source-bit{font:9px var(--mono);border:1px solid var(--cobalt);border-radius:4px;color:var(--cobalt);padding:1px 3px}.source-bit.off{border-color:var(--line);color:var(--muted)}
 .empty{padding:35px;text-align:center;color:var(--muted)}
 .table-footer,.bottom-bar{display:flex;gap:10px;min-height:25px;padding:5px 10px;color:var(--muted);font-size:10px;border-top:1px solid var(--line)}
@@ -105,7 +106,7 @@ tbody tr.selected,tbody tr.selected:nth-child(even){background:var(--selected)}t
 .source-section{margin-top:14px}.source-section h4{font:600 11px var(--mono);margin:0 0 7px}
 .file-pagination{display:flex;align-items:center;gap:12px;margin-top:10px;font:10px var(--mono)}
 select,input[type=text],input[type=number]{font-family:var(--mono);background:var(--paper);border:1px solid var(--line);border-radius:7px}
-.torrent-error{border-left:2px solid var(--danger);color:var(--danger);background:var(--danger-bg);padding:8px 10px;margin-bottom:12px;overflow-wrap:anywhere}
+.torrent-error,.torrent-warning{border-left:2px solid currentColor;padding:8px 10px;margin-bottom:12px;overflow-wrap:anywhere}.torrent-error{color:var(--danger);background:var(--danger-bg)}.torrent-warning,.tracker-warning{color:var(--warning)}.torrent-warning{background:var(--warning-bg)}.tracker-warning{font-size:10px}
 .toast{position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:var(--button-bg);color:var(--button-ink);border:1px solid var(--ink);padding:9px 14px;z-index:20;font-size:11px}
 dialog{width:480px;max-width:calc(100% - 30px);padding:24px;border:1px solid var(--line);border-radius:14px;background:var(--paper);color:var(--ink);box-shadow:0 20px 60px #00000040}
 dialog::backdrop{background:#172b4666}

@@ -93,7 +93,7 @@ impl Shell {
             peer_id,
             profile,
             capacity_changed.clone(),
-            network.incoming.clone(),
+            network,
             bandwidth,
         )?;
         capacity_changed.notify_one();

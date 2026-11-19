@@ -143,6 +143,100 @@ async fn padding_does_not_consume_the_data_file_admission_limit() {
 }
 
 #[tokio::test]
+async fn idle_torrents_share_one_live_peer_slot() {
+    use spill::{
+        engine::session::PeerEncryption,
+        protocol::peer::{HANDSHAKE_LEN, Handshake},
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let root = Temp::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let session = Session::bind(
+            NetworkOptions {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                allow_local_network: true,
+                peer_encryption: PeerEncryption::Allowed,
+                utp: false,
+                ..Default::default()
+            },
+            Limits {
+                torrents: 2,
+                peers: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        std::fs::write(root.0.join("second"), b"def").unwrap();
+        let admit = |name, payload, peers| {
+            let meta = Profile::default()
+                .parse_owned(&seed_metainfo(name, payload, None))
+                .unwrap();
+            let mut options = TorrentOptions::new(
+                TorrentSource::Metainfo(meta),
+                Destination::Open(root.0.clone()),
+            );
+            options.settings.trackers = false;
+            options.settings.pex = false;
+            options.peers = peers;
+            session.admit(options).unwrap()
+        };
+        let mut first = admit("first", b"abc", vec![listener.local_addr().unwrap()]);
+        let mut second = admit("second", b"def", vec![]);
+        while !second.snapshot().progress.ready {
+            assert!(second.changed().await);
+        }
+        let (mut outbound, _) = listener.accept().await.unwrap();
+        drop(listener);
+        let handshake = |key, id| {
+            Handshake {
+                reserved: [0; 8],
+                info_hash: key,
+                peer_id: [id; 20],
+            }
+            .encode()
+        };
+        let mut hello = [0; HANDSHAKE_LEN];
+        outbound.read_exact(&mut hello).await.unwrap();
+        let first_key = first.info_hash().wire_key();
+        assert_eq!(Handshake::decode(&hello).unwrap().0.info_hash, first_key);
+        outbound.write_all(&handshake(first_key, 81)).await.unwrap();
+        while first.snapshot().progress.active_peers == 0 {
+            assert!(first.changed().await);
+        }
+
+        let second_key = second.info_hash().wire_key();
+        let mut rejected = TcpStream::connect(session.local_addr()).await.unwrap();
+        rejected
+            .write_all(&handshake(second_key, 82))
+            .await
+            .unwrap();
+        match rejected.read(&mut hello).await {
+            Ok(0) => (),
+            Err(error) if error.kind() == io::ErrorKind::ConnectionReset => (),
+            result => panic!("second peer got through a full session: {result:?}"),
+        }
+
+        drop(outbound);
+        while first.snapshot().progress.active_peers != 0 {
+            assert!(first.changed().await);
+        }
+        let mut inbound = TcpStream::connect(session.local_addr()).await.unwrap();
+        inbound.write_all(&handshake(second_key, 83)).await.unwrap();
+        inbound.read_exact(&mut hello).await.unwrap();
+        assert_eq!(Handshake::decode(&hello).unwrap().0.info_hash, second_key);
+        session.shutdown().await.unwrap();
+    })
+    .await
+    .expect("session peer budget test timed out");
+}
+
+#[tokio::test]
 async fn invalid_profiles_do_not_panic_or_consume_admission() {
     let profile = Profile {
         peers: 1,

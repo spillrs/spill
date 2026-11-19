@@ -17,7 +17,7 @@ use crate::protocol::peer::{HANDSHAKE_LEN, Handshake, message::Message};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpStream,
-    sync::{Notify, mpsc, watch},
+    sync::{Notify, Semaphore, mpsc, watch},
     task::{AbortHandle, Id, JoinError, JoinSet},
     time::{Instant, timeout_at},
 };
@@ -212,6 +212,7 @@ enum Finished {
 }
 
 pub(in crate::engine) struct Peers {
+    peer_slots: Arc<Semaphore>,
     incoming: Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
     bandwidth: crate::engine::bandwidth::Throttle,
     read_pause: watch::Sender<bool>,
@@ -238,12 +239,13 @@ impl Peers {
         peer_id: [u8; 20],
         limits: crate::engine::profile::Profile,
         capacity_changed: Arc<Notify>,
-        incoming: Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
+        network: &crate::engine::torrent::Network,
         bandwidth: crate::engine::bandwidth::Throttle,
     ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::channel(crate::engine::profile::EVENT_QUEUE);
         Ok(Self {
-            incoming,
+            peer_slots: network.peer_slots.clone(),
+            incoming: network.incoming.clone(),
             bandwidth,
             read_pause: watch::channel(false).0,
             capacity_changed,
@@ -310,6 +312,16 @@ impl Peers {
         let runtime =
             tokio::runtime::Handle::try_current().map_err(|_| invalid("Tokio runtime required"))?;
         let deadline = Instant::now() + crate::engine::profile::HANDSHAKE_TIMEOUT;
+        let permit = if matches!(&socket, PeerSocket::Connected(..)) {
+            Some(
+                self.peer_slots
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| busy("session peer limit"))?,
+            )
+        } else {
+            None
+        };
         let (commands, receiver) = mpsc::channel(crate::engine::profile::OUTBOUND_QUEUE);
         let events = self.events_tx.clone();
         let written = Arc::new(PayloadWrites::child(self.written.clone()));
@@ -358,6 +370,7 @@ impl Peers {
                         result
                     }
                 };
+                drop(permit);
                 tracing::trace!(?connection,error_kind=?result.as_ref().err().map(|e|e.kind()),error=%result.as_ref().err().map(ToString::to_string).unwrap_or_default(),"peer_transport_finished");
                 let result = result.map_err(socket_failure);
                 let _ = events.send(PeerEvent::Closed { connection, result }).await;

@@ -33,6 +33,7 @@ Daemon-wide limits:
 |---|---|
 | Running torrents (`active_downloads` + `active_seeds`) | 64 |
 | Connections per torrent (`peers`) | 4096 (default 50) |
+| Running peer-wire connections per session | (`active_downloads` + `active_seeds`) × `peers` |
 | Peers uploaded to at once, per torrent | 8 |
 | Config file size | 64 KiB |
 
@@ -47,7 +48,9 @@ without starting an execution.
 
 Canonical peer replacement (BEP 40) may retain one waiting socket per torrent
 while the evicted peer task joins. The waiting socket starts no peer task until
-capacity is released; `peers` and session peer reservations remain unchanged.
+capacity is released. Running TCP and uTP peers share a session-wide limit;
+idle torrents do not reserve connection slots. Pending handshakes and dials
+have separate limits.
 
 ## Holepunch coordination
 

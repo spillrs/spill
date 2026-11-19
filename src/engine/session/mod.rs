@@ -1,7 +1,8 @@
 //! Shared networking, resource budgets, and execution ownership.
 //!
-//! Bind a [`Session`], then [`Session::admit`] torrents. Admission reserves budgets
-//! through joined cleanup; [`Session::shutdown`] stops and joins owned work.
+//! Bind a [`Session`], then [`Session::admit`] torrents. Torrent and writer-queue
+//! reservations last through joined cleanup; live peers share a separate budget.
+//! [`Session::shutdown`] stops and joins owned work.
 //! Unlike [`super::download`], default reusable sessions do not enable DHT.
 pub mod dht;
 pub(in crate::engine) mod dial;
@@ -96,7 +97,7 @@ impl Default for NetworkOptions {
         }
     }
 }
-/// Session-wide admission budgets. Payload reservations are not a total RSS cap;
+/// Session-wide resource budgets. Payload reservations are not a total RSS cap;
 /// transport buffers, hashing scratch space, and other bookkeeping are additional.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -104,7 +105,8 @@ pub struct Limits {
     pub pending_handshakes: usize,
     /// Pending (not established) inbound connections per canonical source IP.
     pub pending_handshakes_per_ip: usize,
-    /// Session-wide cap on the sum of admitted per-torrent peer reservations.
+    /// Session-wide cap on running TCP/uTP peer transports, including their
+    /// handshake. Pending listener handshakes and dials are budgeted separately.
     pub peers: usize,
     pub pending_dials: usize,
     /// Sum of admitted writer-queue ceilings, not total process RSS.
@@ -129,8 +131,16 @@ impl Default for Limits {
     }
 }
 pub(in crate::engine) enum Inbound {
-    Tcp(std::net::TcpStream, crate::engine::peer_io::Prepared),
-    Utp(utp::Stream, crate::engine::peer_io::Prepared),
+    Tcp(
+        std::net::TcpStream,
+        crate::engine::peer_io::Prepared,
+        HandshakePermit,
+    ),
+    Utp(
+        utp::Stream,
+        crate::engine::peer_io::Prepared,
+        HandshakePermit,
+    ),
 }
 impl Inbound {
     pub(in crate::engine) fn into_stream(
@@ -141,10 +151,10 @@ impl Inbound {
     )> {
         use crate::engine::peer_io::Stream;
         match self {
-            Self::Tcp(socket, prepared) => {
+            Self::Tcp(socket, prepared, _permit) => {
                 Ok((Stream::Tcp(TcpStream::from_std(socket)?), prepared))
             }
-            Self::Utp(socket, prepared) => Ok((Stream::Utp(socket), prepared)),
+            Self::Utp(socket, prepared, _permit) => Ok((Stream::Utp(socket), prepared)),
         }
     }
 }
@@ -178,7 +188,7 @@ struct Pending {
     counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
     limits: Limits,
 }
-struct HandshakePermit {
+pub(in crate::engine) struct HandshakePermit {
     pending: Pending,
     ip: IpAddr,
 }
@@ -390,6 +400,7 @@ struct Online {
 struct Shared {
     bandwidth: crate::engine::bandwidth::Budget,
     rechecks: Arc<Semaphore>,
+    peer_slots: Arc<Semaphore>,
     address: SocketAddr,
     incoming: Arc<Mutex<incoming::Incoming>>,
     utp_enabled: bool,
@@ -558,6 +569,7 @@ impl Shared {
         Self {
             bandwidth: crate::engine::bandwidth::Budget::default(),
             rechecks: Arc::new(Semaphore::new(RECHECK_CONCURRENCY)),
+            peer_slots: Arc::new(Semaphore::new(limits.peers.min(Semaphore::MAX_PERMITS))),
             address,
             incoming: Arc::default(),
             utp_enabled: false,
@@ -694,7 +706,7 @@ impl Session {
         options.settings = settings;
         self.admit_execution(options, true)
     }
-    /// Validate and reserve a torrent execution; preparation proceeds asynchronously.
+    /// Reserve a torrent slot and writer-queue budget; preparation proceeds asynchronously.
     /// Returns `WouldBlock` when budgets are exhausted and `InvalidInput` for
     /// invalid options, duplicate torrents, or a closed session. Finished executions
     /// retire automatically; stopped handles cannot control a later replacement.
@@ -733,14 +745,11 @@ impl Session {
                 "session stopped, duplicate torrent or networking unavailable",
             ));
         }
-        let mut available_peers = shared.limits.peers;
         let mut available_payload = shared.limits.payload_bytes;
         for owner in registry.torrents.values() {
-            available_peers -= owner.profile.peers;
             available_payload -= owner.profile.write_queue_bytes;
         }
         if registry.torrents.len() >= shared.limits.torrents
-            || profile.peers > available_peers
             || profile.write_queue_bytes > available_payload
         {
             return Err(io::Error::new(
@@ -748,7 +757,7 @@ impl Session {
                 "session reservation limit",
             ));
         }
-        // Absorb handshake bursts up to the torrent's admitted peer budget.
+        // Queued sockets retain their session handshake permits until consumed.
         let (sender, sockets) = mpsc::channel(profile.peers);
         let bandwidth = crate::engine::bandwidth::Throttle::new(
             shared.bandwidth.clone(),
@@ -761,6 +770,7 @@ impl Session {
             let online = shared.online.as_ref().expect("online session");
             Networking::Online(Network {
                 incoming: shared.incoming.clone(),
+                peer_slots: shared.peer_slots.clone(),
                 advertised_port: shared.advertised_port.subscribe(),
                 mapping: shared.mapping_status.clone(),
                 sockets,
@@ -913,7 +923,6 @@ async fn route(
                 };
                 let routes = routes.clone();
                 pending.spawn(async move {
-                    let _permit = permit;
                     let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
                     let prepare = async {
                         let (prefix, mut socket) = peek::<20>(socket).await?;
@@ -938,7 +947,7 @@ async fn route(
                             if let Some(sender) = sender {
                                 match socket.into_std() {
                                     Ok(socket) => {
-                                        if let Err(error) = sender.try_send(Inbound::Tcp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
+                                        if let Err(error) = sender.try_send(Inbound::Tcp(socket, crate::engine::peer_io::Prepared { negotiated, deadline }, permit)) {
                                             tracing::trace!(transport="tcp",reason=if matches!(error,mpsc::error::TrySendError::Full(_)){"torrent_inbox_full"}else{"torrent_stopped"},"inbound_rejected");
                                         }
                                     }
@@ -979,7 +988,6 @@ async fn route_utp(
                 let Some((mut socket, permit)) = accepted else { break Ok(()); };
                 let routes = routes.clone();
                 pending.spawn(async move {
-                    let _permit = permit;
                     let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
                     let prepare = async {
                         let mut prefix = [0; 20];
@@ -1006,11 +1014,12 @@ async fn route_utp(
                         Ok(Ok((hash, negotiated))) => {
                             let sender = routes.lock().unwrap().get(&hash).cloned();
                             if let Some(sender) = sender {
-                                match sender.try_send(Inbound::Utp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
+                                match sender.try_send(Inbound::Utp(socket, crate::engine::peer_io::Prepared { negotiated, deadline }, permit)) {
                                     Ok(()) => return,
                                     Err(error) => {
                                         tracing::trace!(transport="utp",reason=if matches!(error,mpsc::error::TrySendError::Full(_)){"torrent_inbox_full"}else{"torrent_stopped"},"inbound_rejected");
-                                        if let Inbound::Utp(socket, _) = error.into_inner() { socket.reset(); }
+                                        let Inbound::Utp(socket, _, _permit) = error.into_inner() else { unreachable!() };
+                                        socket.reset();
                                         return;
                                     }
                                 }

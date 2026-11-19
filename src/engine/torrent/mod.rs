@@ -109,6 +109,7 @@ pub(in crate::engine) enum Networking {
     Recheck,
 }
 pub(in crate::engine) struct Network {
+    pub(in crate::engine) peer_slots: Arc<tokio::sync::Semaphore>,
     pub(in crate::engine) incoming:
         Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,
     pub(in crate::engine) advertised_port: watch::Receiver<u16>,

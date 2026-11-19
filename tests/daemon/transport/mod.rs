@@ -64,7 +64,6 @@ async fn transport_daemon_at(
         DaemonConfig {
             listen: listen.parse().unwrap(),
             utp: Some(utp),
-            cache_bytes: None,
             write_queue_bytes: Some(16384),
             active_downloads: 4,
             active_seeds: 16,

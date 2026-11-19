@@ -119,7 +119,6 @@ async fn dual_stack_listener_announces_to_an_ipv4_udp_tracker() {
             active_downloads: 4,
             active_seeds: 16,
             peers: None,
-            cache_bytes: None,
             write_queue_bytes: None,
             ..Default::default()
         },

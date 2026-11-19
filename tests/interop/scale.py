@@ -133,7 +133,7 @@ def main():
                           control_socket=socket_path, host=args.host,
                           trackers=args.dead_udp_tracker, web_seeds=True,
                           active_downloads=downloads, active_seeds=seeds,
-                          download_limit=limit, peers=4, cache_bytes=262144,
+                          download_limit=limit, peers=4,
                           write_queue_bytes=1048576)
     write_config(config, **config_options)
     files, processes = [], []

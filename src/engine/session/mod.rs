@@ -107,22 +107,20 @@ pub struct Limits {
     /// Session-wide cap on the sum of admitted per-torrent peer reservations.
     pub peers: usize,
     pub pending_dials: usize,
-    /// Sum of admitted cache and writer-queue ceilings, not total process RSS.
+    /// Sum of admitted writer-queue ceilings, not total process RSS.
     pub payload_bytes: usize,
     pub handshake_timeout: Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            // Seeds retain sockets, cache and writer reservations too; keep
+            // Seeds retain sockets and writer reservations too; keep
             // them bounded rather than allowing unlimited seeding admission.
             torrents: 32,
             pending_handshakes: 32,
             pending_handshakes_per_ip: 2,
             peers: 32 * Profile::DEFAULT.peers,
             pending_dials: 32,
-            // 32 ordinary torrents reserve 1 GiB (including up to 512 MiB
-            // of upload caches). Extra headroom admits larger resource budgets.
             // Allocated on demand; peer and whole-piece scratch buffers are
             // additional RSS, not covered by this reservation ceiling.
             payload_bytes: 2 * 1024 * 1024 * 1024,
@@ -739,11 +737,11 @@ impl Session {
         let mut available_payload = shared.limits.payload_bytes;
         for owner in registry.torrents.values() {
             available_peers -= owner.profile.peers;
-            available_payload -= owner.profile.cache_bytes + owner.profile.write_queue_bytes;
+            available_payload -= owner.profile.write_queue_bytes;
         }
         if registry.torrents.len() >= shared.limits.torrents
             || profile.peers > available_peers
-            || profile.cache_bytes + profile.write_queue_bytes > available_payload
+            || profile.write_queue_bytes > available_payload
         {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,

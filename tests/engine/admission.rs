@@ -146,7 +146,6 @@ async fn padding_does_not_consume_the_data_file_admission_limit() {
 async fn invalid_profiles_do_not_panic_or_consume_admission() {
     let profile = Profile {
         peers: 1,
-        cache_bytes: BLOCK_LEN as usize,
         write_queue_bytes: BLOCK_LEN as usize,
     };
     let meta = profile
@@ -155,7 +154,7 @@ async fn invalid_profiles_do_not_panic_or_consume_admission() {
     let session = Session::offline(Limits {
         torrents: 1,
         peers: 1,
-        payload_bytes: profile.cache_bytes + profile.write_queue_bytes,
+        payload_bytes: profile.write_queue_bytes,
         ..Default::default()
     });
     let online = Session::bind(
@@ -180,14 +179,6 @@ async fn invalid_profiles_do_not_panic_or_consume_admission() {
         },
         Profile {
             peers: 4097,
-            ..profile
-        },
-        Profile {
-            cache_bytes: BLOCK_LEN as usize - 1,
-            ..profile
-        },
-        Profile {
-            cache_bytes: 1024 * 1024 * 1024 + 1,
             ..profile
         },
         Profile {

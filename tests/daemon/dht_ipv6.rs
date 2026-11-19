@@ -28,7 +28,6 @@ async fn daemon_saves_and_reverifies_ipv6_contacts_across_restart() {
             dht: true,
             web_seeds: false,
             peers: None,
-            cache_bytes: None,
             write_queue_bytes: None,
             active_downloads: 4,
             active_seeds: 16,

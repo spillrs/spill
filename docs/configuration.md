@@ -46,7 +46,6 @@ Downloads default to `~/Downloads` on both platforms. If you override
 | `port_mapping` | `true` | Ask the IPv4 gateway to forward the listen port for TCP and UDP, using NAT-PMP then UPnP IGD. Failures never stop torrents. The system-service example disables it. |
 | `port_mapping_gateway` | unset (auto-discover) | An IPv4 address (port 5351) or `"ip:port"` overrides NAT-PMP discovery. An `"http://host:port/rootDesc.xml"` UPnP description URL skips NAT-PMP and SSDP and uses that IGD directly. Hosts must be unicast, ports nonzero; URL overrides accept HTTP only, without credentials or fragments. |
 | `peers` | `50` | Maximum connections per torrent, `1`–`4096`. |
-| `cache_bytes` | `16777216` (16 MiB) | Upload read cache per torrent, 16 KiB–1 GiB. |
 | `write_queue_bytes` | `16777216` (16 MiB) | Received data waiting to be written, per torrent, 16 KiB–1 GiB. |
 | `active_downloads` | `4` | How many torrents may download at once. |
 | `active_seeds` | `16` | How many complete torrents may seed at once. |
@@ -62,15 +61,15 @@ The default DHT routers are `dht.libtorrent.org:25401`,
 
 ### Memory
 
-Each running torrent can use up to `cache_bytes + write_queue_bytes` for
-payload buffers (32 MiB by default) plus its peer connections. The shared UDP
+Uploads read verified blocks on request and rely on the OS file cache. Each running
+torrent reserves `write_queue_bytes` (16 MiB by default) for queued writes. The shared UDP
 socket requests a 2 MiB kernel receive buffer for uTP bursts; the OS may cap or
 adjust that size. Each uTP peer has at most 256 KiB of queued/unacknowledged
 send data and 256 KiB of receive/reassembly data. Of the receive budget,
 192 KiB is advertised and 64 KiB is reserved to fill reassembly gaps.
 
 Encrypted peer writes stage at most 64 KiB of ciphertext per connection.
-Transport buffers fill on demand and are additional to the torrent cache/writer
+Transport buffers fill on demand and are additional to the torrent writer
 reservations. At the default aggregate limit of 1,000 peers, uTP buffer allowances
 alone can reach about 500 MiB, before peer queues, bookkeeping and kernel buffers.
 The roughly 35 MiB measurement for 33 torrents in [Limits](limits.md) is a

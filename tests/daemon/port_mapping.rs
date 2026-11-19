@@ -12,7 +12,6 @@ async fn mapping_daemon(root: &std::path::Path, gateway: &str, enabled: bool) ->
             port_mapping_gateway: Some(gateway.to_owned()),
             trackers: true,
             peers: None,
-            cache_bytes: None,
             write_queue_bytes: None,
             active_downloads: 4,
             active_seeds: 16,

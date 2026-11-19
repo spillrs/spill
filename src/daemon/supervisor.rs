@@ -57,7 +57,7 @@ impl Supervisor {
         let limits = spill::engine::session::Limits {
             torrents: total,
             peers: total * config.peers,
-            payload_bytes: total * (config.cache_bytes + config.write_queue_bytes),
+            payload_bytes: total * config.write_queue_bytes,
             ..Default::default()
         };
         let mapping = config.port_mapping.then(|| {

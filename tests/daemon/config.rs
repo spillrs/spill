@@ -52,7 +52,6 @@ listen = "127.0.0.1:0"
             "invalid DHT routers",
         ),
         ("peers = 0", "invalid torrent resource limits"),
-        ("cache_bytes = 0", "invalid torrent resource limits"),
         ("write_queue_bytes = 0", "invalid torrent resource limits"),
     ] {
         std::fs::write(&config, format!("{base}{invalid}\n")).unwrap();

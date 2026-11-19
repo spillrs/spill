@@ -76,7 +76,6 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
     // leechers and more blocks than one outbound queue can hold.
     let profile = spill::engine::profile::Profile {
         peers: 1,
-        cache_bytes: spill::engine::profile::BLOCK_LEN as usize,
         write_queue_bytes: 2 * spill::engine::profile::BLOCK_LEN as usize,
     };
     let meta = profile.parse_owned(&bytes).unwrap();
@@ -100,7 +99,7 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
                 spill::engine::session::Limits {
                     torrents: 1,
                     peers: 1,
-                    payload_bytes: profile.cache_bytes + profile.write_queue_bytes,
+                    payload_bytes: profile.write_queue_bytes,
                     ..Default::default()
                 },
             )

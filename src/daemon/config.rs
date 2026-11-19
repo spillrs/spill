@@ -23,7 +23,6 @@ pub struct Config {
     #[serde(deserialize_with = "mapping_gateway")]
     pub port_mapping_gateway: Option<spill::engine::session::port_map::Gateway>,
     pub peers: usize,
-    pub cache_bytes: usize,
     pub write_queue_bytes: usize,
     pub active_downloads: usize,
     pub active_seeds: usize,
@@ -77,7 +76,6 @@ impl Default for Config {
             port_mapping: true,
             port_mapping_gateway: None,
             peers: Profile::DEFAULT.peers,
-            cache_bytes: Profile::DEFAULT.cache_bytes,
             write_queue_bytes: Profile::DEFAULT.write_queue_bytes,
             active_downloads: 4,
             active_seeds: 16,
@@ -125,7 +123,6 @@ impl Config {
     pub fn profile(&self) -> Profile {
         Profile {
             peers: self.peers,
-            cache_bytes: self.cache_bytes,
             write_queue_bytes: self.write_queue_bytes,
         }
     }

@@ -142,7 +142,6 @@ async fn web_add_applies_defaults_and_paused_policy_before_starting_on_ipv6() {
             active_downloads: 4,
             active_seeds: 16,
             peers: None,
-            cache_bytes: None,
             write_queue_bytes: None,
             ..Default::default()
         },

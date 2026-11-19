@@ -105,7 +105,6 @@ async fn utp_mux_capacity_is_reclaimed_and_does_not_poison_contacts() {
         DaemonConfig {
             utp: Some(true),
             peers: Some(1),
-            cache_bytes: None,
             write_queue_bytes: None,
             web_seeds: false,
             trackers: true,

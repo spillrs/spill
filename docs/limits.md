@@ -40,7 +40,7 @@ There is no limit on how many torrents the catalog holds; torrents beyond the
 active slots wait as `queued`.
 
 Library callers have the same per-torrent resource bounds: `Profile.peers` must
-be 1–4096, and `cache_bytes` and `write_queue_bytes` must each be 16 KiB–1 GiB.
+be 1–4096. `write_queue_bytes` must be 16 KiB–1 GiB.
 Admission and magnet metadata resolution reject invalid profiles with
 `InvalidInput` before starting work. `Profile::validate()` checks these bounds
 without starting an execution.
@@ -76,8 +76,9 @@ when the connection closes or disables PEX.
 
 ## Resource use
 
-- **Memory**: each running torrent may buffer up to `cache_bytes` +
-  `write_queue_bytes` (32 MiB by default) at peak. Typical use is far lower.
+- **Memory**: each running torrent reserves `write_queue_bytes` (16 MiB by default)
+  for queued writes. Uploads rely on the OS file cache. In-flight blocks and peer
+  buffers are additional; the reservation is not a process memory limit.
 - **Open files**: spill keeps every file of a running torrent open while it
   runs. A torrent with 100,000 files uses about 100,000 file descriptors. The
   daemon raises its soft descriptor limit to the hard limit at startup on

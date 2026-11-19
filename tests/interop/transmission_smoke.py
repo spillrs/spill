@@ -130,14 +130,14 @@ def control(path, op, **arguments):
 def write_config(path, *, state, destination, control_socket, host, trackers=True,
                  dht=False, pex=False, web_seeds=False, bootstrap=(), utp=False, rate_limit=0,
                  active_downloads=1, active_seeds=1, download_limit=None,
-                 peers=None, cache_bytes=None, write_queue_bytes=None, peer_encryption="allowed"):
+                 peers=None, write_queue_bytes=None, peer_encryption="allowed"):
     values = {"state_dir": str(state), "download_dir": str(destination),
               "control_socket": str(control_socket), "listen": f"{host}:0",
               "allow_local_network": True, "port_mapping": False,
               "active_downloads": active_downloads, "active_seeds": active_seeds,
               "dht_bootstrap": list(bootstrap), "utp": utp, "peer_encryption": peer_encryption}
     values.update({key: value for key, value in {
-        "peers": peers, "cache_bytes": cache_bytes, "write_queue_bytes": write_queue_bytes,
+        "peers": peers, "write_queue_bytes": write_queue_bytes,
     }.items() if value is not None})
     defaults = {"trackers": trackers, "dht": dht, "pex": pex, "web_seeds": web_seeds,
                 "download_limit": rate_limit if download_limit is None else download_limit,

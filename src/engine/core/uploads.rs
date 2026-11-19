@@ -50,7 +50,7 @@ impl Torrent {
                 if self.reads[position].result.is_none() {
                     break;
                 }
-                // Other peers can reload this block from the upload cache;
+                // Other peers can request another read;
                 // retaining it behind their queue heads can deadlock admission.
                 let result = self
                     .reads

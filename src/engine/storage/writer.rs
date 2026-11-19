@@ -2,7 +2,6 @@
 //! completion even if their observers disappear. Closing then joining drains I/O.
 use crate::engine::core::file_progress::FileProgress;
 
-use super::cache::{self, CacheView};
 use crate::engine::profile::{AdmissionError, MAX_UPLOAD_READS, Profile};
 use crate::engine::torrent::{Persistence, telemetry::StorageStatus};
 use crate::engine::{
@@ -43,7 +42,6 @@ enum ReadResult {
         index: u32,
         offset: u32,
         length: u32,
-        start: u32,
         bytes: io::Result<Vec<u8>>,
     },
     Leaves {
@@ -152,7 +150,6 @@ impl Writer {
         let (commands, mut incoming) = mpsc::channel(capacity);
         let (results, outputs) = mpsc::channel(8);
         let (ready_tx, ready) = oneshot::channel();
-        let view = CacheView::default();
         let cancel_recovery = Arc::new(AtomicBool::new(false));
         let canceled = cancel_recovery.clone();
         let cancel_changed = Arc::new(Notify::new());
@@ -341,32 +338,23 @@ impl Writer {
                             None
                         }
                         Command::Read(index, offset, length) => {
-                            let window = meta.layout().piece_range(index).and_then(|range| {
-                                cache::window((range.end - range.start) as usize, profile.cache_bytes, offset, length)
-                            }).filter(|_| has(&verified, index));
-                            let available = window.is_some();
-                            let block = view.block(index, offset, length)?;
-                            if let Some(window) = window {
-                                if block.is_none() {
-                                    let storage = storage.clone();
-                                    reads.spawn_blocking(move || {
-                                        let bytes = storage.read(index, window.start as u32, window.len());
-                                        ReadResult::Block { index, offset, length, start: window.start as u32, bytes }
-                                    });
-                                    continue;
-                                }
-                            } else {
-                                // Availability may change while uploads are queued.
-                                // Reject this load, not the whole storage owner.
-                                tracing::trace!(index, offset, length, "upload_read_rejected");
+                            if meta.layout().piece_range(index).is_some_and(|r| {
+                                length != 0 && u64::from(offset) + u64::from(length) <= r.end - r.start
+                            }) && has(&verified, index) {
+                                let storage = storage.clone();
+                                reads.spawn_blocking(move || {
+                                    let bytes = storage.read(index, offset, length as usize);
+                                    ReadResult::Block { index, offset, length, bytes }
+                                });
+                                continue;
                             }
-                            Some(Output::Read { index, offset, length, block: block.filter(|_| available).map(|b| SharedBlock::from_shared(b.bytes, b.range)) })
+                            // Availability may change while uploads are queued.
+                            tracing::trace!(index, offset, length, "upload_read_rejected");
+                            Some(Output::Read { index, offset, length, block: None })
                         }
-                        Command::ReadDone(ReadResult::Block { index, offset, length, start, bytes }) => {
-                            view.insert(index, start, bytes?, profile.cache_bytes)?;
-                            // Own the result before another load can evict its window.
-                            let block = view.block(index, offset, length)?.expect("loaded upload window");
-                            Some(Output::Read { index, offset, length, block: Some(SharedBlock::from_shared(block.bytes, block.range)) })
+                        Command::ReadDone(ReadResult::Block { index, offset, length, bytes }) => {
+                            let block = SharedBlock::from_shared(Arc::new(bytes?), 0..length as usize);
+                            Some(Output::Read { index, offset, length, block: Some(block) })
                         }
                         Command::Leaves(id, request, piece) => {
                             assert!(has(&verified, piece), "verified leaf read");

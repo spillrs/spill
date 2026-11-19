@@ -26,7 +26,6 @@ async fn discovery_accepts_new_contacts_after_4096_known_addresses() {
         DaemonConfig {
             utp: Some(true),
             peers: Some(33),
-            cache_bytes: None,
             write_queue_bytes: None,
             active_downloads: 4,
             active_seeds: 16,

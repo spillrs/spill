@@ -109,6 +109,7 @@ pub(in crate::engine) enum Networking {
     Recheck,
 }
 pub(in crate::engine) struct Network {
+    pub(in crate::engine) seed_files: Arc<crate::engine::provisioning::seed_files::Pool>,
     pub(in crate::engine) peer_slots: Arc<tokio::sync::Semaphore>,
     pub(in crate::engine) incoming:
         Arc<std::sync::Mutex<crate::engine::session::incoming::Incoming>>,

@@ -226,6 +226,10 @@ impl PayloadPaths {
         }
         Ok(Some(files))
     }
+    pub(super) fn open_seed_file(&self, root: &File, index: usize) -> io::Result<File> {
+        let path = &self.paths[index];
+        read_only_file(&parent(root, path, false)?, filename(path))
+    }
     pub(in crate::engine) fn finish_at(&self, payload: &File, index: u32) -> io::Result<()> {
         let path = self
             .paths

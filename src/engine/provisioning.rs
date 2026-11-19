@@ -12,6 +12,7 @@ use verify::{check_canceled, verify_content_cancellable};
 mod file;
 mod named;
 pub(in crate::engine) mod paths;
+pub(in crate::engine) mod seed_files;
 use paths::PayloadPaths;
 
 pub struct NamedDestination;

@@ -68,7 +68,9 @@ short hash to distinguish them. Remaining path collisions are rejected.
 
 - If **all** of a torrent's files already exist at the destination, spill
   verifies them and seeds them without downloading. These adopted files are
-  treated as read-only: spill never writes to or deletes them.
+  treated as read-only: spill never writes to or deletes them. Keep them unchanged
+  while seeding. spill checks a file’s identity and timestamps when reopening it
+  for upload. If they changed, the torrent stops serving and needs rechecking.
 - If only **some** of them exist, or a directory sits where a file should go,
   the add fails with `file already exists; choose another output directory`.
   spill never overwrites files it didn't create.

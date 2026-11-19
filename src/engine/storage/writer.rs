@@ -84,6 +84,7 @@ struct Jobs {
     inline: Option<JoinHandle<io::Result<()>>>,
     fingerprint: Option<JoinHandle<io::Result<Vec<u8>>>>,
     changed: Option<JoinHandle<io::Result<Vec<u32>>>>,
+    seed_storage: Option<JoinHandle<io::Result<FileStorage>>>,
     layers: Option<JoinHandle<io::Result<Option<OwnedMetainfo>>>>,
     recovery: JoinSet<(u32, io::Result<Option<bool>>)>,
     hashes: JoinSet<io::Result<(u32, bool)>>,
@@ -94,6 +95,7 @@ impl Jobs {
         let mut result = crate::engine::join_blocking(&mut self.inline).await;
         result = result.and(crate::engine::join_blocking(&mut self.fingerprint).await);
         result = result.and(crate::engine::join_blocking(&mut self.changed).await);
+        result = result.and(crate::engine::join_blocking(&mut self.seed_storage).await);
         result = result.and(crate::engine::join_blocking(&mut self.layers).await);
         while let Some(job) = self.recovery.join_next().await {
             result = result.and(job.map_err(io::Error::other).and_then(
@@ -158,7 +160,7 @@ impl Writer {
         let changed = capacity_changed.clone();
         // Immutable descriptors are shared only with owned blocking jobs. The
         // writer awaits each mutation before starting the next command batch.
-        let storage = Arc::new(storage);
+        let mut storage = Arc::new(storage);
         let checkpoint: Arc<dyn Fn(Vec<u8>) -> io::Result<()> + Send + Sync> =
             persistence.checkpoint.expect("writer checkpoint").into();
         let resolved: Arc<dyn Fn(OwnedMetainfo) -> io::Result<()> + Send + Sync> = persistence
@@ -185,6 +187,16 @@ impl Writer {
                     // remain subject to the previous fingerprint on the next run.
                     return Ok(());
                 };
+                if storage.has_seed_pool()
+                    && verified.iter().map(|b| b.count_ones()).sum::<u32>() == meta.layout().piece_count()
+                {
+                    let mut seed = Arc::into_inner(storage).expect("recovery jobs joined");
+                    operation(&observed, "seed_file_pool");
+                    storage = Arc::new(crate::engine::run_blocking(&mut jobs.seed_storage, move || {
+                        seed.pool_seed_files()?;
+                        Ok(seed)
+                    }).await?);
+                }
                 let Jobs { inline, fingerprint, hashes, reads, layers, .. } = &mut *jobs;
                 let mut live = live::Live::new(&meta);
                 let mut files = FileProgress::new(&meta, &verified);

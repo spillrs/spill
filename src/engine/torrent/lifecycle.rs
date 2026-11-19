@@ -231,7 +231,7 @@ pub(super) async fn run(
         }
     })
     .await;
-    let Some(storage) = prepared? else {
+    let Some(mut storage) = prepared? else {
         return stopped();
     };
     let (resume, completed_announces) = {
@@ -251,6 +251,9 @@ pub(super) async fn run(
     }
     let recovery = context.recovery.clone();
     let checkpoint = options.persistence.checkpoint;
+    if let Networking::Online(network) = &context.networking {
+        storage.set_seed_pool(network.seed_files.clone());
+    }
     resources.runtime.writer = Some(Writer::spawn(
         storage,
         meta.clone(),

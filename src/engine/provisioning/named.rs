@@ -1,5 +1,5 @@
 //! Named payloads whose relative paths and resume are retained by the caller.
-//! Payload leases last with the sink; removal is restricted to recorded paths.
+//! Removal is restricted to recorded paths.
 use super::*;
 
 impl NamedDestination {
@@ -82,7 +82,7 @@ impl NamedDestination {
             paths.reject_existing(&root, meta.layout())?;
             return Ok(None);
         };
-        Self::finish_read_only(root, meta, files, None, true, &canceled).map(Some)
+        Self::finish_read_only(root, paths, meta, files, None, true, &canceled).map(Some)
     }
     /// Reopen an existing binding without hashing. This does NOT grant piece
     /// availability: the caller must run fingerprint-based storage recovery (or
@@ -111,14 +111,15 @@ impl NamedDestination {
             let files = paths
                 .complete_files(&root, meta.layout())?
                 .ok_or_else(|| invalid("seed payload is incomplete"))?;
-            return Self::finish_read_only(root, meta, files, binding, verify, canceled);
+            return Self::finish_read_only(root, paths, meta, files, binding, verify, canceled);
         }
         let record = Self::check_binding(meta, binding, false)?;
         let files = paths.files_at(&root, meta.layout(), binding.is_none())?;
         Ok(FileStorage::named(meta.clone(), files, root)?.with_binding(record, None))
     }
     fn finish_read_only(
-        _root: File,
+        root: File,
+        paths: PayloadPaths,
         meta: &OwnedMetainfo,
         mut files: Vec<Option<File>>,
         binding: Option<&DestinationBinding>,
@@ -130,12 +131,11 @@ impl NamedDestination {
             lock(file)?;
         }
         let record = Self::check_binding(meta, binding, true)?;
+        let identities = FileStorage::seed_identities(&files)?;
         let verified_resume = if verify {
-            let before = FileStorage::fingerprint_files(files.iter().filter_map(Option::as_ref))?;
             verify_content_cancellable(meta, &mut files, canceled)?;
             check_canceled(canceled)?;
-            let after = FileStorage::fingerprint_files(files.iter().filter_map(Option::as_ref))?;
-            if before != after {
+            if identities != FileStorage::seed_identities(&files)? {
                 return Err(invalid("seed payload changed during verification"));
             }
             let count = meta.layout().piece_count();
@@ -145,12 +145,16 @@ impl NamedDestination {
             {
                 *last <<= 8 - count % 8;
             }
-            let resume = crate::protocol::resume::encode(meta, &bits, &after)?;
+            let fingerprint = FileStorage::seed_fingerprint(&identities);
+            let resume = crate::protocol::resume::encode(meta, &bits, &fingerprint)?;
             Some(resume)
         } else {
             None
         };
-        Ok(FileStorage::read_only(meta.clone(), files)?.with_binding(record, verified_resume))
+        Ok(
+            FileStorage::read_only(meta.clone(), files, root, paths, identities)?
+                .with_binding(record, verified_resume),
+        )
     }
     fn check_binding(
         meta: &OwnedMetainfo,

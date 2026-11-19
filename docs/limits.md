@@ -82,10 +82,12 @@ when the connection closes or disables PEX.
 - **Memory**: each running torrent reserves `write_queue_bytes` (16 MiB by default)
   for queued writes. Uploads rely on the OS file cache. In-flight blocks and peer
   buffers are additional; the reservation is not a process memory limit.
-- **Open files**: spill keeps every file of a running torrent open while it
-  runs. A torrent with 100,000 files uses about 100,000 file descriptors. The
-  daemon raises its soft descriptor limit to the hard limit at startup on
-  Linux. On macOS it uses the smaller of the hard limit and
+- **Open files**: fully verified, adopted seeds share a pool of up to 64 open
+  payload files per session, plus a directory handle per seed. Initial verification
+  and recovery still open the payload files together, and writable torrents keep
+  their files open. These paths can use about 100,000 descriptors for a torrent
+  with 100,000 files. The daemon raises its soft descriptor limit at startup on
+  Linux to the hard limit. On macOS it uses the smaller of the hard limit and
   `kern.maxfilesperproc`; see [Troubleshooting](troubleshooting.md#macos-file-descriptor-limit).
 - **Threads**: one async thread runs the daemon; disk I/O and hashing run on a
   blocking thread pool.
@@ -121,5 +123,5 @@ and per-run notes before drawing comparisons.
   2.1.2.0 on a controlled network; see [Scope](index.md#scope) and
   [v2 and hybrid torrents](v2.md#compatibility). Web-seed checks do not cover
   public-swarm capacity or HTTPS certificate interoperability.
-- Files of a running torrent stay open; torrents with very many files are
-  costly (see above).
+- Initial verification and writable storage can still require many open files
+  (see above).

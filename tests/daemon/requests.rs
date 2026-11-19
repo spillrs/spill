@@ -5,6 +5,100 @@ use sha1::Digest;
 use std::time::Duration;
 
 #[tokio::test]
+async fn adopted_seed_rejects_a_replaced_file_after_eviction() {
+    use crate::common::multifile_metainfo;
+    use spill::protocol::peer::message::{BlockRequest, Message};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let root = Temp::new();
+    let payload = root.0.join("downloads/test");
+    std::fs::create_dir_all(&payload).unwrap();
+    let names: Vec<_> = (0..65).map(|i| format!("file-{i:02}")).collect();
+    let files: Vec<_> = names
+        .iter()
+        .map(|name| (name.as_str(), b"good".as_slice(), false))
+        .collect();
+    for name in &names {
+        std::fs::write(payload.join(name), b"good").unwrap();
+    }
+    let meta = multifile_metainfo("", &files);
+    let hash = spill::engine::profile::Profile::DEFAULT
+        .parse_owned(&meta)
+        .unwrap()
+        .info_hash()
+        .wire_key();
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            web_seeds: false,
+            ..Default::default()
+        },
+    )
+    .await;
+    let id = daemon.add(&meta, None).await;
+    daemon.state(&id, "seeding").await;
+    let health = daemon.call(json!({"op":"health"})).await;
+    let address = health["listen"].as_str().unwrap();
+    let request = |index| {
+        let mut bytes = [0; 17];
+        Message::Request(BlockRequest {
+            index,
+            begin: 0,
+            length: 4,
+        })
+        .encode(&mut bytes, 16384)
+        .unwrap();
+        bytes
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut peer = raw_peer(address, hash, 81).await;
+        peer.write_all(&[0, 0, 0, 1, 2]).await.unwrap();
+        while !matches!(
+            Message::decode(&peer_frame(&mut peer).await, 16384)
+                .unwrap()
+                .0,
+            Message::Unchoke
+        ) {}
+        for index in 0..names.len() as u32 {
+            peer.write_all(&request(index)).await.unwrap();
+            loop {
+                let frame = peer_frame(&mut peer).await;
+                if let Message::Piece {
+                    index: received,
+                    block,
+                    ..
+                } = Message::decode(&frame, 16384).unwrap().0
+                {
+                    assert_eq!((received, block), (index, b"good".as_slice()));
+                    break;
+                }
+            }
+        }
+        let first = payload.join(&names[0]);
+        // Prove the original handle was evicted, then keep the old inode alive
+        // so it cannot be recycled for the equal-sized replacement.
+        let lease = std::fs::File::open(&first).unwrap();
+        rustix::fs::flock(&lease, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+        std::fs::rename(&first, payload.join("old")).unwrap();
+        std::fs::write(&first, b"evil").unwrap();
+        peer.write_all(&request(0)).await.unwrap();
+        let mut trailing = Vec::new();
+        let result = peer.read_to_end(&mut trailing).await;
+        assert!(
+            result.is_ok() || result.unwrap_err().kind() == std::io::ErrorKind::ConnectionReset
+        );
+        assert!(
+            !trailing
+                .windows(4)
+                .any(|bytes| bytes == b"evil" || bytes == b"good")
+        );
+    })
+    .await
+    .expect("evicted seed upload should fail rather than serve a replacement");
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn overlapping_uploads_in_opposite_orders_do_not_deadlock() {
     use spill::protocol::peer::message::{BlockRequest, Message};
     use tokio::io::AsyncWriteExt;

@@ -1,15 +1,14 @@
 //! Confined filesystem block storage. Sparse file creation and path authority are
 //! supplied by provisioning. Operations are synchronous; Writer dispatches them to
 //! the blocking pool. Only the completion barrier syncs payload data.
-use super::FileStorage;
+use super::{
+    FileStorage,
+    seed_files::{Identity, Pool, SeedFiles},
+};
 use crate::engine::core::SharedBlock;
 use crate::engine::provisioning::paths::PayloadPaths;
 use crate::protocol::metainfo::{FileKind, OwnedMetainfo};
-use std::{
-    fs::File,
-    io,
-    os::unix::fs::{FileExt, MetadataExt},
-};
+use std::{fs::File, io, os::unix::fs::FileExt};
 
 const FINGERPRINT_BYTES: usize = 40;
 
@@ -23,6 +22,9 @@ pub(super) struct Files {
     entries: Vec<Extent>,
     payload_root: Option<File>,
     paths: Option<PayloadPaths>,
+    seed_identities: Option<Vec<Option<Identity>>>,
+    seed_pool: Option<std::sync::Arc<Pool>>,
+    pooled: Option<SeedFiles>,
 }
 impl Files {
     /// Entries overlapping `[start, end)`. Entries are contiguous and sorted by
@@ -54,8 +56,70 @@ impl FileStorage {
     /// Caller-opened exact-sized, regular files, in metainfo order (None for
     /// padding). Hardlinks are allowed. Fingerprints detect content changes at
     /// startup/resume; callers must not modify payloads during active use.
-    pub(super) fn read_only(meta: OwnedMetainfo, files: Vec<Option<File>>) -> io::Result<Self> {
-        Self::new(meta, files, true)
+    pub(super) fn read_only(
+        meta: OwnedMetainfo,
+        files: Vec<Option<File>>,
+        root: File,
+        paths: PayloadPaths,
+        identities: Vec<Option<Identity>>,
+    ) -> io::Result<Self> {
+        let mut storage = Self::new(meta, files, true)?;
+        storage.files.payload_root = Some(root);
+        storage.files.paths = Some(paths);
+        storage.files.seed_identities = Some(identities);
+        Ok(storage)
+    }
+    pub(in crate::engine) fn set_seed_pool(&mut self, pool: std::sync::Arc<Pool>) {
+        if self.read_only {
+            self.files.seed_pool = Some(pool);
+        }
+    }
+    pub(in crate::engine) fn has_seed_pool(&self) -> bool {
+        self.files.seed_pool.is_some()
+    }
+    pub(in crate::engine) fn pool_seed_files(&mut self) -> io::Result<()> {
+        let files = &mut self.files;
+        let identities = files.seed_identities.take().expect("seed identities");
+        for (entry, identity) in files.entries.iter().zip(&identities) {
+            if entry
+                .file
+                .as_ref()
+                .map(|file| file.metadata().map(|m| Identity::from_metadata(&m)))
+                .transpose()?
+                != *identity
+            {
+                return Err(io::Error::other(
+                    "seed payload changed during recovery; recheck required",
+                ));
+            }
+        }
+        files.pooled = Some(SeedFiles::new(
+            files.seed_pool.take().expect("seed pool"),
+            files.payload_root.take().expect("seed root"),
+            files.paths.take().expect("seed paths"),
+            identities,
+        ));
+        for entry in &mut files.entries {
+            entry.file = None;
+        }
+        Ok(())
+    }
+    pub(super) fn seed_identities(files: &[Option<File>]) -> io::Result<Vec<Option<Identity>>> {
+        files
+            .iter()
+            .map(|file| {
+                file.as_ref()
+                    .map(|file| file.metadata().map(|m| Identity::from_metadata(&m)))
+                    .transpose()
+            })
+            .collect()
+    }
+    pub(super) fn seed_fingerprint(identities: &[Option<Identity>]) -> Vec<u8> {
+        identities
+            .iter()
+            .flatten()
+            .flat_map(|i| i.fingerprint)
+            .collect()
     }
     pub(in crate::engine) fn named(
         meta: OwnedMetainfo,
@@ -101,6 +165,9 @@ impl FileStorage {
                 entries,
                 payload_root: None,
                 paths: None,
+                seed_identities: None,
+                seed_pool: None,
+                pooled: None,
             },
             read_only,
             binding: None,
@@ -119,13 +186,7 @@ impl FileStorage {
             let m = file.metadata().map_err(|error| {
                 io::Error::new(error.kind(), format!("fingerprint payload file: {error}"))
             })?;
-            out.extend_from_slice(&m.len().to_le_bytes());
-            out.extend_from_slice(&m.mtime().to_le_bytes());
-            out.extend_from_slice(&m.mtime_nsec().to_le_bytes());
-            // Replacement files must be rechecked even when a copy tool
-            // preserves their size and modification time.
-            out.extend_from_slice(&m.dev().to_le_bytes());
-            out.extend_from_slice(&m.ino().to_le_bytes());
+            out.extend_from_slice(&Identity::from_metadata(&m).fingerprint);
         }
         Ok(out)
     }
@@ -208,13 +269,15 @@ impl FileStorage {
             let e = &self.files.entries[index];
             let a = start.max(e.offset);
             let b = end.min(e.offset + e.length);
-            if a < b
-                && let Some(file) = &e.file
-            {
-                file.read_exact_at(
-                    &mut bytes[(a - start) as usize..(b - start) as usize],
-                    a - e.offset,
-                )
+            if a < b {
+                let bytes = &mut bytes[(a - start) as usize..(b - start) as usize];
+                if let Some(seed) = &self.files.pooled {
+                    seed.read(index, bytes, a - e.offset)
+                } else if let Some(file) = &e.file {
+                    file.read_exact_at(bytes, a - e.offset)
+                } else {
+                    Ok(())
+                }
                 .map_err(|error| file_error(error, "read", index))?;
             }
         }
@@ -250,6 +313,10 @@ impl FileStorage {
         Ok(())
     }
     pub(in crate::engine) fn fingerprint(&self) -> io::Result<Vec<u8>> {
+        if let Some(seed) = &self.files.pooled {
+            // Checkpoint the verified identity, never bless a replacement on disk.
+            return Ok(Self::seed_fingerprint(&seed.identities));
+        }
         Self::fingerprint_files(self.files.entries.iter().filter_map(|e| e.file.as_ref()))
     }
     /// Piece indices whose stored bytes may have changed, sorted without duplicates.

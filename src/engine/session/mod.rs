@@ -401,6 +401,7 @@ struct Shared {
     bandwidth: crate::engine::bandwidth::Budget,
     rechecks: Arc<Semaphore>,
     peer_slots: Arc<Semaphore>,
+    seed_files: Arc<crate::engine::provisioning::seed_files::Pool>,
     address: SocketAddr,
     incoming: Arc<Mutex<incoming::Incoming>>,
     utp_enabled: bool,
@@ -570,6 +571,7 @@ impl Shared {
             bandwidth: crate::engine::bandwidth::Budget::default(),
             rechecks: Arc::new(Semaphore::new(RECHECK_CONCURRENCY)),
             peer_slots: Arc::new(Semaphore::new(limits.peers.min(Semaphore::MAX_PERMITS))),
+            seed_files: Arc::default(),
             address,
             incoming: Arc::default(),
             utp_enabled: false,
@@ -771,6 +773,7 @@ impl Session {
             Networking::Online(Network {
                 incoming: shared.incoming.clone(),
                 peer_slots: shared.peer_slots.clone(),
+                seed_files: shared.seed_files.clone(),
                 advertised_port: shared.advertised_port.subscribe(),
                 mapping: shared.mapping_status.clone(),
                 sockets,

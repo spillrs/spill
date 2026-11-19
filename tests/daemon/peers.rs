@@ -175,6 +175,65 @@ async fn tracker_dials_do_not_duplicate_an_inbound_peer_identity() {
 }
 
 #[tokio::test]
+async fn session_peer_cap_is_independent_of_seed_slots() {
+    use spill::protocol::peer::Handshake;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+    };
+
+    let root = Temp::new();
+    std::fs::create_dir_all(root.0.join("downloads")).unwrap();
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            session_peers: Some(1),
+            active_seeds: 2,
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut keys = Vec::new();
+    for (name, payload) in [("a", b"abc"), ("b", b"def")] {
+        std::fs::write(root.0.join("downloads").join(name), payload).unwrap();
+        let bytes = seed_metainfo(name, payload, None);
+        let id = daemon.add(&bytes, None).await;
+        daemon.state(&id, "seeding").await;
+        let key = spill::engine::profile::Profile::DEFAULT
+            .parse_owned(&bytes)
+            .unwrap()
+            .info_hash()
+            .wire_key();
+        keys.push(key);
+    }
+    let health = daemon.call(json!({"op":"health"})).await;
+    let address = health["listen"].as_str().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let _first = raw_peer(address, keys[0], 81).await;
+        let mut second = TcpStream::connect(address).await.unwrap();
+        second
+            .write_all(
+                &Handshake {
+                    reserved: [0; 8],
+                    info_hash: keys[1],
+                    peer_id: [82; 20],
+                }
+                .encode(),
+            )
+            .await
+            .unwrap();
+        match second.read(&mut [0]).await {
+            Ok(0) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => (),
+            result => panic!("second peer got through the session cap: {result:?}"),
+        }
+    })
+    .await
+    .expect("session peer cap test timed out");
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn inbound_handshake_bursts_fill_available_peer_slots() {
     use spill::protocol::peer::Handshake;
     use std::sync::Arc;

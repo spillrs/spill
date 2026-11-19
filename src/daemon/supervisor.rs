@@ -56,7 +56,7 @@ impl Supervisor {
         let total = config.active_downloads + config.active_seeds;
         let limits = spill::engine::session::Limits {
             torrents: total,
-            peers: total * config.peers,
+            peers: config.session_peers.unwrap_or(total * config.peers),
             payload_bytes: total * config.write_queue_bytes,
             ..Default::default()
         };

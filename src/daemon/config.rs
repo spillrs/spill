@@ -23,6 +23,7 @@ pub struct Config {
     #[serde(deserialize_with = "mapping_gateway")]
     pub port_mapping_gateway: Option<spill::engine::session::port_map::Gateway>,
     pub peers: usize,
+    pub session_peers: Option<usize>,
     pub write_queue_bytes: usize,
     pub active_downloads: usize,
     pub active_seeds: usize,
@@ -76,6 +77,7 @@ impl Default for Config {
             port_mapping: true,
             port_mapping_gateway: None,
             peers: Profile::DEFAULT.peers,
+            session_peers: None,
             write_queue_bytes: Profile::DEFAULT.write_queue_bytes,
             active_downloads: 4,
             active_seeds: 16,
@@ -104,6 +106,15 @@ impl Config {
         config.defaults.validate()?;
         spill::engine::session::dht::validate_routers(&config.dht_bootstrap)?;
         config.profile().validate()?;
+        if config
+            .session_peers
+            .is_some_and(|n| !(1..=262_144).contains(&n))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session_peers must be between 1 and 262144",
+            ));
+        }
         if config.active_downloads > 64
             || config.active_seeds > 64
             || config.active_downloads + config.active_seeds == 0

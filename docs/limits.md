@@ -33,7 +33,7 @@ Daemon-wide limits:
 |---|---|
 | Running torrents (`active_downloads` + `active_seeds`) | 64 |
 | Connections per torrent (`peers`) | 4096 (default 50) |
-| Running peer-wire connections per session | (`active_downloads` + `active_seeds`) × `peers` |
+| Running peer-wire connections per session | `session_peers` (defaults to the combined running slots × `peers`) |
 | Peers uploaded to at once, per torrent | 8 |
 | Config file size | 64 KiB |
 

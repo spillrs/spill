@@ -143,6 +143,91 @@ async fn padding_does_not_consume_the_data_file_admission_limit() {
 }
 
 #[tokio::test]
+async fn an_unready_seed_does_not_hold_the_listener_handshake_slot() {
+    use spill::protocol::peer::{HANDSHAKE_LEN, Handshake};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+    };
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let root = Temp::new();
+        let session = Session::bind(
+            NetworkOptions {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                utp: false,
+                ..Default::default()
+            },
+            Limits {
+                pending_handshakes: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let options = |name| {
+            std::fs::write(root.0.join(name), b"abc").unwrap();
+            let meta = Profile::default()
+                .parse_owned(&seed_metainfo(name, b"abc", None))
+                .unwrap();
+            TorrentOptions::new(
+                TorrentSource::Metainfo(meta),
+                Destination::Adopt(root.0.clone()),
+            )
+        };
+        let mut ready = session.admit(options("ready")).unwrap();
+        while !ready.snapshot().progress.ready {
+            assert!(ready.changed().await);
+        }
+        let (entered, entering) = tokio::sync::oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let entered = std::sync::Mutex::new(Some(entered));
+        let waiting = std::sync::Mutex::new(waiting);
+        let mut slow = options("slow");
+        slow.persistence.binding = Some(Box::new(move |_| {
+            entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            waiting.lock().unwrap().recv().unwrap();
+            Ok(())
+        }));
+        let slow = session.admit(slow).unwrap();
+        entering.await.unwrap();
+        let hello = |key, id| {
+            Handshake {
+                reserved: [0; 8],
+                info_hash: key,
+                peer_id: [id; 20],
+            }
+            .encode()
+        };
+        let mut queued = TcpStream::connect(session.local_addr()).await.unwrap();
+        while session.network_status().await.pending_handshakes == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        queued
+            .write_all(&hello(slow.info_hash().wire_key(), 81))
+            .await
+            .unwrap();
+        while session.network_status().await.pending_handshakes != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let mut live = TcpStream::connect(session.local_addr()).await.unwrap();
+        live.write_all(&hello(ready.info_hash().wire_key(), 82))
+            .await
+            .unwrap();
+        let mut reply = [0; HANDSHAKE_LEN];
+        live.read_exact(&mut reply).await.unwrap();
+        assert_eq!(
+            Handshake::decode(&reply).unwrap().0.info_hash,
+            ready.info_hash().wire_key()
+        );
+        release.send(()).unwrap();
+        session.shutdown().await.unwrap();
+    })
+    .await
+    .expect("an unready seed must not block other torrents' handshakes");
+}
+
+#[tokio::test]
 async fn idle_torrents_share_one_live_peer_slot() {
     use spill::{
         engine::session::PeerEncryption,

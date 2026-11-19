@@ -131,16 +131,8 @@ impl Default for Limits {
     }
 }
 pub(in crate::engine) enum Inbound {
-    Tcp(
-        std::net::TcpStream,
-        crate::engine::peer_io::Prepared,
-        HandshakePermit,
-    ),
-    Utp(
-        utp::Stream,
-        crate::engine::peer_io::Prepared,
-        HandshakePermit,
-    ),
+    Tcp(std::net::TcpStream, crate::engine::peer_io::Prepared),
+    Utp(utp::Stream, crate::engine::peer_io::Prepared),
 }
 impl Inbound {
     pub(in crate::engine) fn into_stream(
@@ -151,10 +143,10 @@ impl Inbound {
     )> {
         use crate::engine::peer_io::Stream;
         match self {
-            Self::Tcp(socket, prepared, _permit) => {
+            Self::Tcp(socket, prepared) => {
                 Ok((Stream::Tcp(TcpStream::from_std(socket)?), prepared))
             }
-            Self::Utp(socket, prepared, _permit) => Ok((Stream::Utp(socket), prepared)),
+            Self::Utp(socket, prepared) => Ok((Stream::Utp(socket), prepared)),
         }
     }
 }
@@ -188,7 +180,7 @@ struct Pending {
     counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
     limits: Limits,
 }
-pub(in crate::engine) struct HandshakePermit {
+struct HandshakePermit {
     pending: Pending,
     ip: IpAddr,
 }
@@ -759,7 +751,6 @@ impl Session {
                 "session reservation limit",
             ));
         }
-        // Queued sockets retain their session handshake permits until consumed.
         let (sender, sockets) = mpsc::channel(profile.peers);
         let bandwidth = crate::engine::bandwidth::Throttle::new(
             shared.bandwidth.clone(),
@@ -926,6 +917,8 @@ async fn route(
                 };
                 let routes = routes.clone();
                 pending.spawn(async move {
+                    // A recovering torrent must not hold listener permits in its inbox.
+                    let _permit = permit;
                     let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
                     let prepare = async {
                         let (prefix, mut socket) = peek::<20>(socket).await?;
@@ -950,7 +943,7 @@ async fn route(
                             if let Some(sender) = sender {
                                 match socket.into_std() {
                                     Ok(socket) => {
-                                        if let Err(error) = sender.try_send(Inbound::Tcp(socket, crate::engine::peer_io::Prepared { negotiated, deadline }, permit)) {
+                                        if let Err(error) = sender.try_send(Inbound::Tcp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
                                             tracing::trace!(transport="tcp",reason=if matches!(error,mpsc::error::TrySendError::Full(_)){"torrent_inbox_full"}else{"torrent_stopped"},"inbound_rejected");
                                         }
                                     }
@@ -991,6 +984,8 @@ async fn route_utp(
                 let Some((mut socket, permit)) = accepted else { break Ok(()); };
                 let routes = routes.clone();
                 pending.spawn(async move {
+                    // A recovering torrent must not hold listener permits in its inbox.
+                    let _permit = permit;
                     let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
                     let prepare = async {
                         let mut prefix = [0; 20];
@@ -1017,11 +1012,11 @@ async fn route_utp(
                         Ok(Ok((hash, negotiated))) => {
                             let sender = routes.lock().unwrap().get(&hash).cloned();
                             if let Some(sender) = sender {
-                                match sender.try_send(Inbound::Utp(socket, crate::engine::peer_io::Prepared { negotiated, deadline }, permit)) {
+                                match sender.try_send(Inbound::Utp(socket, crate::engine::peer_io::Prepared { negotiated, deadline })) {
                                     Ok(()) => return,
                                     Err(error) => {
                                         tracing::trace!(transport="utp",reason=if matches!(error,mpsc::error::TrySendError::Full(_)){"torrent_inbox_full"}else{"torrent_stopped"},"inbound_rejected");
-                                        let Inbound::Utp(socket, _, _permit) = error.into_inner() else { unreachable!() };
+                                        let Inbound::Utp(socket, _) = error.into_inner() else { unreachable!() };
                                         socket.reset();
                                         return;
                                     }

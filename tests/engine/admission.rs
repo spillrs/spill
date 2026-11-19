@@ -250,7 +250,7 @@ async fn idle_torrents_share_one_live_peer_slot() {
                 ..Default::default()
             },
             Limits {
-                torrents: 2,
+                torrents: 3,
                 peers: 1,
                 ..Default::default()
             },
@@ -295,6 +295,17 @@ async fn idle_torrents_share_one_live_peer_slot() {
             assert!(first.changed().await);
         }
 
+        let waiting = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut third = admit("third", b"ghi", vec![waiting.local_addr().unwrap()]);
+        while !third.snapshot().progress.ready {
+            assert!(third.changed().await);
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(600), waiting.accept())
+                .await
+                .is_err()
+        );
+
         let second_key = second.info_hash().wire_key();
         let mut rejected = TcpStream::connect(session.local_addr()).await.unwrap();
         rejected
@@ -311,6 +322,8 @@ async fn idle_torrents_share_one_live_peer_slot() {
         while first.snapshot().progress.active_peers != 0 {
             assert!(first.changed().await);
         }
+        let (_resumed, _) = waiting.accept().await.unwrap();
+        third.stop().await.unwrap();
         let mut inbound = TcpStream::connect(session.local_addr()).await.unwrap();
         inbound.write_all(&handshake(second_key, 83)).await.unwrap();
         inbound.read_exact(&mut hello).await.unwrap();

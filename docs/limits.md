@@ -49,8 +49,9 @@ without starting an execution.
 Canonical peer replacement (BEP 40) may retain one waiting socket per torrent
 while the evicted peer task joins. The waiting socket starts no peer task until
 capacity is released. Running TCP and uTP peers share a session-wide limit;
-idle torrents do not reserve connection slots. Pending handshakes and dials
-have separate limits.
+idle torrents do not reserve connection slots, and no torrent is guaranteed a
+share. New outbound dials wait when the session is full. Pending listener
+handshakes and dials have separate limits.
 
 ## Holepunch coordination
 

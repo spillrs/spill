@@ -175,7 +175,7 @@ impl crate::engine::torrent::Network {
                 if *stop.borrow() {return Err(io::Error::new(io::ErrorKind::Interrupted,"metadata stopped"));}
                 progress.retain_peers(shell);
                 shell.resolve_negotiations(&mut contacts);
-                while shell.can_connect() && dials.ready() {
+                while shell.has_session_peer_capacity() && shell.can_connect() && dials.ready() {
                     let Some(entry)=contacts.candidate(|a, _|shell.rejects_contact(a), |a| shell.contact_priority(a))else{dials.withdraw();break};
                     let Some(address)=shell.contact(entry.address, false)?else{contacts.dial_completed(entry.address,None,false);break};
                     let utp = contacts.try_utp(address);
@@ -188,7 +188,7 @@ impl crate::engine::torrent::Network {
                     }
                     dial_keys.insert(address, (entry.hash, entry.source));
                 }
-                if !shell.can_connect(){dials.withdraw();}
+                if !shell.has_session_peer_capacity() || !shell.can_connect(){dials.withdraw();}
                 tokio::select! {
                     biased;
                     _=stop.changed()=>{},
@@ -215,8 +215,8 @@ impl crate::engine::torrent::Network {
                             contacts.dial_completed(event.address,event.transport(),event.utp_failed);
                             match event.result {
                                 Ok(socket)=>{
-                                    if !super::admission::attach_peer(progress, socket, crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), shell, source, options.log_peer_endpoints, None)? {
-                                        contacts.negotiated(event.address, crate::engine::session::dial::NegotiationOutcome::Failed);
+                                    if let Some(outcome) = super::admission::attach_peer(progress, socket, crate::engine::peer_io::Role::Outbound(key, event.methods, event.address), shell, source, options.log_peer_endpoints, None)? {
+                                        contacts.negotiated(event.address, outcome);
                                         shell.connect_failed(event.address, false)?;
                                     }
                                 }

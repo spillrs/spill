@@ -492,6 +492,9 @@ impl Shell {
         }
         Ok(())
     }
+    pub(super) fn has_session_peer_capacity(&self) -> bool {
+        self.peers.has_session_capacity()
+    }
     pub(in crate::engine) fn attach_peer(
         &mut self,
         socket: crate::engine::peer_io::Stream,

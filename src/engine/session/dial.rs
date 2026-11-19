@@ -190,6 +190,7 @@ enum ContactState {
 pub(in crate::engine) enum NegotiationOutcome {
     Success,
     Closed,
+    Deferred,
     Failed,
 }
 
@@ -448,7 +449,20 @@ impl Contacts {
     ) {
         let known = self.known.get_mut(&address).expect("negotiating contact");
         assert!(known.state == ContactState::Negotiating);
-        if matches!(outcome, NegotiationOutcome::Closed)
+        if matches!(outcome, NegotiationOutcome::Deferred) && known.source != "holepunch" {
+            known.state = ContactState::Queued;
+            known.transport = None;
+            self.queue.0.lock().unwrap().entries.push_back(Entry {
+                owner: self.owner,
+                address,
+                // Give any pending peer replacement time to finish before reconnecting.
+                due: Instant::now() + Duration::from_millis(250),
+                punch_until: None,
+                restore: None,
+                source: known.source,
+                hash: known.hash,
+            });
+        } else if matches!(outcome, NegotiationOutcome::Closed)
             && !known.retried
             && self.encryption != super::PeerEncryption::Required
         {

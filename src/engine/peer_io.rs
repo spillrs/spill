@@ -275,6 +275,10 @@ impl Peers {
         })
     }
 
+    pub(in crate::engine) fn has_session_capacity(&self) -> bool {
+        self.peer_slots.available_permits() != 0
+    }
+
     pub(in crate::engine) fn set_dht_enabled(&mut self, enabled: bool) {
         if enabled {
             self.local.reserved[7] |= 0x01;

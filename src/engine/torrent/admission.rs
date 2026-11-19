@@ -7,7 +7,7 @@ use super::{
 };
 use crate::engine::{
     peer_io::{PeerSocket, Prepared, Role, Stream},
-    session::dial::{ConnectionEvent, DialId},
+    session::dial::{ConnectionEvent, DialId, NegotiationOutcome},
 };
 use std::{collections::HashMap, io};
 use tokio::time::Instant;
@@ -52,7 +52,10 @@ impl Admission {
         transfer.drain_holepunches(queue);
         loop {
             let punch = queue.has_due_punch();
-            if !transfer.can_punch() || (!transfer.can_connect() && !punch) {
+            if !transfer.has_session_peer_capacity()
+                || !transfer.can_punch()
+                || (!transfer.can_connect() && !punch)
+            {
                 dials.withdraw();
                 break;
             }
@@ -110,7 +113,7 @@ impl Admission {
         let (source, hash) = self.sources.remove(&event.id).expect("admitted dial");
         match event.result {
             Ok(socket) => {
-                if !attach_peer(
+                if let Some(outcome) = attach_peer(
                     observer,
                     socket,
                     Role::Outbound(hash, event.methods, event.address),
@@ -119,10 +122,7 @@ impl Admission {
                     options.log_peer_endpoints,
                     None,
                 )? {
-                    contacts.negotiated(
-                        event.address,
-                        crate::engine::session::dial::NegotiationOutcome::Failed,
-                    );
+                    contacts.negotiated(event.address, outcome);
                     transfer.connect_failed(event.address, false)?;
                 }
             }
@@ -144,7 +144,7 @@ pub(super) fn attach_peer(
     source: &'static str,
     log_endpoint: bool,
     prepared: Option<Prepared>,
-) -> io::Result<bool> {
+) -> io::Result<Option<NegotiationOutcome>> {
     let address = socket.peer_addr().ok();
     let transport = socket.transport().as_str();
     let direction = if matches!(role, Role::Inbound) {
@@ -173,14 +173,18 @@ pub(super) fn attach_peer(
                     uploaded: 0,
                 },
             );
-            Ok(true)
+            Ok(None)
         }
         Err(error) => {
             if crate::engine::core::fault::is_local(&error) {
                 return Err(error);
             }
             trace!(source,transport,direction,endpoint=?address.filter(|_|log_endpoint),kind=?error.kind(),%error,"peer_rejected");
-            Ok(false)
+            Ok(Some(if error.kind() == io::ErrorKind::WouldBlock {
+                NegotiationOutcome::Deferred
+            } else {
+                NegotiationOutcome::Failed
+            }))
         }
     }
 }

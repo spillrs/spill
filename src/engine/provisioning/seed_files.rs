@@ -27,8 +27,6 @@ struct Entry {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Identity {
     pub(super) fingerprint: [u8; 40],
-    ctime: i64,
-    ctime_nsec: i64,
 }
 impl Identity {
     pub(super) fn from_metadata(m: &Metadata) -> Self {
@@ -42,11 +40,7 @@ impl Identity {
         ]) {
             *slot = value;
         }
-        Self {
-            fingerprint,
-            ctime: m.ctime(),
-            ctime_nsec: m.ctime_nsec(),
-        }
+        Self { fingerprint }
     }
 }
 
@@ -89,7 +83,7 @@ impl SeedFiles {
                 shard.pop_front();
             }
             let file = self.paths.open_seed_file(&self.root, index)?;
-            super::lock(&file)?;
+            super::lock_shared(&file)?;
             if Identity::from_metadata(&file.metadata()?) != identity {
                 return Err(io::Error::other("seed payload changed; recheck required"));
             }

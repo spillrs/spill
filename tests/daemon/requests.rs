@@ -5,7 +5,7 @@ use sha1::Digest;
 use std::time::Duration;
 
 #[tokio::test]
-async fn adopted_seed_rejects_a_replaced_file_after_eviction() {
+async fn adopted_seed_reopens_hardlinks_but_rejects_replacements_after_eviction() {
     use crate::common::multifile_metainfo;
     use spill::protocol::peer::message::{BlockRequest, Message};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -30,6 +30,7 @@ async fn adopted_seed_rejects_a_replaced_file_after_eviction() {
     let mut daemon = Daemon::start(
         &root.0,
         DaemonConfig {
+            active_seeds: 2,
             web_seeds: false,
             ..Default::default()
         },
@@ -59,22 +60,37 @@ async fn adopted_seed_rejects_a_replaced_file_after_eviction() {
                 .0,
             Message::Unchoke
         ) {}
-        for index in 0..names.len() as u32 {
-            peer.write_all(&request(index)).await.unwrap();
-            loop {
-                let frame = peer_frame(&mut peer).await;
-                if let Message::Piece {
-                    index: received,
-                    block,
-                    ..
-                } = Message::decode(&frame, 16384).unwrap().0
-                {
-                    assert_eq!((received, block), (index, b"good".as_slice()));
-                    break;
+        let first = payload.join(&names[0]);
+        let reader = std::fs::File::open(&first).unwrap();
+        for pass in 0..2 {
+            for index in 0..names.len() as u32 {
+                peer.write_all(&request(index)).await.unwrap();
+                loop {
+                    let frame = peer_frame(&mut peer).await;
+                    if let Message::Piece {
+                        index: received,
+                        block,
+                        ..
+                    } = Message::decode(&frame, 16384).unwrap().0
+                    {
+                        assert_eq!((received, block), (index, b"good".as_slice()));
+                        break;
+                    }
+                }
+                if pass == 1 && index == 0 {
+                    let alias = daemon
+                        .add(&seed_metainfo("alias", b"good", None), None)
+                        .await;
+                    daemon.state(&alias, "seeding").await;
                 }
             }
+            if pass == 0 {
+                std::fs::hard_link(&first, root.0.join("downloads/alias")).unwrap();
+                rustix::fs::flock(&reader, rustix::fs::FlockOperation::NonBlockingLockShared)
+                    .unwrap();
+            }
         }
-        let first = payload.join(&names[0]);
+        drop(reader);
         // Prove the original handle was evicted, then keep the old inode alive
         // so it cannot be recycled for the equal-sized replacement.
         let lease = std::fs::File::open(&first).unwrap();

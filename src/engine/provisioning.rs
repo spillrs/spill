@@ -111,6 +111,9 @@ fn check_file(file: &File, length: u64) -> io::Result<()> {
 fn lock(file: &File) -> io::Result<()> {
     flock(file, FlockOperation::NonBlockingLockExclusive).map_err(Into::into)
 }
+fn lock_shared(file: &File) -> io::Result<()> {
+    flock(file, FlockOperation::NonBlockingLockShared).map_err(Into::into)
+}
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }

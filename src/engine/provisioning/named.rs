@@ -67,7 +67,7 @@ impl NamedDestination {
         Self::open_bound(root, meta, None, true, &canceled)
     }
     /// Probe final files without creating payloads, then verify once under the
-    /// leases retained by the returned sink.
+    /// shared leases on the payload files.
     pub(in crate::engine) fn adopt_complete_cancellable(
         root: File,
         meta: &OwnedMetainfo,
@@ -128,7 +128,7 @@ impl NamedDestination {
     ) -> io::Result<FileStorage> {
         for file in files.iter().flatten() {
             check_canceled(canceled)?;
-            lock(file)?;
+            lock_shared(file)?;
         }
         let record = Self::check_binding(meta, binding, true)?;
         let identities = FileStorage::seed_identities(&files)?;

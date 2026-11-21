@@ -564,7 +564,6 @@ impl Torrent {
                 }
             }
             Input::Settings(settings) => {
-                self.bandwidth.set_local(self.now, settings.bandwidth());
                 self.set_pex(settings.pex);
                 if !settings.dht {
                     self.dht_port = None;

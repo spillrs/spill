@@ -160,7 +160,8 @@ See [Troubleshooting](troubleshooting.md#where-are-the-logs) for systemd and mac
 
 These are the per-torrent settings. They are copied into each new torrent and
 can be changed per torrent later with `spill set ID key=value` or the web
-interface.
+interface. Rate-only changes take effect without restarting the torrent and are
+saved across daemon restarts.
 
 | Key | Default | Meaning |
 |---|---|---|

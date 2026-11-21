@@ -311,6 +311,7 @@ pub struct TorrentProgress {
 /// Dropping a handle does not stop its session-owned execution.
 #[derive(Clone)]
 pub struct TorrentHandle {
+    bandwidth: crate::engine::bandwidth::Throttle,
     reannounce: watch::Sender<()>,
     stop: watch::Sender<bool>,
     status: watch::Receiver<TorrentStatus>,
@@ -378,6 +379,19 @@ impl TorrentHandle {
             }
             return Err(outcome.incomplete("execution ended before metadata resolved"));
         }
+    }
+    /// Changes this execution's payload caps in bytes per second without restarting it.
+    /// Zero means unlimited at the torrent level; session limits still apply.
+    /// Downloads are charged when requests are sent, not when payload arrives.
+    /// This does not persist caps for a later execution.
+    pub fn set_bandwidth_limits(&self, download: u64, upload: u64) {
+        self.bandwidth.set_local(
+            tokio::time::Instant::now().into_std(),
+            crate::engine::bandwidth::Limits {
+                down: download,
+                up: upload,
+            },
+        );
     }
     pub fn reannounce(&self) {
         self.reannounce.send_replace(());
@@ -516,6 +530,7 @@ impl TorrentHandle {
         let inner_recovery = recovery.clone();
         let (start, installed) = tokio::sync::oneshot::channel();
         let resolution = retirement.clone();
+        let live_bandwidth = bandwidth.clone();
         let runtime = tokio::spawn(
             async move {
                 installed.await.expect("execution installed");
@@ -580,6 +595,7 @@ impl TorrentHandle {
                 metadata: metadata_receiver,
                 recovery,
                 inspection,
+                bandwidth: live_bandwidth,
                 reannounce,
                 stop,
                 status: observer,

@@ -230,7 +230,10 @@ paths differ from the original source paths. Source symlinks are followed during
 creation, but are not adopted as payload paths when seeding.
 
 Without `--json`, `get ID` prints the complete torrent details as formatted JSON;
-`set ID ...` prints the resulting settings as `key=value` lines.
+`set ID ...` prints the resulting settings as `key=value` lines. Changes to
+only `download_limit` and/or `upload_limit` take effect without restarting the
+torrent and are saved across daemon restarts. Other settings still require
+stopping and reconciling the torrent.
 
 ## Identity and discovery in JSON
 

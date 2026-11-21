@@ -5,6 +5,65 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 
 #[tokio::test]
+async fn torrent_bandwidth_changes_keep_the_peer_and_survive_restart() {
+    use crate::v2_peer::{next, request, send};
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let root = Temp::new();
+        let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
+        let payload = vec![42; 32768];
+        let output = root.0.join("downloads");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("x"), &payload).unwrap();
+        let bytes = seed_metainfo("x", &payload, None);
+        let meta = spill::engine::profile::Profile::DEFAULT
+            .parse_owned(&bytes)
+            .unwrap();
+        let id = daemon.add(&bytes, None).await;
+        daemon.state(&id, "seeding").await;
+        let health = daemon.call(json!({"op":"health"})).await;
+        let mut peer = raw_peer(
+            health["listen"].as_str().unwrap(),
+            meta.info_hash().wire_key(),
+            42,
+        )
+        .await;
+        send(&mut peer, 2, &[]).await;
+        next(&mut peer, 1).await;
+
+        daemon
+            .call(json!({"op":"set","id":id,"values":{"upload_limit":1}}))
+            .await;
+        send(&mut peer, 6, &request(0, 0, 16384)).await;
+        assert_eq!(&next(&mut peer, 7).await[9..], &payload[..16384]);
+        send(&mut peer, 6, &request(0, 16384, 16384)).await;
+        let block = next(&mut peer, 7);
+        tokio::pin!(block);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), &mut block)
+                .await
+                .is_err()
+        );
+        daemon
+            .call(json!({"op":"set","id":id,"values":{"upload_limit":0,"download_limit":8192}}))
+            .await;
+        assert_eq!(&block.await[9..], &payload[16384..]);
+
+        daemon
+            .call(json!({"op":"set","id":id,"values":{"upload_limit":2048}}))
+            .await;
+        daemon.stop().await;
+        let mut daemon = Daemon::start(&root.0, DaemonConfig::default()).await;
+        let row = daemon.state(&id, "seeding").await;
+        assert_eq!(row["settings"]["download_limit"], 8192);
+        assert_eq!(row["settings"]["upload_limit"], 2048);
+        daemon.stop().await;
+    })
+    .await
+    .expect("live torrent caps and restart");
+}
+
+#[tokio::test]
 async fn accounting_survives_restart_without_counting_existing_data() {
     let root = Temp::new();
     let source = WebSeed::files(&[("/first", b"abc"), ("/second", b"abc")], true).await;

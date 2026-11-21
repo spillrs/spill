@@ -49,7 +49,8 @@ then open <http://127.0.0.1:8081> locally. The local port need not match the rem
   Rate limits use
   KiB/s (1024 bytes/s); seeding time uses hours. Fractional values are rounded
   to whole bytes/s and seconds when saved; the API still uses bytes/s and
-  seconds. 0 means unlimited or disables the seeding rule. Values use monospace.
+  seconds. 0 means unlimited or disables the seeding rule. Rate-only changes
+  are saved and take effect without restarting the torrent. Values use monospace.
   File-priority controls are disabled while disconnected or saving changes;
   unsaved selections revert to the last snapshot.
 - A footer daemon indicator shows the version and a green connection dot.

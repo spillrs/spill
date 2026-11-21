@@ -338,9 +338,23 @@ impl Control {
                 let row = find(&supervisor.db, &id)?;
                 let settings = patch_settings(&row.settings, values)?;
                 validate_settings(&row, &settings)?;
-                supervisor.stop(&row.id).await?;
-                supervisor.db.settings(&row.id, &settings)?;
-                supervisor.reconcile().await?;
+                let rate_only = Settings {
+                    download_limit: settings.download_limit,
+                    upload_limit: settings.upload_limit,
+                    ..row.settings.clone()
+                } == settings;
+                if rate_only {
+                    supervisor.db.settings(&row.id, &settings)?;
+                    supervisor.set_torrent_bandwidth(
+                        &row.id,
+                        settings.download_limit,
+                        settings.upload_limit,
+                    );
+                } else {
+                    supervisor.stop(&row.id).await?;
+                    supervisor.db.settings(&row.id, &settings)?;
+                    supervisor.reconcile().await?;
+                }
                 Ok(serde_json::to_value(settings)?)
             }
             Request::Files { id } => {

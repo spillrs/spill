@@ -540,6 +540,11 @@ impl Supervisor {
         };
         self.session.admit(options)
     }
+    pub fn set_torrent_bandwidth(&self, id: &str, download: u64, upload: u64) {
+        if let Some(running) = self.running.get(id) {
+            running.handle.set_bandwidth_limits(download, upload);
+        }
+    }
     pub fn set_bandwidth(&self, download: Option<u64>, upload: Option<u64>) -> Value {
         let (current_download, current_upload) = self.session.bandwidth_limits();
         self.session.set_bandwidth_limits(

@@ -64,6 +64,7 @@ preserve full IDs; use prefixes when entering commands.
 | `reannounce ID` | Announce to the tracker again as soon as the tracker's `min interval` allows. Fails if trackers are disabled or the torrent is not running. A magnet still resolving metadata announces again once resolution finishes. |
 | `remove ID [--delete-payload]` | Remove the torrent. Files are kept unless `--delete-payload` is given; see [Torrents](torrents.md#removing-torrents). |
 | `health` | Plain-text daemon health, listener readiness, inbound peer observations, port mapping and admission state. Use `--json` for structured output. See [Health](#health). |
+| `set-bandwidth [--download BPS] [--upload BPS]` | Change one or both daemon-wide caps without restarting torrents. Omitted caps stay unchanged; `0` means unlimited. Prints both effective caps. Restart restores the configured values. |
 | `shutdown` | Stop the daemon cleanly. |
 
 In `get` JSON, `transfer.peers[].transport` is `"tcp"`, `"utp"` or `"http"`
@@ -115,6 +116,10 @@ shared-address IPv4 ranges; mapped IPv4 addresses are classified as IPv4.
 These observations do not contact any external service or send probes. A recent
 public handshake is evidence of connectivity at that time; a quiet swarm is not
 evidence of a closed port. See [Troubleshooting](troubleshooting.md#nobody-can-connect-to-me).
+
+Health includes `bandwidth.download_limit` and `bandwidth.upload_limit`, the
+effective daemon-wide caps in payload bytes per second. `0` means unlimited.
+In `status` JSON these fields are under `health.bandwidth`.
 
 Health also includes `logging`: `file_enabled`, cumulative `events_dropped`
 since daemon startup, and `write_failed` for the most recent debug-file write.

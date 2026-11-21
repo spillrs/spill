@@ -123,7 +123,14 @@ impl Budget {
             changed: watch::channel(()).0,
         }))
     }
-    fn set(&self, now: Instant, limits: Limits) {
+    pub(in crate::engine) fn limits(&self) -> Limits {
+        let state = self.0.state.lock().unwrap();
+        Limits {
+            down: state.down.rate,
+            up: state.up.rate,
+        }
+    }
+    pub(in crate::engine) fn set(&self, now: Instant, limits: Limits) {
         let mut state = self.0.state.lock().unwrap();
         if state.down.rate == limits.down && state.up.rate == limits.up {
             return;

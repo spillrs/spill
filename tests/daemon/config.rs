@@ -1,6 +1,6 @@
-use crate::common::{BIN, Daemon};
 #[cfg(target_os = "macos")]
-use crate::common::{DaemonConfig, multifile_metainfo};
+use crate::common::multifile_metainfo;
+use crate::common::{BIN, Daemon, DaemonConfig};
 use crate::payload::{Temp, seed_metainfo};
 use std::time::Duration;
 
@@ -105,7 +105,8 @@ async fn platform_default_paths_work_for_daemon_and_cli() {
     let config = root.0.join("defaults.toml");
     std::fs::write(
         &config,
-        "listen=\"127.0.0.1:0\"\nport_mapping=false\ndht_bootstrap=[]\ndefaults = {\n\
+        "listen=\"127.0.0.1:0\"\nport_mapping=false\ndht_bootstrap=[]\n\
+         session_download_limit=12345\nsession_upload_limit=0\ndefaults = {\n\
          dht=false,\ntrackers=false,\npex=false,\nweb_seeds=false,\n}\n",
     )
     .unwrap();
@@ -127,6 +128,10 @@ async fn platform_default_paths_work_for_daemon_and_cli() {
     assert_ne!(listen.port(), 0);
     assert_eq!(health["advertised_port"], listen.port());
     assert_eq!(health["admission_closed"], false);
+    let bandwidth = serde_json::json!({"download_limit":12345,"upload_limit":0});
+    assert_eq!(health["bandwidth"], bandwidth);
+    let status = daemon.call(serde_json::json!({"op":"status"})).await;
+    assert_eq!(status["health"]["bandwidth"], bandwidth);
     let output = tokio::process::Command::new(BIN)
         .args(["--json", "get", &id])
         .env("HOME", &home.0)
@@ -137,6 +142,46 @@ async fn platform_default_paths_work_for_daemon_and_cli() {
     assert!(output.status.success(), "{output:?}");
     let row: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(row["id"], id);
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn live_bandwidth_caps_preserve_omitted_values_and_reset_on_restart() {
+    use serde_json::{Value, json};
+
+    let root = Temp::new();
+    DaemonConfig::default().write(&root.0);
+    let path = root.0.join("config.toml");
+    let config = format!(
+        "session_download_limit = 12345\nsession_upload_limit = 67890\n{}",
+        std::fs::read_to_string(&path).unwrap()
+    );
+    std::fs::write(&path, &config).unwrap();
+    let mut daemon = Daemon::start_config(&root.0).await;
+
+    let output = tokio::process::Command::new(BIN)
+        .arg("--socket")
+        .arg(&daemon.socket)
+        .args(["--json", "set-bandwidth", "--upload", "0"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let live = json!({"download_limit":12345,"upload_limit":0});
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        live
+    );
+    assert_eq!(daemon.raw(json!({"op":"set_bandwidth"})).await["code"], 2);
+    assert_eq!(daemon.call(json!({"op":"health"})).await["bandwidth"], live);
+    daemon.stop().await;
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+
+    let mut daemon = Daemon::start_config(&root.0).await;
+    assert_eq!(
+        daemon.call(json!({"op":"health"})).await["bandwidth"],
+        json!({"download_limit":12345,"upload_limit":67890})
+    );
     daemon.stop().await;
 }
 

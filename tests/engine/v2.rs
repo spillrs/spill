@@ -696,6 +696,48 @@ async fn unchoked_large_leaf_reads_spend_the_upload_budget() {
 }
 
 #[tokio::test]
+async fn torrents_share_a_live_session_upload_limit() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let session = session().await;
+        let root = Temp::new();
+        let payload = raw::payload(0, 16384);
+        let mut peers = Vec::new();
+        for (name, id) in [("first", 92), ("second", 93)] {
+            std::fs::write(root.0.join(name), &payload).unwrap();
+            let meta = Profile::default()
+                .parse_owned(&crate::payload::seed_metainfo(name, &payload, None))
+                .unwrap();
+            let mut handle = session
+                .admit(options(&meta, Destination::Adopt(root.0.clone())))
+                .unwrap();
+            ready(&mut handle).await;
+            let mut peer = TcpStream::connect(session.local_addr()).await.unwrap();
+            raw::initiate(&mut peer, meta.info_hash().wire_key(), id, false).await;
+            raw::send(&mut peer, 2, &[]).await;
+            raw::next(&mut peer, 1).await;
+            peers.push(peer);
+        }
+        session.set_bandwidth_limits(0, 1);
+        assert_eq!(session.bandwidth_limits(), (0, 1));
+        raw::send(&mut peers[0], 6, &raw::request(0, 0, 16384)).await;
+        assert_eq!(&raw::next(&mut peers[0], 7).await[9..], payload);
+        raw::send(&mut peers[1], 6, &raw::request(0, 0, 16384)).await;
+        let second = raw::next(&mut peers[1], 7);
+        tokio::pin!(second);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), &mut second)
+                .await
+                .is_err()
+        );
+        session.set_bandwidth_limits(0, 0);
+        assert_eq!(&second.await[9..], payload);
+        session.shutdown().await.unwrap();
+    })
+    .await
+    .expect("shared live bandwidth budget");
+}
+
+#[tokio::test]
 async fn duplicate_v2_requests_disconnect_instead_of_rejecting_a_live_upload() {
     tokio::time::timeout(Duration::from_secs(8), async {
         let meta = Profile::default().parse_owned(V2).unwrap();

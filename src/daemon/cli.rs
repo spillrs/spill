@@ -95,6 +95,15 @@ pub enum Operation {
     Files { id: String },
     /// Show daemon health, listeners, inbound peers, port mapping, and admission state.
     Health,
+    /// Change daemon-wide payload caps until restart.
+    SetBandwidth {
+        /// Download cap in bytes per second; 0 means unlimited.
+        #[arg(long)]
+        download: Option<u64>,
+        /// Upload cap in bytes per second; 0 means unlimited.
+        #[arg(long)]
+        upload: Option<u64>,
+    },
     /// Stop the daemon cleanly and save progress.
     Shutdown,
 }
@@ -184,6 +193,10 @@ fn request(operation: Operation) -> Result<Request, Error> {
         Operation::Status => Request::Status,
         Operation::Files { id } => Request::Files { id },
         Operation::Health => Request::Health,
+        Operation::SetBandwidth { download, upload } => Request::SetBandwidth {
+            download_limit: download,
+            upload_limit: upload,
+        },
         Operation::Shutdown => Request::Shutdown,
     })
 }
@@ -267,6 +280,18 @@ fn health_text(data: &Value) {
         }
     );
     println!("{:<26} {}", "Advertised port:", data["advertised_port"]);
+    for (label, key) in [
+        ("Session download cap:", "download_limit"),
+        ("Session upload cap:", "upload_limit"),
+    ] {
+        if let Some(rate) = data["bandwidth"][key].as_u64() {
+            if rate == 0 {
+                println!("{label:<26} unlimited");
+            } else {
+                println!("{label:<26} {rate} B/s");
+            }
+        }
+    }
     if let Some(network) = data.get("network") {
         for (label, key) in [
             ("TCP listener:", "tcp_listen"),

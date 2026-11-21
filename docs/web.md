@@ -105,7 +105,15 @@ curl -s http://127.0.0.1:8080/api \
 ```
 
 Operations: `add` (magnets or torrent URLs), `get`, `set`, `list`, `status`,
-`files`, `pause`, `resume`, `recheck`, `reannounce`, `remove`, `health`, `shutdown`.
+`files`, `pause`, `resume`, `recheck`, `reannounce`, `remove`, `health`,
+`set_bandwidth`, `shutdown`.
+
+For `set_bandwidth`, send at least one of `download_limit` or `upload_limit`,
+for example `{"op":"set_bandwidth","upload_limit":1048576}`. Rates are
+unsigned integers in payload bytes per second (`0` means unlimited). Omitted
+caps stay unchanged. The response data contains both effective caps. The
+change lasts until the daemon restarts and does not restart torrents. The same
+operation is available on the Unix control socket.
 
 For a URL add, send `{"op":"add","url":"https://example.org/file.torrent"}`
 with optional `output_dir`, `paused`, and `settings` fields. For example,

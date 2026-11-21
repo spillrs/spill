@@ -79,6 +79,7 @@ impl Supervisor {
             }),
         };
         let session = Session::bind(network, limits).await?;
+        session.set_bandwidth_limits(config.session_download_limit, config.session_upload_limit);
         Ok(Self {
             config,
             db,
@@ -539,11 +540,24 @@ impl Supervisor {
         };
         self.session.admit(options)
     }
+    pub fn set_bandwidth(&self, download: Option<u64>, upload: Option<u64>) -> Value {
+        let (current_download, current_upload) = self.session.bandwidth_limits();
+        self.session.set_bandwidth_limits(
+            download.unwrap_or(current_download),
+            upload.unwrap_or(current_upload),
+        );
+        self.bandwidth()
+    }
+    fn bandwidth(&self) -> Value {
+        let (download, upload) = self.session.bandwidth_limits();
+        json!({"download_limit": download, "upload_limit": upload})
+    }
     pub async fn health(&self) -> Value {
         json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"running":self.running.len(),"listen":self.session.local_addr(),
             "advertised_port":self.session.advertised_port(),
             "port_mapping":self.session.port_mapping(),"admission_closed":self.session.admission_closed(),
             "network":self.session.network_status().await,
+            "bandwidth":self.bandwidth(),
             "logging":{"file_enabled":self.config.logging.file_enabled,
                 "events_dropped":self.logging.events_dropped.load(Ordering::Relaxed),
                 "write_failed":self.logging.write_failed.load(Ordering::Relaxed)}})

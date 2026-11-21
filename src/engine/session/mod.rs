@@ -647,6 +647,26 @@ impl Session {
     pub fn port_mapping(&self) -> port_map::Status {
         self.shared.mapping_status.borrow().clone()
     }
+    /// Current session payload caps as (download, upload) bytes per second.
+    /// Zero means unlimited in that direction.
+    pub fn bandwidth_limits(&self) -> (u64, u64) {
+        let limits = self.shared.bandwidth.limits();
+        (limits.down, limits.up)
+    }
+
+    /// Sets session-wide payload caps in bytes per second without restarting torrents.
+    /// Zero means unlimited. Nonzero per-torrent limits still apply.
+    /// Downloads are charged when requests are sent, not when payload arrives.
+    pub fn set_bandwidth_limits(&self, download: u64, upload: u64) {
+        self.shared.bandwidth.set(
+            tokio::time::Instant::now().into_std(),
+            crate::engine::bandwidth::Limits {
+                down: download,
+                up: upload,
+            },
+        );
+    }
+
     pub fn advertised_port(&self) -> u16 {
         *self.shared.advertised_port.borrow()
     }

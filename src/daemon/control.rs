@@ -83,6 +83,10 @@ pub enum Request {
         id: String,
     },
     Health,
+    SetBandwidth {
+        download_limit: Option<u64>,
+        upload_limit: Option<u64>,
+    },
     Shutdown,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -195,6 +199,15 @@ impl Control {
         }
         match request {
             Request::Health => Ok(supervisor.health().await),
+            Request::SetBandwidth {
+                download_limit,
+                upload_limit,
+            } => {
+                if download_limit.is_none() && upload_limit.is_none() {
+                    return Err(Error::Invalid("specify a download or upload cap".into()));
+                }
+                Ok(supervisor.set_bandwidth(download_limit, upload_limit))
+            }
             Request::Shutdown => {
                 supervisor.shutdown.send_replace(true);
                 Ok(json!({"stopping":true}))

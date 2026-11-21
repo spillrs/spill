@@ -158,6 +158,11 @@ the exact API contract.
 ## Sessions and progress
 
 A `Session` shares listeners, discovery, and resource budgets across torrents.
+Session-wide payload rates start unlimited. Use `Session::set_bandwidth_limits`
+to set download and upload caps in bytes per second (`0` means unlimited), and
+`Session::bandwidth_limits` to read them in that order. Limits apply to running
+and future torrents and compose with per-torrent limits. Download limits pace
+requests rather than bytes already in flight.
 Use `Session::bind(NetworkOptions, Limits)`, then
 `session.admit(TorrentOptions::new(source, destination))` to obtain a
 `TorrentHandle`. Admission validates and reserves resources synchronously;

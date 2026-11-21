@@ -128,12 +128,16 @@ impl Daemon {
             .spawn()
             .unwrap();
         let mut daemon = Self { child, socket };
+        daemon.wait_ready().await;
+        daemon
+    }
+    pub async fn wait_ready(&mut self) {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Some(status) = daemon.child.try_wait().unwrap() {
+                if let Some(status) = self.child.try_wait().unwrap() {
                     panic!("daemon exited: {status}");
                 }
-                if UnixStream::connect(&daemon.socket).await.is_ok() {
+                if UnixStream::connect(&self.socket).await.is_ok() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -142,8 +146,7 @@ impl Daemon {
         .await
         .expect("daemon readiness");
         // A bound control socket can precede the HTTP listener's startup.
-        daemon.call(json!({"op":"health"})).await;
-        daemon
+        self.call(json!({"op":"health"})).await;
     }
     pub async fn raw(&self, request: Value) -> Value {
         tokio::time::timeout(Duration::from_secs(5), async {

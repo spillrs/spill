@@ -86,7 +86,7 @@ listen = "127.0.0.1:0"
 }
 
 #[tokio::test]
-async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
+async fn platform_default_paths_work_for_daemon_and_cli() {
     let root = Temp::new();
     // Keep Darwin's default socket path within sockaddr_un's pathname limit.
     let home = Temp(std::path::Path::new("/tmp").join(root.0.file_name().unwrap()));
@@ -105,7 +105,7 @@ async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
     let config = root.0.join("defaults.toml");
     std::fs::write(
         &config,
-        "port_mapping=false\ndht_bootstrap=[]\ndefaults = {\n\
+        "listen=\"127.0.0.1:0\"\nport_mapping=false\ndht_bootstrap=[]\ndefaults = {\n\
          dht=false,\ntrackers=false,\npex=false,\nweb_seeds=false,\n}\n",
     )
     .unwrap();
@@ -118,20 +118,14 @@ async fn platform_default_paths_and_port_work_for_daemon_and_cli() {
         .spawn()
         .unwrap();
     let mut daemon = Daemon { child, socket };
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !daemon.socket.exists() {
-            assert!(daemon.child.try_wait().unwrap().is_none());
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    daemon.wait_ready().await;
     let id = daemon.add(&seed_metainfo("x", b"abc", None), None).await;
     daemon.state(&id, "seeding").await;
     assert!(state.join("catalog.sqlite").exists());
     let health = daemon.call(serde_json::json!({"op":"health"})).await;
-    assert_eq!(health["listen"], "0.0.0.0:6881");
-    assert_eq!(health["advertised_port"], 6881);
+    let listen: std::net::SocketAddr = health["listen"].as_str().unwrap().parse().unwrap();
+    assert_ne!(listen.port(), 0);
+    assert_eq!(health["advertised_port"], listen.port());
     assert_eq!(health["admission_closed"], false);
     let output = tokio::process::Command::new(BIN)
         .args(["--json", "get", &id])

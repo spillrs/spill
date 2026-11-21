@@ -160,6 +160,7 @@ function render() {
   $('#seeding-button').disabled = !online || busy || !focused;
   $('#seeding-form button[type="submit"]').disabled = !online || busy;
   $('#limits-form button[type="submit"]').disabled = !online || busy;
+  $('#open-session-limits').disabled = !online || busy || !health?.bandwidth;
   $('#confirm-remove').disabled = busy || !online;
   $('#add-form button[type="submit"]').disabled = busy || !online;
   $('#download-stat').textContent = rate(torrents.reduce((s,t) => s+t.down,0));
@@ -188,6 +189,10 @@ function renderHealth() {
       ['Port mapping',mapping.protocol ? 'Active' : mapping.enabled ? 'Not established' : 'Disabled']
     ].map(([label,value]) => detailRow(label,value)).join('');
     if (mapping.protocol) html += detailRow('Mapping protocol',mapping.protocol === 'nat-pmp' ? 'NAT-PMP' : 'UPnP');
+    if (health.bandwidth) {
+      html += detailRow('Global download cap',health.bandwidth.download_limit === 0 ? 'Unlimited' : rate(health.bandwidth.download_limit));
+      html += detailRow('Global upload cap',health.bandwidth.upload_limit === 0 ? 'Unlimited' : rate(health.bandwidth.upload_limit));
+    }
   } else html += telemetryNote('No daemon status received yet.');
   replaceContent($('#daemon-details'),html);
 }
@@ -336,7 +341,7 @@ $('#add-form').onsubmit = e => {
     notify('Torrent accepted by daemon.');
   });
 };
-const rangeControls = [['limit-down',10240],['limit-up',10240],['seed-ratio',10],['seed-time',168]];
+const rangeControls = [['seed-ratio',10],['seed-time',168]];
 function syncRange(id, max) {
   const range = $('#'+id+'-range');
   range.max = Math.max(max,Number($('#'+id).value));
@@ -352,7 +357,7 @@ $('#seeding-button').onclick = () => {
   if (!t) return;
   seedingId = t.id;
   $('#seed-ratio').value = t.settings.seed_ratio; $('#seed-time').value = t.settings.seed_time/3600;
-  rangeControls.slice(2).forEach(([id,max]) => syncRange(id,max));
+  rangeControls.forEach(([id,max]) => syncRange(id,max));
   $('#seeding-dialog').showModal();
 };
 $('#cancel-seeding').onclick = () => $('#seeding-dialog').close();
@@ -366,24 +371,48 @@ $('#seeding-form').onsubmit = e => {
     $('#seeding-dialog').close(); notify('Seeding rules accepted. Paused torrents stay paused until resumed.');
   });
 };
-let limitsId = null;
-$('#limits-button').onclick = () => {
-  const t = torrents.find(t => t.id === focused);
-  if (!t) return;
-  limitsId = t.id;
-  $('#limit-down').value = t.settings.download_limit/1024; $('#limit-up').value = t.settings.upload_limit/1024;
-  rangeControls.slice(0,2).forEach(([id,max]) => syncRange(id,max));
+const limitFields = [['download_limit','#limit-down'],['upload_limit','#limit-up']];
+const bytesPerMiB = 1024**2;
+let limitsTarget = null;
+function openLimits(torrent) {
+  limitsTarget = torrent?.id ?? null;
+  const current = torrent ? torrent.settings : health.bandwidth;
+  $('#limits-title').textContent = torrent ? 'Torrent limits' : 'Global limits';
+  $('#limits-scope').textContent = torrent ? torrent.name : 'Shared by all torrents · Resets on daemon restart';
+  $('#limits-error').hidden = true;
+  for (const [key,selector] of limitFields) {
+    const input = $(selector);
+    input.defaultValue = input.value = current[key]/bytesPerMiB;
+  }
   $('#limits-dialog').showModal();
+}
+$('#open-session-limits').onclick = () => openLimits();
+$('#limits-button').onclick = () => {
+  const torrent = torrents.find(t => t.id === focused);
+  if (torrent) openLimits(torrent);
 };
 $('#cancel-limits').onclick = () => $('#limits-dialog').close();
 $('#limits-form').onsubmit = e => {
   e.preventDefault();
-  const id = limitsId, down = Number($('#limit-down').value), up = Number($('#limit-up').value);
-  const download_limit = Math.round(down*1024), upload_limit = Math.round(up*1024);
-  if (![down,up].every(n => n >= 0) || ![download_limit,upload_limit].every(Number.isSafeInteger)) { notify('Use nonnegative KiB/s that convert to safe whole bytes/s values.'); return; }
+  const id = limitsTarget, error = $('#limits-error');
+  const fail = message => { error.textContent = message; error.hidden = false; };
+  const values = {};
+  for (const [key,selector] of limitFields) {
+    const input = $(selector);
+    if (input.value === input.defaultValue) continue;
+    const value = Math.round(input.valueAsNumber*bytesPerMiB);
+    if (!Number.isSafeInteger(value) || (value === 0 && input.valueAsNumber !== 0)) {
+      fail('Enter 0 for unlimited, or a rate that rounds to at least 1 byte/s.'); return;
+    }
+    values[key] = value;
+  }
+  if (!Object.keys(values).length) { $('#limits-dialog').close(); return; }
+  error.hidden = true;
   mutate(async () => {
-    await api('set', {id, values:{download_limit, upload_limit}});
-    $('#limits-dialog').close(); notify('Rate limits accepted.');
+    try { await (id ? api('set', {id,values}) : api('set_bandwidth', values)); }
+    catch (err) { fail(err.message); return; }
+    $('#limits-dialog').close();
+    notify(id ? 'Torrent limits updated.' : 'Global limits updated until restart.');
   });
 };
 let removeIds = [];

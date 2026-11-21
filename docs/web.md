@@ -43,14 +43,17 @@ then open <http://127.0.0.1:8081> locally. The local port need not match the rem
   annotations. Hover over peer state for additional diagnostic counters/flags.
 - Source tables include tracker URLs, swarm keys, announce timing, peer counts
   and errors, plus per-swarm DHT and available web-seed observations.
-- Editable file priorities, rate limits and seeding goals. Rate and seeding
-  dialogs pair sliders with exact numeric inputs. Enter values beyond the
-  slider's initial range to extend it; the sliders do not cap saved settings.
-  Rate limits use
-  KiB/s (1024 bytes/s); seeding time uses hours. Fractional values are rounded
-  to whole bytes/s and seconds when saved; the API still uses bytes/s and
-  seconds. 0 means unlimited or disables the seeding rule. Rate-only changes
-  are saved and take effect without restarting the torrent. Values use monospace.
+- **Global limits** in the top bar edits the caps shared by all torrents.
+  **Torrent limits** in the inspector edits the selected torrent's caps.
+  Both show the current rates in MiB/s, accept decimals, and save only changed fields. `0`
+  means unlimited at that level; a global cap still applies to torrents with
+  no individual cap. Changes take effect without restarting transfers.
+  Torrent caps persist; restarting the daemon restores the configured global
+  caps. Rates are rounded to whole bytes/s when saved.
+- Editable file priorities and seeding goals. The seeding dialog pairs sliders
+  with exact numeric inputs. Entering a value beyond a slider's range extends
+  it. Seeding time is entered in hours and rounded to whole seconds when saved;
+  `0` disables the corresponding seeding rule.
   File-priority controls are disabled while disconnected or saving changes;
   unsaved selections revert to the last snapshot.
 - A footer daemon indicator shows the version and a green connection dot.
@@ -58,8 +61,9 @@ then open <http://127.0.0.1:8081> locally. The local port need not match the rem
   state, TCP/UDP listeners, uTP/DHT settings, inbound peer counts and whether a
   port mapping is active, not established, or disabled. An active mapping also
   shows NAT-PMP or UPnP. Mapping
-  warnings belong in Logs, not the status panel. Green means connected, not
-  that every network service is healthy. On disconnection the dot turns red, an error is shown, and the status
+  warnings belong in Logs, not the status panel. The panel also shows the
+  effective global upload and download caps. Green means connected, not that
+  every network service is healthy. On disconnection the dot turns red, an error is shown, and the status
   panel labels its data as the last snapshot.
 - Choose **Logs** in the daemon-status dialog to view recent `debug.log` output.
   Follow refreshes every second and scrolls to the latest entry; uncheck it to

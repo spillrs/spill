@@ -125,6 +125,8 @@ dialog .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;pa
 .unit-input{display:flex;align-items:center;gap:6px;width:145px;padding-right:9px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--muted)}
 dialog .unit-input input[type=number]{width:100%;min-width:0;padding:6px 8px;border:0;background:transparent;color:var(--ink)}
 .unit-input>span{font:10px var(--mono);white-space:nowrap}
+.limit-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+#limits-scope{overflow-wrap:anywhere}
 input[type=range]{display:block;width:100%;height:20px;margin:0;accent-color:var(--cobalt);cursor:pointer}
 .range-hint{display:flex;justify-content:space-between;flex-wrap:wrap;gap:5px;margin-top:7px;font-size:10px;color:var(--muted)}
 .upload-area{display:block;text-align:center;cursor:pointer;border:1px dashed var(--line);border-radius:9px;padding:12px;margin-top:16px;color:var(--muted);font-size:12px}

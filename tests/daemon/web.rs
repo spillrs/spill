@@ -24,6 +24,8 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
     assert!(index.contains("Selected torrent details"));
     assert!(index.contains("id=\"daemon-button\""));
     assert!(index.contains("id=\"daemon-dialog\""));
+    assert!(index.contains("id=\"open-session-limits\""));
+    assert!(index.contains("id=\"limits-form\""));
     assert!(index.contains("data-sort=\"downloaded_bytes\""));
     assert!(index.contains("data-sort=\"uploaded_bytes\""));
     for asset in ["/app.js", "/details.js", "/logs.js"] {
@@ -95,6 +97,19 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
         daemon.call(json!({"op":"get","id":id})).await["settings"]["upload_limit"],
         321
     );
+    let caps = b"{\"op\":\"set_bandwidth\",\"upload_limit\":1048576}";
+    let denied = http(address, "POST", "/api", None, caps).await;
+    assert!(denied.starts_with("HTTP/1.1 403"));
+    let saved = http(address, "POST", "/api", Some(token), caps).await;
+    let response: serde_json::Value =
+        serde_json::from_str(saved.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let expected = json!({"download_limit":0,"upload_limit":1048576});
+    assert_eq!(response["code"], 0, "{saved}");
+    assert_eq!(response["data"], expected);
+    let status = http(address, "POST", "/api", Some(token), b"{\"op\":\"status\"}").await;
+    let response: serde_json::Value =
+        serde_json::from_str(status.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(response["data"]["health"]["bandwidth"], expected);
     let health = http(address, "POST", "/api", Some(token), b"{\"op\":\"health\"}").await;
     assert!(health.contains(&daemon.child.id().unwrap().to_string()));
     let response: serde_json::Value =

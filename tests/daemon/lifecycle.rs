@@ -280,6 +280,7 @@ async fn get_set_settings_take_effect_and_cli_uses_the_same_schema() {
     daemon.state(&id, "paused").await;
     let files = daemon.call(json!({"op":"files","id":id})).await;
     assert_eq!(files["files"][0]["priority"], "high");
+    assert_eq!(daemon.raw(json!({"op":"get","id":""})).await["code"], 2);
     assert_eq!(
         daemon
             .raw(json!({"op":"set","id":id,"values":{"unknown_key":true}}))

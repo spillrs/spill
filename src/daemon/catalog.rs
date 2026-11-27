@@ -297,11 +297,12 @@ impl Catalog {
             ) = r?;
             let parsed = metainfo
                 .as_deref()
-                .and_then(|bytes| {
+                .map(|bytes| {
                     spill::engine::profile::Profile::default()
                         .parse_owned(bytes)
-                        .ok()
+                        .map_err(std::io::Error::from)
                 })
+                .transpose()?
                 .map(Arc::new);
             let created_files = created_files
                 .map(|text| serde_json::from_str(&text))
@@ -406,6 +407,28 @@ impl Catalog {
             row.retry_at = 0;
             Ok(())
         })
+    }
+    pub fn set_bandwidth(
+        &self,
+        id: &str,
+        download_limit: u64,
+        upload_limit: u64,
+    ) -> Result<Settings> {
+        let mut updated = None;
+        self.update(id, |c, row| {
+            row.settings.download_limit = download_limit;
+            row.settings.upload_limit = upload_limit;
+            c.execute(
+                "UPDATE torrents SET settings=?2,last_error=NULL,retry_count=0,retry_at=0 WHERE id=?1",
+                params![id, serde_json::to_string(&row.settings)?],
+            )?;
+            row.last_error = None;
+            row.retry_count = 0;
+            row.retry_at = 0;
+            updated = Some(row.settings.clone());
+            Ok(())
+        })?;
+        Ok(updated.expect("updated settings"))
     }
     pub fn settings(&self, id: &str, settings: &Settings) -> Result<()> {
         self.update(id, |c, row| {

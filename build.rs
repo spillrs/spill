@@ -8,7 +8,15 @@ fn main() {
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files: Vec<_> = fs::read_dir(root)
         .unwrap()
-        .map(|entry| entry.unwrap().path())
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            entry.file_type().unwrap().is_file()
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| !name.starts_with('.') && name != "index.html")
+        })
+        .map(|entry| entry.path())
         .collect();
     files.sort();
     let mut assets = String::from("&[\n");

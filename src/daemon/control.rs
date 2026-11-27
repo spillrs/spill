@@ -142,6 +142,9 @@ impl Response {
 pub struct Control(pub Arc<Mutex<Supervisor>>);
 fn find(db: &Catalog, id: &str) -> Result<Arc<Row>, Error> {
     let id = id.to_ascii_lowercase();
+    if id.is_empty() {
+        return Err(Error::Invalid("empty ID".into()));
+    }
     if let Some(row) = db.row(&id)? {
         return Ok(row);
     }
@@ -342,25 +345,38 @@ impl Control {
             }
             Request::Set { id, values } => {
                 let row = find(&supervisor.db, &id)?;
-                let settings = patch_settings(&row.settings, values)?;
+                let settings = patch_settings(&row.settings, values.clone())?;
                 validate_settings(&row, &settings)?;
                 let rate_only = Settings {
                     download_limit: settings.download_limit,
                     upload_limit: settings.upload_limit,
                     ..row.settings.clone()
                 } == settings;
-                if rate_only {
-                    supervisor.db.settings(&row.id, &settings)?;
+                let settings = if rate_only {
+                    let settings = supervisor.db.set_bandwidth(
+                        &row.id,
+                        settings.download_limit,
+                        settings.upload_limit,
+                    )?;
                     supervisor.set_torrent_bandwidth(
                         &row.id,
                         settings.download_limit,
                         settings.upload_limit,
                     );
+                    settings
                 } else {
                     supervisor.stop(&row.id).await?;
-                    supervisor.db.settings(&row.id, &settings)?;
+                    // Resolution may have persisted magnet file_priorities while stopping.
+                    let current = supervisor.db.row(&row.id)?.expect("existing torrent");
+                    let settings = patch_settings(&current.settings, values)?;
+                    let validated = validate_settings(&current, &settings);
+                    let updated = validated.and_then(|()| {
+                        supervisor.db.settings(&row.id, &settings)?;
+                        Ok(settings)
+                    });
                     supervisor.reconcile().await?;
-                }
+                    updated?
+                };
                 Ok(serde_json::to_value(settings)?)
             }
             Request::Files { id } => {
@@ -401,7 +417,9 @@ impl Control {
                 };
                 let row = find(&supervisor.db, &id)?;
                 supervisor.db.intent(&row.id, intent.clone())?;
-                supervisor.stop(&row.id).await?;
+                if !(intent == Intent::Run && supervisor.is_running_transfer(&row.id)) {
+                    supervisor.stop(&row.id).await?;
+                }
                 supervisor.reconcile().await?;
                 Ok(json!({"id":row.id,"intent":intent}))
             }

@@ -178,3 +178,57 @@ async fn magnet_selection_merges_before_metadata_and_survives_restart() {
         daemon.stop().await;
     }).await.expect("durable magnet selection and additive duplicate handling");
 }
+
+#[tokio::test]
+async fn unrelated_set_overlapping_magnet_resolution_preserves_selection() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let root = Temp::new();
+        let meta = spill::engine::profile::Profile::default()
+            .parse_owned(include_bytes!("../protocol/fixtures/v2.torrent"))
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (url, tracker) = crate::metadata_peer::tracker(&[listener.local_addr().unwrap()]).await;
+        let source = tokio::spawn(crate::metadata_peer::serve_full(listener, meta.clone(), 0));
+        let magnet = format!(
+            "magnet:?xt=urn:btmh:1220{}&tr={url}&so=0",
+            meta.info_hash().v2().unwrap()
+        );
+        let mut daemon = Daemon::start(
+            &root.0,
+            DaemonConfig {
+                trackers: true,
+                web_seeds: false,
+                utp: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+        let id = daemon.call(json!({"op":"add","magnet":magnet})).await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // Apply an unrelated non-rate setting while metadata resolution is active.
+        let updated = daemon
+            .call(json!({"op":"set","id":id,"values":{"seed_time":60}}))
+            .await;
+        assert_eq!(updated["seed_time"], 60);
+        let completed = daemon.state(&id, "seeding").await;
+        assert_eq!(completed["settings"]["seed_time"], 60);
+        assert_eq!(completed["wanted_bytes"], meta.layout().files()[0].length());
+        let files = daemon.call(json!({"op":"files","id":id})).await;
+        for (index, file) in files["files"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(file["priority"], if index == 0 { "normal" } else { "skip" });
+        }
+        // Rate-only set must also preserve resolved file priorities.
+        let rate = daemon
+            .call(json!({"op":"set","id":id,"values":{"upload_limit":12345}}))
+            .await;
+        assert_eq!(rate["upload_limit"], 12345);
+        assert_eq!(daemon.call(json!({"op":"files","id":id})).await, files);
+        daemon.stop().await;
+        source.abort();
+        tracker.abort();
+    })
+    .await
+    .expect("unrelated set preserves magnet selection");
+}

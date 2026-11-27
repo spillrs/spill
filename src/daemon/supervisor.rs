@@ -91,7 +91,15 @@ impl Supervisor {
             shutdown: watch::channel(false).0,
         })
     }
+    pub fn is_running_transfer(&self, id: &str) -> bool {
+        self.running
+            .get(id)
+            .is_some_and(|running| !running.recheck && !running.quarantined)
+    }
     pub async fn stop(&mut self, id: &str) -> io::Result<()> {
+        self.stop_inner(id, false).await
+    }
+    async fn stop_inner(&mut self, id: &str, pause_finished_recheck: bool) -> io::Result<()> {
         if let Some(mut running) = self.running.remove(id) {
             let result = running.handle.stop().await;
             let outcome = running.handle.outcome().await;
@@ -110,7 +118,9 @@ impl Supervisor {
                 self.db
                     .checkpoint(id, |c| c.complete = outcome.wanted_complete)
                     .map_err(io_error)?;
-                self.db.intent(id, Intent::Paused).map_err(io_error)?;
+                if pause_finished_recheck {
+                    self.db.intent(id, Intent::Paused).map_err(io_error)?;
+                }
             }
             if let Err(error) = result {
                 self.db.failure(id, &error).map_err(io_error)?;
@@ -168,11 +178,10 @@ impl Supervisor {
             .map_err(io_error)?
             .ok_or(io::ErrorKind::NotFound)?;
         if delete && let Some(binding) = row.created_files.clone() {
-            tokio::task::spawn_blocking(move || {
-                spill::engine::provisioning::NamedDestination::remove(
-                    std::fs::File::open(&row.output_dir)?,
-                    &binding,
-                )
+            tokio::task::spawn_blocking(move || match std::fs::File::open(&row.output_dir) {
+                Ok(dir) => spill::engine::provisioning::NamedDestination::remove(dir, &binding),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
             })
             .await
             .map_err(io_error)??;
@@ -330,7 +339,7 @@ impl Supervisor {
                 continue;
             }
             if self.running[&id].handle.is_finished() {
-                if let Err(e) = self.stop(&id).await {
+                if let Err(e) = self.stop_inner(&id, true).await {
                     self.failure(&id, e);
                 }
             } else {
@@ -387,11 +396,13 @@ impl Supervisor {
                                 >= m.layout().total_length() as f64 * row.settings.seed_ratio
                         })));
             if row.intent == Intent::Paused || seed_goal {
-                if let Err(e) = self.stop(&row.id).await {
-                    self.failure(&row.id, e);
-                }
-                if seed_goal && let Err(e) = self.db.intent(&row.id, Intent::Paused) {
-                    self.failure(&row.id, io_error(e));
+                match self.stop_inner(&row.id, true).await {
+                    Ok(()) => {
+                        if seed_goal && let Err(e) = self.db.intent(&row.id, Intent::Paused) {
+                            self.failure(&row.id, io_error(e));
+                        }
+                    }
+                    Err(e) => self.failure(&row.id, e),
                 }
                 continue;
             }
@@ -404,7 +415,7 @@ impl Supervisor {
                 (&mut downloads, self.config.active_downloads)
             };
             if *used >= cap {
-                if let Err(e) = self.stop(&row.id).await {
+                if let Err(e) = self.stop_inner(&row.id, true).await {
                     self.failure(&row.id, e);
                 }
                 continue;
@@ -441,7 +452,7 @@ impl Supervisor {
         let ids: Vec<_> = self.running.keys().cloned().collect();
         let mut result = Ok(());
         for id in ids {
-            if let Err(e) = self.stop(&id).await {
+            if let Err(e) = self.stop_inner(&id, true).await {
                 result = Err(e);
             }
         }

@@ -29,15 +29,35 @@ fn authorized_host(headers: &HeaderMap) -> bool {
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
     // SSH forwarding preserves the browser's Host, including its local port.
-    ["127.0.0.1", "[::1]", "localhost"].iter().any(|name| {
-        host == *name
-            || host
-                .strip_prefix(*name)
-                .and_then(|s| s.strip_prefix(':'))
-                .is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok())
-    }) && headers
-        .get("origin")
-        .is_none_or(|o| o.to_str().ok() == Some(format!("http://{host}").as_str()))
+    let (name, port) = if let Some(rest) = host.strip_prefix('[') {
+        let Some((addr, after)) = rest.split_once(']') else {
+            return false;
+        };
+        let port = match after {
+            "" => None,
+            rest => match rest.strip_prefix(':') {
+                Some(port) => Some(port),
+                None => return false,
+            },
+        };
+        (addr, port)
+    } else if let Some((name, port)) = host.rsplit_once(':') {
+        (name, Some(port))
+    } else {
+        (host, None)
+    };
+    let valid_port = port.is_none_or(|p| {
+        !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok()
+    });
+    let valid_host = name.eq_ignore_ascii_case("localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() && ip.is_ipv6() == host.starts_with('['));
+    valid_host
+        && valid_port
+        && headers
+            .get("origin")
+            .is_none_or(|o| o.to_str().ok() == Some(format!("http://{host}").as_str()))
 }
 async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Response {
     if !authorized_host(&headers) {
@@ -196,7 +216,10 @@ pub async fn serve(
     let routes = Router::new()
         .route("/", get(index))
         .route("/{*path}", get(asset))
-        .route("/api", post(api).layer(DefaultBodyLimit::max(64 * 1024)))
+        .route(
+            "/api",
+            post(api).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+        )
         .route(
             "/api/logs",
             post(logs).layer(DefaultBodyLimit::max(64 * 1024)),

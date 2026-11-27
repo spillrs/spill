@@ -80,9 +80,10 @@ restarts. Hover over a table total for its exact byte count. See
 
 ## Security model
 
-- The server only accepts `127.0.0.1`, `[::1]` or `localhost` as the `Host`
-  hostname, including when SSH forwards a different local port. If `Origin`
-  is present it must match the browser-facing HTTP host and port.
+- The server only accepts loopback addresses (`127.0.0.0/8`, `[::1]`) or
+  `localhost` as the `Host` hostname, including when SSH forwards a different
+  local port. If `Origin` is present it must match the browser-facing HTTP host
+  and port.
 - Every API request must carry the `X-Spill-Token` header. The page embeds a
   random token generated when the daemon starts.
 - Cross-origin requests are rejected.
@@ -101,7 +102,7 @@ page source embeds the current token; it changes whenever the daemon restarts.
 
 ### `POST /api`
 
-A JSON body with an `op` field, limited to 64 KiB:
+A JSON body with an `op` field, limited to 2 MiB:
 
 ```sh
 curl -s http://127.0.0.1:8080/api \

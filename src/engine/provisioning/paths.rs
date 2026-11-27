@@ -2,7 +2,13 @@
 use super::{check_file, invalid, open_directory, open_file_mode, remove_file};
 use crate::protocol::metainfo::{FileKind, Layout, OwnedMetainfo};
 use rustix::fs::{AtFlags, Mode, RenameFlags, mkdirat, renameat_with, statat, unlinkat};
-use std::{collections::BTreeSet, ffi::OsStr, fs::File, io, os::unix::ffi::OsStrExt};
+use std::{
+    collections::BTreeSet,
+    ffi::OsStr,
+    fs::File,
+    io,
+    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+};
 
 const MAX_PATH: usize = 4096;
 const MAX_DEPTH: usize = 32;
@@ -135,6 +141,7 @@ impl PayloadPaths {
         create: bool,
     ) -> io::Result<Vec<Option<File>>> {
         let mut files = Vec::with_capacity(self.paths.len());
+        let mut seen = BTreeSet::new();
         for (path, entry) in self.paths.iter().zip(layout.files()) {
             let opened = (|| {
                 if entry.kind() != FileKind::Data {
@@ -159,8 +166,24 @@ impl PayloadPaths {
                     }
                 });
                 let file = open_file_mode(&parent, &name, missing, Mode::from_raw_mode(0o666))?;
+                let meta = file.metadata()?;
+                if !seen.insert((meta.dev(), meta.ino())) {
+                    return Err(invalid("payload files alias on this filesystem"));
+                }
                 super::lock(&file)?;
                 if missing {
+                    if let Err(error) = file.set_len(entry.length()) {
+                        let _ = unlinkat(&parent, name.as_os_str(), AtFlags::empty());
+                        return Err(error);
+                    }
+                } else if !create
+                    && entry.length() > 0
+                    && name == partial_name(path)
+                    && meta.is_file()
+                    && meta.len() == 0
+                {
+                    // Recovery owns this partial via DestinationBinding; finish
+                    // sizing if an earlier crash landed between openat and set_len.
                     file.set_len(entry.length())?;
                 } else {
                     check_file(&file, entry.length())?;
@@ -205,6 +228,7 @@ impl PayloadPaths {
         layout: &Layout<'_>,
     ) -> io::Result<Option<Vec<Option<File>>>> {
         let mut files = Vec::with_capacity(self.paths.len());
+        let mut seen = BTreeSet::new();
         for (path, entry) in self.paths.iter().zip(layout.files()) {
             if entry.kind() != FileKind::Data {
                 files.push(None);
@@ -221,6 +245,10 @@ impl PayloadPaths {
             let file = read_only_file(&parent, filename(path))?;
             if check_file(&file, entry.length()).is_err() {
                 return Ok(None);
+            }
+            let meta = file.metadata()?;
+            if !seen.insert((meta.dev(), meta.ino())) {
+                return Err(invalid("payload files alias on this filesystem"));
             }
             files.push(Some(file));
         }

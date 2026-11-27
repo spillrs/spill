@@ -27,7 +27,7 @@ use std::{
     },
 };
 use tokio::{
-    sync::{Mutex, Notify, Semaphore, mpsc, oneshot},
+    sync::{Mutex, Notify, Semaphore, mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
 use tracing::Instrument;
@@ -134,7 +134,7 @@ pub(in crate::engine) struct Writer {
     pending: usize,
     epochs: HashMap<u32, Arc<()>>,
     cancel_recovery: Arc<AtomicBool>,
-    cancel_changed: Arc<Notify>,
+    cancel_tx: watch::Sender<bool>,
     capacity_changed: Arc<Notify>,
     observation: Arc<StdMutex<StorageStatus>>,
 }
@@ -154,8 +154,8 @@ impl Writer {
         let (ready_tx, ready) = oneshot::channel();
         let cancel_recovery = Arc::new(AtomicBool::new(false));
         let canceled = cancel_recovery.clone();
-        let cancel_changed = Arc::new(Notify::new());
-        let cancel_notify = cancel_changed.clone();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let worker_cancel_tx = cancel_tx.clone();
         let capacity_changed = Arc::new(Notify::new());
         let changed = capacity_changed.clone();
         // Immutable descriptors are shared only with owned blocking jobs. The
@@ -181,7 +181,7 @@ impl Writer {
             let mut jobs = worker_jobs.lock().await;
             let mut result: io::Result<()> = async {
                 let Some((mut verified, mut dirty)) = recover(
-                    &storage, &meta, if recheck { None } else { initial_resume }, &canceled, &rechecks, &mut jobs, &observed,
+                    &storage, &meta, if recheck { None } else { initial_resume }, (&canceled, cancel_rx.clone()), &rechecks, &mut jobs, &observed,
                 ).await? else {
                     // Do not checkpoint a partial scan: unchecked candidates must
                     // remain subject to the previous fingerprint on the next run.
@@ -407,7 +407,7 @@ impl Writer {
                             crate::engine::run_blocking(inline, move || destination.sync_data()).await?;
                             save(&storage, &meta, &verified, &checkpoint, fingerprint, inline, &observed).await?;
                             dirty = false;
-                            start_layers(&storage, &meta, &verified, layers, &rechecks, &canceled, &cancel_notify);
+                            start_layers(&storage, &meta, &verified, layers, &rechecks, &canceled, &cancel_rx);
                             Some(Output::Flushed)
                         }
                     };
@@ -425,7 +425,7 @@ impl Writer {
                 tracing::debug!(operation, %error, "storage_failed");
             }
             canceled.store(true, Ordering::Relaxed);
-            cancel_notify.notify_one();
+            worker_cancel_tx.send_replace(true);
             operation(&observed, "drain");
             let drained = jobs.drain().await;
             if let Err(error) = &drained {
@@ -460,7 +460,7 @@ impl Writer {
             pending: 0,
             epochs: HashMap::new(),
             cancel_recovery,
-            cancel_changed,
+            cancel_tx,
             capacity_changed,
             observation,
         }
@@ -469,12 +469,16 @@ impl Writer {
         *self.observation.lock().unwrap()
     }
     pub(in crate::engine) async fn ready(&mut self) -> io::Result<Vec<u8>> {
-        match self.ready.as_mut().expect("one startup").await {
-            Ok(result) => result,
-            Err(_) => match self.next().await {
-                Err(error) => Err(error),
-                Ok(_) => Err(io::Error::other("storage startup failed")),
-            },
+        if let Some(ready) = self.ready.as_mut() {
+            let result = ready.await;
+            self.ready = None;
+            if let Ok(result) = result {
+                return result;
+            }
+        }
+        match self.next().await {
+            Err(error) => Err(error),
+            Ok(_) => Err(io::Error::other("storage startup failed")),
         }
     }
     pub(in crate::engine) fn capacity(&self) -> usize {
@@ -572,7 +576,7 @@ impl Writer {
     }
     pub(in crate::engine) async fn shutdown(&mut self) -> io::Result<()> {
         self.cancel_recovery.store(true, Ordering::Relaxed);
-        self.cancel_changed.notify_one();
+        self.cancel_tx.send_replace(true);
         self.commands.take();
         self.outputs.close();
         if let Some(task) = &mut self.task {
@@ -603,7 +607,7 @@ fn start_layers(
     job: &mut Option<JoinHandle<io::Result<Option<OwnedMetainfo>>>>,
     rechecks: &Arc<Semaphore>,
     canceled: &Arc<AtomicBool>,
-    cancel_notify: &Arc<Notify>,
+    cancel_rx: &watch::Receiver<bool>,
 ) {
     if job.is_some()
         || !meta.layers_pending()
@@ -615,11 +619,12 @@ fn start_layers(
     let pending = meta.clone();
     let rechecks = rechecks.clone();
     let canceled = canceled.clone();
-    let cancel_notify = cancel_notify.clone();
+    let mut cancel_rx = cancel_rx.clone();
     *job = Some(tokio::spawn(async move {
         let permit = tokio::select! {
+            biased;
+            _ = cancel_rx.wait_for(|&c| c) => return Ok(None),
             permit = rechecks.acquire_owned() => permit.map_err(io::Error::other)?,
-            () = cancel_notify.notified() => return Ok(None),
         };
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -729,7 +734,7 @@ async fn recover(
     storage: &Arc<FileStorage>,
     meta: &OwnedMetainfo,
     initial_resume: Option<Vec<u8>>,
-    canceled: &Arc<AtomicBool>,
+    (canceled, mut cancel_rx): (&Arc<AtomicBool>, watch::Receiver<bool>),
     rechecks: &Arc<Semaphore>,
     jobs: &mut Jobs,
     observation: &StdMutex<StorageStatus>,
@@ -776,11 +781,11 @@ async fn recover(
                 }
                 let Some(index) = pending.next() else { break };
                 operation(observation, "recovery_wait");
-                let permit = rechecks
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(io::Error::other)?;
+                let permit = tokio::select! {
+                    biased;
+                    _ = cancel_rx.wait_for(|&c| c) => return Ok(None),
+                    permit = rechecks.clone().acquire_owned() => permit.map_err(io::Error::other)?,
+                };
                 if canceled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }

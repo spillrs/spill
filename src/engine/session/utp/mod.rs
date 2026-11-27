@@ -176,6 +176,13 @@ impl Mux {
                 }
                 return;
             }
+            if mux.entries.contains_key(&Key {
+                address,
+                id: h.connection_id,
+            }) {
+                mux.reset(address, h.connection_id, 0, h.seq_nr, now);
+                return;
+            }
             if !mux.enabled || !mux.accepting || mux.entries.len() >= mux.cap {
                 tracing::trace!(
                     transport = "utp",

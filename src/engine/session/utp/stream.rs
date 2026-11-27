@@ -116,7 +116,7 @@ impl AsyncWrite for Stream {
             .entries
             .get_mut(&self.key)
             .expect("owned uTP connection");
-        if e.connection.failed || e.connection.finished {
+        if e.connection.failed || e.connection.finished || e.connection.is_closing() {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
         if e.connection.writable() == 0 && buffers.iter().any(|b| !b.is_empty()) {

@@ -224,7 +224,7 @@ impl Connection {
             .sum()
     }
     pub(super) fn on_packet(&mut self, now: Instant, stamp: u32, packet: Packet<'_>) {
-        if self.failed || self.finished {
+        if self.failed || (self.finished && self.remote_fin) {
             return;
         }
         let h = packet.header;
@@ -247,6 +247,7 @@ impl Connection {
             self.probe_pending = false;
             self.timeouts = 0;
         }
+        let previous_window = self.remote_window;
         self.remote_window = h.wnd_size as usize;
         self.echo = timestamp_diff(stamp, h.timestamp_us);
         while now.duration_since(self.base_at) >= Duration::from_secs(10) {
@@ -295,7 +296,6 @@ impl Connection {
                 self.sent.pop_front();
             }
             if any {
-                self.timeouts = 0;
                 if let Some(rtt) = sample {
                     if let Some(srtt) = self.srtt {
                         self.rttvar = 0.75 * self.rttvar + 0.25 * (srtt - rtt).abs();
@@ -308,7 +308,10 @@ impl Connection {
                 self.rto = Duration::from_secs_f64(
                     (self.srtt.unwrap_or(1.0) + 4.0 * self.rttvar).clamp(0.5, 60.0),
                 );
-                self.retry = now + self.rto;
+                if advanced || self.sent.is_empty() {
+                    self.timeouts = 0;
+                    self.retry = now + self.rto;
+                }
                 if h.timestamp_diff_us != 0 {
                     let base = self
                         .base
@@ -323,7 +326,7 @@ impl Connection {
                         self.base[self.base_slot] = Some(h.timestamp_diff_us);
                         delay = 0;
                     }
-                    let off = (100_000.0 - delay as f64) / 100_000.0;
+                    let off = ((100_000.0 - delay as f64) / 100_000.0).clamp(-1.0, 1.0);
                     if off < 0.0 || used as f64 >= self.cwnd / 2.0 {
                         self.cwnd = (self.cwnd + 3000.0 * off * bytes_acked as f64 / self.cwnd)
                             .clamp(MIN_WINDOW, SEND_CAP as f64);
@@ -332,7 +335,11 @@ impl Connection {
             }
             if advanced {
                 self.duplicates = 0;
-            } else if h.kind == Kind::State && self.remote_window != 0 && !self.sent.is_empty() {
+            } else if h.kind == Kind::State
+                && self.remote_window != 0
+                && !self.sent.is_empty()
+                && (self.remote_window == previous_window || packet.sack.is_some())
+            {
                 self.duplicates += 1;
             }
             let partial = advanced && self.recovery_end.is_some_and(|end| seq_less(h.ack_nr, end));
@@ -398,7 +405,13 @@ impl Connection {
                     filled_hole |= self.ack != h.seq_nr;
                 }
                 self.ack_packets += 1;
-                if distance != 1 || filled_hole || self.ack_packets >= 2 || h.kind == Kind::Fin {
+                if distance != 1
+                    || filled_hole
+                    || self.ack_packets >= 2
+                    || h.kind == Kind::Fin
+                    || self.remote_fin
+                    || self.finished
+                {
                     self.state(stamp);
                 } else {
                     self.delayed_ack.get_or_insert(now + ACK_DELAY);
@@ -551,6 +564,9 @@ impl Connection {
             payload: Vec::new(),
         });
         self.failed = true;
+    }
+    pub(super) fn is_closing(&self) -> bool {
+        self.closing.is_some()
     }
     pub(super) fn eof(&self) -> bool {
         self.remote_fin

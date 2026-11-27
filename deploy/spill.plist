@@ -20,6 +20,8 @@
         <key>SuccessfulExit</key>
         <false/>
     </dict>
+    <key>ExitTimeOut</key>
+    <integer>120</integer>
     <key>StandardOutPath</key>
     <string>@HOME@/Library/Application Support/spill/spill.log</string>
     <key>StandardErrorPath</key>

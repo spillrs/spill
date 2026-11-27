@@ -6,7 +6,7 @@ other codebases. When a rule and a request conflict, ask before breaking it.
 ## What spill is
 
 A modern torrent client built in Rust.
-It is a single-user BitTorrent v1 daemon for Linux and macOS and a supported
+It is a single-user BitTorrent v1, v2 and hybrid daemon for Linux and macOS and a supported
 embeddable engine for applications.
 Correctness and interoperability with other clients come first, then stability
 under real use, then performance. The code must stay minimal: every line has to earn its place.

@@ -27,8 +27,8 @@ catalog is required.
   V2/hybrid metainfo TCP discovery and daemon lifecycles have been checked
   with libtorrent 2.1.2.0; see [Scope](#scope) for the validation limits.
 - Connect to peers over TCP and uTP (BEP 29).
-- Discover peers through HTTP, HTTPS and UDP trackers, the DHT, and peer exchange
-  (PEX); download from HTTP web seeds.
+- Discover peers through HTTP, HTTPS and UDP trackers, the DHT, peer exchange
+  (PEX) and local service discovery (LSD); download from HTTP web seeds.
 - Use private torrents (BEP 27), with DHT and PEX disabled.
 - Select files and priorities, limit transfer rates, and configure daemon seeding
   goals.
@@ -59,7 +59,8 @@ HTTP checks against libtorrent 2.1.2.0 cover v2/hybrid file URLs, short tails,
 padding and combined peer/web-seed downloads; see the
 [web-seed checks](https://github.com/spillrs/spill/blob/main/tests/interop/baselines/webseeds.json).
 Peer connections support [MSE/PE obfuscation](networking.md#peer-encryption).
-Local peer discovery is not supported.
+Local service discovery (BEP 14) is available when local network access is enabled;
+see [Networking](networking.md#local-service-discovery).
 The daemon is single-user; its optional web interface listens only on loopback
 and has no multi-user authentication. Remote access requires an SSH tunnel.
 

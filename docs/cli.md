@@ -298,7 +298,7 @@ Selected-byte counts remain `null` until metadata is ready.
 | `holepunch` | Execution-local cumulative coordination counters described below. |
 
 Storage `operation` identifies the worker's current activity or wait:
-`recovery`, `recovery_wait` (shared recheck capacity), `idle`, `write`, `hash`,
+`recovery`, `recovery_wait` (shared recheck capacity), `seed_file_pool`, `idle`, `write`, `hash`,
 `read`, `leaves`, `finish_file`, `sync` (completion barrier), `fingerprint`,
 `checkpoint`, `metadata_checkpoint`, `layers`, `publish` (result delivery),
 `drain`, `stopped` or `failed`. `operation_age_ms` is how long that label has
@@ -371,8 +371,9 @@ spill set ID 'file_priorities=[]'      # back to all files
 ```
 
 - Quote values that contain brackets or spaces so your shell passes them intact.
-- A running torrent is stopped and restarted with the new settings. A paused
-  torrent stays paused.
+- Changing only `download_limit` or `upload_limit` applies live without
+  restarting a running torrent. Other changes stop and restart a running
+  torrent with the new settings. A paused torrent stays paused.
 - `file_priorities` needs one entry per file in `files` order, including
   padding files, which must be `"skip"`. Explicit file priorities need metadata, so wait
   for a magnet to resolve first.
@@ -403,7 +404,8 @@ echo '{"op":"get","id":"3f2a"}' | socat - "UNIX-CONNECT:$socket"
 ```
 
 Requests use `op` plus the same fields as the commands (`id`, `values`,
-`delete_payload`, `magnet`, `url`, `output_dir`, `paused`, `settings`). For `add`, `metainfo` is the
+`delete_payload`, `magnet`, `url`, `output_dir`, `paused`, `settings`, or
+`download_limit`/`upload_limit` for `set_bandwidth`). For `add`, `metainfo` is the
 `.torrent` file as a standard base64 string (at most 16 MiB decoded); give
 exactly one of `metainfo`, `magnet`, or `url`. Optional `settings` is an object
 of per-torrent overrides merged with daemon defaults; `paused` defaults to false.

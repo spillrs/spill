@@ -824,9 +824,13 @@ def corruption_case(lt, args, binary, root):
             engine = Engine(binary, root / f"engine-{i}", torrent, seed, args.host, seed=True)
             engines.append(engine)
             address = engine.ready(args.timeout)
-            with (seed / "payload.bin").open("r+b") as payload:
+            target = seed / "payload.bin"
+            stat = target.stat()
+            with target.open("r+b") as payload:
                 payload.write(b"\x01")
-            assert digest(seed / "payload.bin") != expected[i]
+            # Preserve mtime to simulate silent bit-rot past seed-pool metadata checks.
+            os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            assert digest(target) != expected[i]
             relays.append(Relay(args.host, address, root / f"corrupt-{i}-wire.jsonl",
                                 "libtorrent", withhold_pieces=i == 1,
                                 hash_policy="close-after-reject" if i == 1 else None))
@@ -882,13 +886,20 @@ def corruption_case(lt, args, binary, root):
         result["checksum_matches"] = True
         return result
     finally:
+        cleanup_error = None
         if client is not None:
             client.stop()
         for engine in engines:
-            engine.stop()
+            try:
+                engine.stop()
+            except Exception as error:
+                if cleanup_error is None:
+                    cleanup_error = error
         for relay in relays:
             relay.stop()
         (root / "corruption.json").write_text(json.dumps(result, indent=2))
+        if cleanup_error is not None and sys.exc_info()[0] is None:
+            raise cleanup_error
 
 
 def main():

@@ -332,3 +332,23 @@ async fn slow_url_fetch_does_not_block_control_and_is_cancelled_on_shutdown() {
     let result = client.wait_with_output().await.unwrap();
     assert!(!result.status.success());
 }
+
+#[tokio::test]
+async fn url_fetch_respects_allow_local_network_policy() {
+    let root = Temp::new();
+    let source = Source::new().await;
+    let mut daemon = Daemon::start(
+        &root.0,
+        DaemonConfig {
+            allow_local_network: false,
+            ..Default::default()
+        },
+    )
+    .await;
+    let denied = daemon
+        .raw(json!({"op":"add","url":format!("{}/download?key=secret", source.url)}))
+        .await;
+    assert_eq!(denied["code"], 2, "{denied}");
+    assert_eq!(source.hits.load(Ordering::SeqCst), 0);
+    daemon.stop().await;
+}

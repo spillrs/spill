@@ -313,7 +313,8 @@ window may only be found on a later attempt.
 ## Local addresses
 
 By default spill never connects out to private, loopback or link-local
-addresses, whether it got them from a tracker, the DHT, PEX or a web seed URL.
+addresses, whether it got them from a tracker, the DHT, PEX, a web seed URL or
+a torrent URL.
 This keeps a malicious torrent from making spill probe your local network.
 Peer destinations below port 1024 (including tracker-returned peers on port 443)
 are also refused unless `allow_local_network = true`; this can exclude seedboxes

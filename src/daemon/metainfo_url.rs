@@ -8,7 +8,7 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-fn validate(url: &Url) -> io::Result<()> {
+fn validate(url: &Url, allow_local_network: bool) -> io::Result<()> {
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(invalid(
             "torrent URL must use HTTP or HTTPS and have a host",
@@ -16,6 +16,9 @@ fn validate(url: &Url) -> io::Result<()> {
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(invalid("torrent URL must not contain credentials"));
+    }
+    if !crate::http::destination_allowed(url, allow_local_network) {
+        return Err(invalid("torrent URL destination is not allowed"));
     }
     Ok(())
 }
@@ -25,11 +28,13 @@ fn transport(error: reqwest::Error) -> io::Error {
     io::Error::other(error.without_url())
 }
 
-pub async fn fetch(source: &str) -> io::Result<Vec<u8>> {
+pub async fn fetch(source: &str, allow_local_network: bool) -> io::Result<Vec<u8>> {
     let mut url = Url::parse(source).map_err(|_| invalid("invalid torrent URL"))?;
-    validate(&url)?;
+    validate(&url, allow_local_network)?;
     let client = crate::http::client()
+        .referer(false)
         .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(crate::http::resolver(allow_local_network))
         .connect_timeout(Duration::from_secs(10))
         .build()
         .map_err(transport)?;
@@ -55,7 +60,7 @@ pub async fn fetch(source: &str) -> io::Result<Vec<u8>> {
                 let next = url
                     .join(location)
                     .map_err(|_| invalid("invalid torrent URL redirect"))?;
-                validate(&next)?;
+                validate(&next, allow_local_network)?;
                 if url.scheme() == "https" && next.scheme() == "http" {
                     return Err(invalid("torrent URL redirect must not downgrade HTTPS"));
                 }

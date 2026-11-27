@@ -182,13 +182,19 @@ impl Control {
                 return Err(Error::Invalid("output_dir must be absolute".into()));
             }
             if let Some(source) = url.take() {
-                let mut shutdown = self.0.lock().await.shutdown.subscribe();
+                let (mut shutdown, allow_local_network) = {
+                    let supervisor = self.0.lock().await;
+                    (
+                        supervisor.shutdown.subscribe(),
+                        supervisor.config.allow_local_network,
+                    )
+                };
                 if *shutdown.borrow() {
                     return Err(Error::Invalid("daemon is shutting down".into()));
                 }
                 // Network I/O must not hold up other control requests.
                 *metainfo = Some(tokio::select! {
-                    result = crate::metainfo_url::fetch(&source) => result?,
+                    result = crate::metainfo_url::fetch(&source, allow_local_network) => result?,
                     _ = shutdown.changed() => return Err(Error::Invalid("daemon is shutting down".into())),
                 });
             }

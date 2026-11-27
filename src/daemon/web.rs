@@ -17,7 +17,29 @@ use tokio::{
     sync::watch,
 };
 
-static WEB: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
+static WEB: &[(&str, &str, &[u8])] = &[
+    (
+        "app.js",
+        "text/javascript; charset=utf-8",
+        include_bytes!("web/app.js"),
+    ),
+    (
+        "details.js",
+        "text/javascript; charset=utf-8",
+        include_bytes!("web/details.js"),
+    ),
+    (
+        "logs.js",
+        "text/javascript; charset=utf-8",
+        include_bytes!("web/logs.js"),
+    ),
+    (
+        "style.css",
+        "text/css; charset=utf-8",
+        include_bytes!("web/style.css"),
+    ),
+    ("logo.svg", "image/svg+xml", include_bytes!("web/logo.svg")),
+];
 #[derive(Clone)]
 struct App {
     control: Control,
@@ -91,24 +113,15 @@ async fn asset(State(app): State<App>, headers: HeaderMap, uri: Uri) -> axum::re
         return index(State(app), headers).await;
     }
     let path = uri.path().trim_start_matches('/');
-    let Some((_, source)) = WEB.iter().find(|(name, _)| *name == path) else {
+    let Some(&(_, content_type, source)) = WEB.iter().find(|&&(name, _, _)| name == path) else {
         return StatusCode::NOT_FOUND.into_response();
-    };
-    let content_type = match std::path::Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-    {
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        _ => "application/octet-stream",
     };
     (
         [
             ("content-type", content_type),
             ("cache-control", "no-store"),
         ],
-        *source,
+        source,
     )
         .into_response()
 }

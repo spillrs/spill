@@ -14,7 +14,6 @@ categories = ["command-line-utilities", "network-programming"]
 include = [
     "Cargo.toml",
     "Cargo.lock",
-    "build.rs",
     "LICENSE",
     "README.md",
     "src/**",

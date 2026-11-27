@@ -111,6 +111,7 @@ impl Torrent {
             }
             if let Some(&slot) = payload.remote_slots.get(&id) {
                 payload.remotes[slot].unsolicited = peer.budget;
+                payload.remotes[slot].promoted_hash = peer.hashes;
             }
         }
         let actions = std::mem::take(&mut payload.actions);
@@ -419,11 +420,17 @@ impl Fetch {
                     request
                 };
                 let peer = self.peers.get_mut(&id).expect("idle metadata peer");
-                peer.queue(Message::HashRequest(request))?;
+                if let Err(error) = peer.queue(Message::HashRequest(request)) {
+                    self.error = Some(error.to_string());
+                    self.peers.remove(&id);
+                    actions.push(Action::Disconnect { id });
+                    continue;
+                }
                 peer.hashes = Some(request);
                 peer.deadline = now + crate::engine::profile::REQUEST_TIMEOUT;
             }
         }
+        let mut drop_peers = Vec::new();
         for (&id, peer) in &mut self.peers {
             if self.info.is_none()
                 && peer.requested.is_none()
@@ -439,10 +446,14 @@ impl Fetch {
                 .map_err(invalid_data)?
                 .encode(extensions::limits())
                 .map_err(invalid_data)?;
-                peer.queue(Message::Extended {
+                if let Err(error) = peer.queue(Message::Extended {
                     id: ext,
                     payload: &payload,
-                })?;
+                }) {
+                    self.error = Some(error.to_string());
+                    drop_peers.push(id);
+                    continue;
+                }
                 peer.requested = Some((peer.next_piece, total));
                 peer.deadline = now + crate::engine::profile::REQUEST_TIMEOUT;
             }
@@ -453,6 +464,10 @@ impl Fetch {
                 peer.capacity -= 1;
                 actions.push(Action::Send { id, msg });
             }
+        }
+        for id in drop_peers {
+            self.peers.remove(&id);
+            actions.push(Action::Disconnect { id });
         }
         if let Some(at) = self
             .peers

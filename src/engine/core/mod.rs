@@ -506,6 +506,11 @@ impl Torrent {
                 *count -= 1;
                 if *count == 0 {
                     self.writing.remove(&piece);
+                    if let Some(connection) = self.picker.piece(piece).and_then(|p| p.source)
+                        && let Some(&position) = self.remote_slots.get(&connection)
+                    {
+                        self.release_or_restart_isolated(position, piece)?;
+                    }
                 }
                 self.mark_all_dirty();
             }
@@ -806,6 +811,7 @@ impl Torrent {
         self.dht_port = dht;
     }
     fn set_pex(&mut self, pex: bool) {
+        let pex = pex && !self.meta.is_private();
         if self.pex_enabled != pex {
             for remote in &mut self.remotes {
                 remote.extensions.pex.enabled = pex;

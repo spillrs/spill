@@ -164,3 +164,94 @@ async fn malformed_withdrawals_disconnect_only_the_sender() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn isolated_piece_withdrawal_while_write_pending_restarts_for_another_peer() {
+    use tokio::io::AsyncWriteExt;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let root = Temp::new();
+        let payload = vec![0x5a; 32 * 1024];
+        let meta = Profile::default()
+            .parse_owned(&seed_metainfo("x", &payload, None))
+            .unwrap();
+        let key = meta.info_hash().wire_key();
+        let session = Session::bind(
+            NetworkOptions {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                utp: false,
+                ..Default::default()
+            },
+            Limits::default(),
+        )
+        .await
+        .unwrap();
+        let mut options = TorrentOptions::new(
+            TorrentSource::Metainfo(meta),
+            Destination::Open(root.0.clone()),
+        );
+        options.settings.trackers = false;
+        options.settings.dht = false;
+        options.settings.pex = false;
+        options.settings.web_seeds = false;
+        let mut handle = session.admit(options).unwrap();
+        while !handle.snapshot().progress.ready {
+            assert!(handle.changed().await);
+        }
+
+        // Mixed-source hash failure isolates piece 0 without banning peer b.
+        let (mut a, _) = peer(&session, key, 61, false).await;
+        raw::send(&mut a, 5, &[0x80]).await;
+        raw::send(&mut a, 1, &[]).await;
+        let first = raw::next(&mut a, 6).await;
+        assert_eq!(&first[1..], raw::request(0, 0, 16 * 1024));
+        let mut corrupt = first[1..9].to_vec();
+        corrupt.extend_from_slice(&vec![0x11; 16 * 1024]);
+        raw::send(&mut a, 7, &corrupt).await;
+        drop(a);
+
+        let (mut b, id) = peer(&session, key, 62, false).await;
+        raw::send(&mut b, 5, &[0x80]).await;
+        raw::send(&mut b, 1, &[]).await;
+        let second = raw::next(&mut b, 6).await;
+        assert_eq!(&second[1..], raw::request(0, 16 * 1024, 16 * 1024));
+        let mut good_tail = second[1..9].to_vec();
+        good_tail.extend_from_slice(&payload[16 * 1024..]);
+        raw::send(&mut b, 7, &good_tail).await;
+
+        // Isolated retry pins piece 0 to peer b. Pipeline block 0 + lt_donthave
+        // in one TCP write so withdrawal arrives while block 0's write is pending.
+        let retry_first = raw::next(&mut b, 6).await;
+        assert_eq!(&retry_first[1..], raw::request(0, 0, 16 * 1024));
+        let mut pipelined = Vec::new();
+        let piece_len = (1 + 8 + 16 * 1024) as u32;
+        pipelined.extend_from_slice(&piece_len.to_be_bytes());
+        pipelined.push(7);
+        pipelined.extend_from_slice(&retry_first[1..9]);
+        pipelined.extend_from_slice(&payload[..16 * 1024]);
+        pipelined.extend_from_slice(&6u32.to_be_bytes());
+        pipelined.extend_from_slice(&[20, id]);
+        pipelined.extend_from_slice(&0u32.to_be_bytes());
+        b.write_all(&pipelined).await.unwrap();
+
+        // Keep peer b connected; peer c must receive both blocks and complete.
+        let (mut c, _) = peer(&session, key, 63, false).await;
+        raw::send(&mut c, 5, &[0x80]).await;
+        raw::send(&mut c, 1, &[]).await;
+        for expected_begin in [0u32, 16 * 1024] {
+            let req = raw::next(&mut c, 6).await;
+            assert_eq!(&req[1..], raw::request(0, expected_begin, 16 * 1024));
+            let mut block = req[1..9].to_vec();
+            let start = expected_begin as usize;
+            block.extend_from_slice(&payload[start..start + 16 * 1024]);
+            raw::send(&mut c, 7, &block).await;
+        }
+        handle.wait_complete().await.unwrap();
+        assert_eq!(std::fs::read(root.0.join("x")).unwrap(), payload);
+        drop(b);
+        drop(c);
+        handle.stop().await.unwrap();
+        session.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

@@ -93,6 +93,10 @@ impl HashRequest {
         tree: &[Vec<[u8; 32]>],
         leaves: &[[u8; 32]],
     ) -> Vec<u8> {
+        assert!(
+            self.base_layer == 0 || self.base_layer >= piece_height,
+            "intermediate base layers are not served"
+        );
         let mut padding = [[0; 32]; 51];
         for height in 1..=piece_height as usize + tree.len() {
             padding[height] = merkle::parent(&padding[height - 1], &padding[height - 1]);

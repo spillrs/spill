@@ -55,6 +55,10 @@ impl Asked {
         }
         true
     }
+    pub(in crate::engine) fn clear(&mut self) {
+        self.items.clear();
+        self.positions.clear();
+    }
     pub(in crate::engine) fn retain(&mut self, mut keep: impl FnMut(&BlockRequest) -> bool) {
         let mut position = 0;
         while position < self.items.len() {

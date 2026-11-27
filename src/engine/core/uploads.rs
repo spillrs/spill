@@ -57,6 +57,7 @@ impl Torrent {
                     .swap_remove(position)
                     .result
                     .expect("completed read");
+                self.remotes[peer].uploads.pop_front();
                 if let Some(block) = result {
                     self.remotes[peer].output_capacity -= 1;
                     self.remotes[peer].output_blocked = self.remotes[peer].output_capacity == 0;
@@ -68,7 +69,6 @@ impl Torrent {
                 } else if self.remotes[peer].rejects_requests() {
                     self.reject_upload(peer, request)?;
                 }
-                self.remotes[peer].uploads.pop_front();
             }
         }
         self.duplex.cursor = (start + 1) % count;

@@ -2,9 +2,41 @@ use super::*;
 use crate::protocol::peer::message::WireMode;
 
 impl Torrent {
-    fn on_dont_have(&mut self, position: usize, payload: &[u8]) -> io::Result<()> {
-        if !self.remotes[position].extensions.enabled {
+    pub(super) fn release_or_restart_isolated(
+        &mut self,
+        position: usize,
+        index: u32,
+    ) -> io::Result<()> {
+        let connection = self.remotes[position].connection;
+        let Some(piece) = self.picker.piece(index) else {
             return Ok(());
+        };
+        if piece.source != Some(connection)
+            || piece.hashing
+            || self
+                .picker
+                .requests(index)
+                .iter()
+                .any(|pending| pending.connection == Some(connection))
+        {
+            return Ok(());
+        }
+        if piece.sources.is_empty() {
+            self.picker.release_source(index);
+        } else if piece.isolated
+            && !has(&self.remotes[position].pieces, index)
+            && !self.writing.contains_key(&index)
+        {
+            self.picker.clear_requests(index);
+            let event = self.restart_piece(index, false)?;
+            self.deferred.push_back(event);
+        }
+        Ok(())
+    }
+
+    fn on_dont_have(&mut self, position: usize, payload: &[u8]) -> io::Result<bool> {
+        if !self.remotes[position].extensions.enabled {
+            return Ok(false);
         }
         let bytes: [u8; 4] = payload
             .try_into()
@@ -14,7 +46,8 @@ impl Torrent {
             return Err(invalid_data_text("lt_donthave index out of range"));
         }
         let peer = &mut self.remotes[position];
-        if has(&peer.pieces, index) {
+        let had = has(&peer.pieces, index);
+        if had {
             let old = peer.pieces.clone();
             clear(&mut peer.pieces, index);
             peer.have_count -= 1;
@@ -33,12 +66,13 @@ impl Torrent {
             });
             peer.cancels.retain(|request| request.index != index);
         }
+        self.release_or_restart_isolated(position, index)?;
         self.deferred.push_back(Event::PieceWithdrawn {
-            connection: peer.connection,
+            connection: self.remotes[position].connection,
             index,
         });
         self.mark_all_dirty();
-        Ok(())
+        Ok(had)
     }
 
     pub(super) fn on_frame(
@@ -145,7 +179,11 @@ impl Torrent {
             self.retire_peer(position, invalid_data_text("hash message outside v2 mode"))?;
             return Ok(None);
         }
-        if matches!(message, Message::Hashes { .. } | Message::HashReject(_)) {
+        if let Message::Hashes { request, .. } | Message::HashReject(request) = message {
+            if self.remotes[position].promoted_hash == Some(request) {
+                self.remotes[position].promoted_hash = None;
+                return Ok(None);
+            }
             self.retire_peer(position, invalid_data_text("unsolicited hash response"))?;
             return Ok(None);
         }
@@ -155,20 +193,22 @@ impl Torrent {
             return Ok(None);
         }
         if let Message::Extended { id, payload } = message {
-            let result = self.remotes[position]
-                .unsolicited
-                .charge(wire_bytes)
-                .and_then(|()| {
-                    if id == extensions::DONT_HAVE_ID {
-                        self.on_dont_have(position, payload)
-                    } else if id == holepunch::ID {
-                        self.on_holepunch(position, payload)
-                    } else {
-                        self.remotes[position]
-                            .extensions
-                            .receive(id, payload, &self.meta, self.now)
-                    }
-                });
+            let result = if id == extensions::DONT_HAVE_ID {
+                self.on_dont_have(position, payload)
+            } else if id == holepunch::ID {
+                self.on_holepunch(position, payload)
+            } else {
+                self.remotes[position]
+                    .extensions
+                    .receive(id, payload, &self.meta, self.now)
+            }
+            .and_then(|handled| {
+                if handled {
+                    Ok(())
+                } else {
+                    self.remotes[position].unsolicited.charge(wire_bytes)
+                }
+            });
             if let Err(error) = result {
                 self.retire_peer(position, error)?;
             }
@@ -265,6 +305,7 @@ impl Torrent {
                     if peer.choked {
                         clear(&mut peer.allowed_fast, request.index);
                     }
+                    self.release_or_restart_isolated(position, request.index)?;
                 } else if let Err(error) = peer.unsolicited.charge(wire_bytes) {
                     self.retire_peer(position, error)?;
                 }
@@ -284,6 +325,8 @@ impl Torrent {
                 peer.choked = true;
                 let deadline = self.now + crate::engine::profile::REQUEST_TIMEOUT;
                 if !peer.rejects_requests() {
+                    peer.asked.clear();
+                    peer.cancels.clear();
                     self.picker.on_peer_gone(connection, deadline, true);
                 }
             }

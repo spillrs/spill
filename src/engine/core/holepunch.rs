@@ -127,9 +127,9 @@ impl Torrent {
             }
         }
     }
-    pub(super) fn on_holepunch(&mut self, peer: usize, payload: &[u8]) -> io::Result<()> {
+    pub(super) fn on_holepunch(&mut self, peer: usize, payload: &[u8]) -> io::Result<bool> {
         if !self.holepunch_enabled() || !self.punch_peer(peer) {
-            return Ok(());
+            return Ok(false);
         }
         let message = Message::parse(payload).map_err(invalid_data)?;
         let target = crate::engine::network::canonical(message.addr);
@@ -145,7 +145,7 @@ impl Torrent {
                     &mut self.remotes[peer].extensions.holepunch.connect,
                     self.now,
                 ) {
-                    return Ok(());
+                    return Ok(false);
                 }
                 self.punches
                     .retain(|p| p.relay != relay || p.target != target);
@@ -162,7 +162,7 @@ impl Torrent {
                     &mut self.remotes[peer].extensions.holepunch.rendezvous,
                     self.now,
                 ) {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let matches = |p: &PeerState| {
                     p.extensions.pex.endpoint == Some(target)
@@ -190,7 +190,7 @@ impl Torrent {
                             addr: message.addr,
                         });
                     }
-                    return Ok(());
+                    return Ok(true);
                 }
                 let other = found.expect("connected target");
                 let endpoint = |i: usize| {
@@ -200,7 +200,7 @@ impl Torrent {
                         .filter(|a| crate::engine::network::eligible(*a))
                 };
                 let (Some(requester), Some(destination)) = (endpoint(peer), endpoint(other)) else {
-                    return Ok(());
+                    return Ok(true);
                 };
                 if self.remotes[peer].extensions.holepunch.outbound.len() < QUEUED
                     && self.remotes[other].extensions.holepunch.outbound.len() < QUEUED
@@ -224,6 +224,6 @@ impl Torrent {
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 }

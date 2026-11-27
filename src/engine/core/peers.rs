@@ -146,6 +146,7 @@ impl Torrent {
             cancels: VecDeque::new(),
             rejects: VecDeque::new(),
             hashes: VecDeque::new(),
+            promoted_hash: None,
             send_bitfield: false,
             output_blocked: false,
             retiring: false,

@@ -106,6 +106,7 @@ pub(in crate::engine) fn handshake(
 pub(in crate::engine) struct Extensions {
     pub(in crate::engine) enabled: bool,
     pub(in crate::engine) handshake_pending: bool,
+    handshake_seen: bool,
     pub(in crate::engine) sent_upload_only: Option<bool>,
     pub(in crate::engine) upload_only: bool,
     pub(in crate::engine) request_queue: u32,
@@ -120,6 +121,7 @@ impl Default for Extensions {
         Self {
             enabled: false,
             handshake_pending: false,
+            handshake_seen: false,
             sent_upload_only: None,
             upload_only: false,
             request_queue: 250,
@@ -138,9 +140,9 @@ impl Extensions {
         payload: &[u8],
         meta: &OwnedMetainfo,
         now: std::time::Instant,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         if !self.enabled {
-            return Ok(());
+            return Ok(false);
         }
         if id == 0 {
             let handshake = extension::Handshake::parse(payload, limits()).map_err(invalid)?;
@@ -168,14 +170,20 @@ impl Extensions {
             if self.remote.id_for(b"ut_metadata").is_none() {
                 self.pending.clear();
             }
-        } else if id == crate::engine::core::pex::ID
+            let first = !self.handshake_seen;
+            self.handshake_seen = true;
+            return Ok(first);
+        }
+        if id == crate::engine::core::pex::ID
             && self.pex.enabled
             && !meta.is_private()
             && self.remote.id_for(b"ut_pex").is_some()
         {
-            self.pex
-                .receive(payload, crate::engine::profile::MAX_QUEUED, now)?;
-        } else if id == METADATA_ID && !meta.is_private() {
+            return self
+                .pex
+                .receive(payload, crate::engine::profile::MAX_QUEUED, now);
+        }
+        if id == METADATA_ID && !meta.is_private() {
             let message = metadata::Message::parse(
                 payload,
                 limits(),
@@ -201,9 +209,10 @@ impl Extensions {
                         metadata::Kind::Reject { piece }
                     };
                 self.pending.push_back(kind);
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
     pub(in crate::engine) fn response(
         &self,

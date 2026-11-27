@@ -37,7 +37,7 @@ impl Pex {
         payload: &[u8],
         capacity: usize,
         now: Instant,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         let cap = if self.received_at.is_none() {
             INITIAL
         } else {
@@ -51,7 +51,7 @@ impl Pex {
             .received_at
             .is_some_and(|at| now.saturating_duration_since(at) < INTERVAL)
         {
-            return Ok(());
+            return Ok(false);
         }
         self.received_at = Some(now);
         let dropped: Vec<_> = message
@@ -90,7 +90,7 @@ impl Pex {
                 self.received.push(address);
             }
         }
-        Ok(())
+        Ok(true)
     }
     pub(in crate::engine) fn due(&self, now: Instant) -> bool {
         self.sent_at

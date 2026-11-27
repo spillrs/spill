@@ -79,6 +79,7 @@ pub(in crate::engine) struct PeerState {
     pub(in crate::engine) cancels: VecDeque<BlockRequest>,
     pub(in crate::engine) rejects: VecDeque<BlockRequest>,
     pub(super) hashes: VecDeque<super::hashes::Job>,
+    pub(super) promoted_hash: Option<crate::protocol::peer::hash::HashRequest>,
     pub(in crate::engine) send_bitfield: bool,
     pub(in crate::engine) output_blocked: bool,
     pub(in crate::engine) retiring: bool,

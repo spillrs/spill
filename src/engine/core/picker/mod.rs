@@ -642,8 +642,16 @@ impl Picker {
             );
             pending.retry_grant = true;
             // Whole-piece affinity is a preference, not authority to monopolize
-            // rejected work. Isolated retries must still keep one source.
-            if !piece.isolated && piece.source == Some(connection) {
+            // rejected work. Isolated retries keep one source once blocks are
+            // written, but release an unused pin so another peer can try.
+            if piece.source == Some(connection)
+                && (!piece.isolated
+                    || (piece.sources.is_empty()
+                        && !piece
+                            .requests
+                            .iter()
+                            .any(|p| p.connection == Some(connection))))
+            {
                 piece.source = None;
             }
             return true;
@@ -683,6 +691,12 @@ impl Picker {
                     );
                     pending.retry_grant |= choke;
                 }
+            }
+            if choke
+                && piece.source == Some(connection)
+                && (!piece.isolated || piece.sources.is_empty())
+            {
+                piece.source = None;
             }
         }
     }

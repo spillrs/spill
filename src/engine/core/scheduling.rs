@@ -211,14 +211,13 @@ impl Torrent {
                     request
                 };
                 let deadline = self.now + crate::engine::profile::REQUEST_TIMEOUT;
-                if !self.send(peer, Message::Request(request))? {
-                    break;
+                if !self.remotes[peer].asked.contains(&request) {
+                    if !self.send(peer, Message::Request(request))? {
+                        break;
+                    }
+                    self.remotes[peer].asked.push(request);
                 }
-                let remote = &mut self.remotes[peer];
-                if !remote.asked.contains(&request) {
-                    remote.asked.push(request);
-                }
-                remote.download_rate.start(self.now);
+                self.remotes[peer].download_rate.start(self.now);
 
                 self.picker.admitted(request, connection, deadline);
                 let affinity =

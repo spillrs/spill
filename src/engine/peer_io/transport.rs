@@ -16,7 +16,7 @@ pub(super) async fn run_socket(
     match socket {
         Stream::Tcp(mut socket) => {
             // Control frames must not wait for Nagle between batches of blocks.
-            socket.set_nodelay(true)?;
+            socket.set_nodelay(true).map_err(fault::remote_io)?;
             prepare(&mut socket, &mut start, &context, connection, events).await?;
             let (reader, writer) = socket.into_split();
             let method = start

@@ -191,9 +191,21 @@ async fn nat_pmp_maps_renews_advertises_and_deletes_on_shutdown() {
     for request in requests.iter().filter(|r| r[1] != 0) {
         assert_eq!(request[4..6], address.port().to_be_bytes());
         if request[8..12] != [0; 4] {
-            assert_eq!(request[6..8], address.port().to_be_bytes());
+            if request[1] == 2 {
+                assert_eq!(request[6..8], address.port().to_be_bytes());
+            } else {
+                assert!(
+                    request[6..8] == address.port().to_be_bytes()
+                        || request[6..8] == external.to_be_bytes()
+                );
+            }
         }
     }
+    assert!(
+        requests
+            .iter()
+            .any(|r| r[1] == 1 && r[6..8] == external.to_be_bytes())
+    );
     responder.abort();
     tracker_task.abort();
 }

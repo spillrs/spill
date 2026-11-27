@@ -211,8 +211,16 @@ pub(super) fn prepare_discovery(
             let Some(seed) = seeds.next(options.metainfo.clone()) else {
                 break;
             };
+            let parsed_url = seed.parsed_url();
             let url = seed.url().to_owned();
-            let id = transfer.attach_socket(PeerSocket::WebSeed(Box::new(seed)))?;
+            let id = match transfer.attach_socket(PeerSocket::WebSeed(Box::new(seed))) {
+                Ok(id) => id,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    seeds.push_front(parsed_url);
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
             seeds.active.push(id);
             observer.remember(
                 id,

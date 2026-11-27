@@ -31,7 +31,10 @@ pub fn decode(bytes: &[u8]) -> Option<Announce<'_>> {
         let (name, value) = line.split_once(':')?;
         let value = value.trim();
         if name.eq_ignore_ascii_case("host") {
-            if host.replace(value).is_some() || ![IPV4_HOST, IPV6_HOST].contains(&value) {
+            let valid = value.parse::<std::net::SocketAddr>().is_ok_and(|addr| {
+                addr == IPV4_HOST.parse().unwrap() || addr == IPV6_HOST.parse().unwrap()
+            });
+            if host.replace(value).is_some() || !valid {
                 return None;
             }
         } else if name.eq_ignore_ascii_case("port") {

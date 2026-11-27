@@ -37,7 +37,7 @@ struct Bucket {
     prefix: NodeId,
     depth: usize,
     contacts: Vec<Entry>,
-    touched: Instant,
+    touched: Option<Instant>,
 }
 pub(super) struct Routing {
     own: NodeId,
@@ -64,7 +64,7 @@ impl Routing {
                 prefix: NodeId([0; 20]),
                 depth: 0,
                 contacts: vec![],
-                touched: Instant::now(),
+                touched: Some(Instant::now()),
             }],
         }
     }
@@ -90,12 +90,12 @@ impl Routing {
         }
         self.refresh_own = true;
         for bucket in &mut self.buckets {
-            bucket.touched = now - GOOD_FOR;
+            bucket.touched = None;
         }
     }
     pub(in crate::engine) fn touch(&mut self, target: NodeId, now: Instant) {
         if let Some(bucket) = self.buckets.iter_mut().find(|b| contains(b, target)) {
-            bucket.touched = now;
+            bucket.touched = Some(now);
         }
     }
     /// Refresh at most two stale buckets per recovery cycle. Preserve the bucket
@@ -113,7 +113,7 @@ impl Routing {
             .buckets
             .iter()
             .enumerate()
-            .filter(|(_, b)| now.duration_since(b.touched) >= GOOD_FOR)
+            .filter(|(_, b)| b.touched.is_none_or(|t| now.duration_since(t) >= GOOD_FOR))
             .map(|(index, b)| (b.touched, index))
             .collect();
         stale.sort_unstable();
@@ -125,7 +125,7 @@ impl Routing {
                 target.0[bit_index / 8] =
                     (target.0[bit_index / 8] & !mask) | (bucket.prefix.0[bit_index / 8] & mask);
             }
-            bucket.touched = now;
+            bucket.touched = Some(now);
             targets.push(target);
         }
         Ok(targets)
@@ -192,6 +192,13 @@ impl Routing {
                 || !contains(bucket, self.own)
                 || self.buckets.len() == self.max_buckets
             {
+                let bucket = &mut self.buckets[index];
+                if entry.reply.is_some()
+                    && let Some(unverified) = bucket.contacts.iter().position(|c| c.reply.is_none())
+                {
+                    bucket.contacts.remove(unverified);
+                    bucket.contacts.push(entry);
+                }
                 return;
             }
             let bucket = &mut self.buckets[index];

@@ -25,6 +25,12 @@ fn golden_multiple_hashes_and_round_trip() {
         .unwrap()
         .replace("cookie: abc\r\n", "");
     assert_eq!(lsd::decode(without_cookie.as_bytes()).unwrap().cookie, None);
+    for host in ["[FF15::EFC0:988F]:6771", "[ff15:0:0:0:0:0:efc0:988f]:6771"] {
+        let ipv6 = String::from_utf8(lsd::encode(true, 6881, &[first], "abc"))
+            .unwrap()
+            .replace(lsd::IPV6_HOST, host);
+        assert_eq!(lsd::decode(ipv6.as_bytes()).unwrap().hashes, vec![first]);
+    }
 }
 
 #[test]

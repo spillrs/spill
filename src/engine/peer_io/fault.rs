@@ -33,7 +33,24 @@ pub(super) fn event_receiver_closed() -> io::Error {
         "peer event receiver closed",
     ))
 }
+pub(super) fn remote_io(error: io::Error) -> io::Error {
+    if error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<PeerError>())
+        .is_some()
+    {
+        return error;
+    }
+    remote(error)
+}
 pub(super) fn socket_failure(error: io::Error) -> io::Error {
+    if error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<PeerError>())
+        .is_some()
+    {
+        return error;
+    }
     match error.kind() {
         io::ErrorKind::InvalidInput | io::ErrorKind::Other | io::ErrorKind::OutOfMemory => {
             local(error)

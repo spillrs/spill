@@ -31,16 +31,16 @@ fn elements(xml: &str) -> Option<Vec<(&str, &str)>> {
     let mut pos = 0;
     while let Some(start) = xml[pos..].find('<').map(|n| pos + n) {
         let tail = &xml[start..];
-        if tail.starts_with("<!--") {
-            pos = start + tail.find("-->")? + 3;
+        if let Some(rest) = tail.strip_prefix("<!--") {
+            pos = start + 4 + rest.find("-->")? + 3;
             continue;
         }
-        if tail.starts_with("<![CDATA[") {
-            pos = start + tail.find("]]>")? + 3;
+        if let Some(rest) = tail.strip_prefix("<![CDATA[") {
+            pos = start + 9 + rest.find("]]>")? + 3;
             continue;
         }
-        if tail.starts_with("<?") {
-            pos = start + tail.find("?>")? + 2;
+        if let Some(rest) = tail.strip_prefix("<?") {
+            pos = start + 2 + rest.find("?>")? + 2;
             continue;
         }
         if tail.starts_with("<!") {
@@ -145,11 +145,11 @@ pub fn control_url(description_xml: &[u8]) -> Option<(String, String, Option<Str
     ] {
         let service_type = format!("urn:schemas-upnp-org:service:{kind}");
         for (_, service) in tags.iter().filter(|(name, _)| *name == "service") {
-            if field(service, "serviceType").as_deref() == Some(&service_type) {
-                let control = field(service, "controlURL")?;
-                if !control.is_empty() {
-                    return Some((service_type, control, base));
-                }
+            if field(service, "serviceType").as_deref() == Some(&service_type)
+                && let Some(control) = field(service, "controlURL")
+                && !control.is_empty()
+            {
+                return Some((service_type, control, base));
             }
         }
     }
@@ -183,11 +183,15 @@ pub fn response(bytes: &[u8]) -> Result<BTreeMap<String, String>, u16> {
     }
     let (_, contents) = tags
         .iter()
-        .find(|(name, _)| name.ends_with("Response"))
+        .rfind(|(name, _)| name.ends_with("Response"))
         .ok_or(0u16)?;
-    elements(contents)
-        .ok_or(0u16)?
-        .into_iter()
-        .map(|(name, value)| Ok((name.to_owned(), unescape(value.trim()).ok_or(0u16)?)))
-        .collect()
+    let mut fields = BTreeMap::new();
+    for (name, value) in elements(contents).ok_or(0u16)? {
+        let trimmed = value.trim();
+        if !trimmed.starts_with("<![CDATA[") && trimmed.contains('<') {
+            continue;
+        }
+        fields.insert(name.to_owned(), unescape(trimmed).ok_or(0u16)?);
+    }
+    Ok(fields)
 }

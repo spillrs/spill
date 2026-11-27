@@ -126,12 +126,13 @@ impl crate::engine::torrent::Network {
             }
         };
         for key in identity.wire_keys() {
+            contacts.add_direct(key, &options.peers)?;
             if let Some(announcer) = manager(key)? {
                 resources.managers.push((key, announcer));
             }
         }
         let managers = &mut resources.managers;
-        if managers.is_empty() && node.is_none() && lsd.is_none() {
+        if managers.is_empty() && node.is_none() && lsd.is_none() && options.peers.is_empty() {
             return Err(invalid("no metadata discovery sources are enabled"));
         }
         let (sender, mut incoming) = tokio::sync::mpsc::channel(crate::engine::profile::MAX_QUEUED);

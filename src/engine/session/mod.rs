@@ -19,6 +19,22 @@ use crate::engine::{
         Destination, Network, Networking, RunPolicy, TorrentHandle, TorrentOptions, TorrentSource,
     },
 };
+fn bind_tcp(address: SocketAddr) -> io::Result<TcpListener> {
+    let domain = if address.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    if let SocketAddr::V6(v6) = address {
+        socket.set_only_v6(!v6.ip().is_unspecified())?;
+    }
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&address.into())?;
+    socket.listen(1024)?;
+    TcpListener::from_std(socket.into())
+}
 /// Explicit consent and persisted state for the session-owned DHT node.
 pub struct DhtOptions {
     pub saved: Option<crate::engine::session::dht::SavedState>,
@@ -423,7 +439,7 @@ impl Session {
         // An ephemeral TCP port may already be taken for UDP; pick another.
         let mut attempts = if network.listen.port() == 0 { 16 } else { 1 };
         let (listener, address, mut udp) = loop {
-            let listener = TcpListener::bind(network.listen).await?;
+            let listener = bind_tcp(network.listen)?;
             let address = listener.local_addr()?;
             attempts -= 1;
             match udp::Transport::bind(address) {

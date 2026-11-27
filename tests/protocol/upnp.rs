@@ -65,6 +65,14 @@ fn service_preference_is_independent_of_document_order() {
             Some("http://router:5000/base/".into())
         ))
     );
+    let fallback = format!(
+        "<root><service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:2</serviceType></service>{}</root>",
+        service("WANIPConnection:1", "ip1")
+    );
+    assert_eq!(
+        upnp::control_url(fallback.as_bytes()),
+        Some((IP.into(), "ip1".into(), None))
+    );
 }
 
 #[test]
@@ -120,6 +128,11 @@ fn soap_success_faults_and_xml_escaping() {
         upnp::response(b"<Envelope><Body><AddPortMappingResponse/></Body></Envelope>")
             .unwrap()
             .is_empty()
+    );
+    let nested = b"<s:Envelope><s:Body><u:GetExternalIPAddressResponse><Nested><InnerResponse>ignored</InnerResponse></Nested><NewExternalIPAddress>5.6.7.8</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>";
+    assert_eq!(
+        upnp::response(nested).unwrap()["NewExternalIPAddress"],
+        "5.6.7.8"
     );
     for action in ["GetExternalIPAddress", "DeletePortMapping"] {
         let (header, body) = upnp::request(IP, action, &[]);

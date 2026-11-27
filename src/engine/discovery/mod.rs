@@ -824,17 +824,29 @@ async fn udp_announce(
     )
     .await
     .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
-    let endpoint = addresses
-        .into_iter()
-        .find(|a| crate::engine::network::source(*a, allow_local_network))
-        .ok_or_else(invalid)?;
-    let endpoint = SocketAddr::new(endpoint.ip().to_canonical(), endpoint.port());
-    if endpoint.is_ipv6() && transport.socket.local_addr()?.is_ipv4() {
-        return Err(io::Error::new(
-            io::ErrorKind::AddrNotAvailable,
-            "IPv6 tracker requires an IPv6 or dual-stack session UDP socket",
-        ));
+    let mut endpoint = None;
+    let mut rejected_family = false;
+    for address in addresses {
+        if !crate::engine::network::source(address, allow_local_network) {
+            continue;
+        }
+        let canonical = SocketAddr::new(address.ip().to_canonical(), address.port());
+        if transport.families[usize::from(canonical.is_ipv6())] {
+            endpoint = Some(canonical);
+            break;
+        }
+        rejected_family = true;
     }
+    let endpoint = match endpoint {
+        Some(endpoint) => endpoint,
+        None if rejected_family => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "tracker address family does not match session UDP socket",
+            ));
+        }
+        None => return Err(invalid()),
+    };
     let connect = udp::Request {
         connection_id: udp::PROTOCOL_ID,
         transaction_id: 0,

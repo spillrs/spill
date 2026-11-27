@@ -36,7 +36,7 @@ impl WebSeeds {
                     _ => None,
                 })
                 .collect(),
-            _ => return Err(invalid("invalid web seed url-list")),
+            _ => Vec::new(),
         };
         let mut urls = VecDeque::new();
         let mut bytes = 0usize;
@@ -78,6 +78,9 @@ impl WebSeeds {
             allow_local_network: self.allow_local_network,
         })
     }
+    pub(in crate::engine) fn push_front(&mut self, url: Url) {
+        self.urls.push_front(url);
+    }
 }
 
 pub(in crate::engine) struct Seed {
@@ -88,6 +91,9 @@ pub(in crate::engine) struct Seed {
 impl Seed {
     pub(in crate::engine) fn url(&self) -> &str {
         self.url.as_str()
+    }
+    pub(in crate::engine) fn parsed_url(&self) -> Url {
+        self.url.clone()
     }
     pub(in crate::engine) async fn run(
         self,

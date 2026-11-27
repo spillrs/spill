@@ -114,12 +114,12 @@ impl Nat {
             "NAT-PMP gateway did not answer",
         ))
     }
-    async fn map(&self, opcode: u8, lifetime: u32) -> io::Result<(u16, u32)> {
+    async fn map(&self, opcode: u8, external: u16, lifetime: u32) -> io::Result<(u16, u32)> {
         match self
             .exchange(&nat_pmp::mapping_request(
                 opcode,
                 self.internal,
-                self.internal,
+                external,
                 lifetime,
             ))
             .await?
@@ -139,9 +139,9 @@ impl Nat {
             Reply::Address(ip) => ip,
             _ => return Err(io::Error::other("invalid NAT-PMP address reply")),
         };
-        let (tcp, tcp_lease) = self.map(2, 7200).await?;
+        let (tcp, tcp_lease) = self.map(2, self.internal, 7200).await?;
         self.tcp = true;
-        let (udp, udp_lease) = self.map(1, 7200).await?;
+        let (udp, udp_lease) = self.map(1, tcp, 7200).await?;
         self.udp = true;
         if tcp != udp {
             return Err(io::Error::other(
@@ -324,7 +324,7 @@ async fn gateway() -> io::Result<SocketAddr> {
             let metric = fields[6].parse::<u32>().map_err(io::Error::other)?;
             let ip = u32::from_str_radix(fields[2], 16).map_err(io::Error::other)?;
             if best.is_none_or(|(m, _)| metric < m) {
-                best = Some((metric, Ipv4Addr::from(ip.to_le_bytes())));
+                best = Some((metric, Ipv4Addr::from(ip.to_ne_bytes())));
             }
         }
         best.map(|(_, ip)| SocketAddr::new(ip.into(), 5351))
@@ -365,7 +365,7 @@ async fn upnp(address: SocketAddr, description: Option<&reqwest::Url>) -> io::Re
     let socket = UdpSocket::bind(SocketAddr::new(address.ip(), 0)).await?;
     let mut locations = Vec::new();
     if let Some(url) = description {
-        locations.push(url.clone());
+        locations.push((url.clone(), None));
     } else {
         for request in upnp::search_request() {
             socket
@@ -377,11 +377,15 @@ async fn upnp(address: SocketAddr, description: Option<&reqwest::Url>) -> io::Re
         while let Ok(received) =
             tokio::time::timeout_at(deadline, socket.recv_from(&mut bytes)).await
         {
-            let (n, _) = received?;
+            let (n, responder) = received?;
+            let IpAddr::V4(responder_ip) = responder.ip().to_canonical() else {
+                continue;
+            };
             if let Some(location) = upnp::search_reply(&bytes[..n]).and_then(|s| http_url(&s).ok())
-                && !locations.contains(&location)
+                && matches!(location.host(), Some(url::Host::Ipv4(ip)) if ip == responder_ip)
+                && !locations.iter().any(|(other, _)| other == &location)
             {
-                locations.push(location);
+                locations.push((location, Some(responder_ip)));
             }
             if locations.len() == 32 {
                 break;
@@ -397,7 +401,7 @@ async fn upnp(address: SocketAddr, description: Option<&reqwest::Url>) -> io::Re
         .build()
         .map_err(io::Error::other)?;
     let mut error = io::Error::other("no UPnP IGD answered SSDP discovery");
-    for location in locations {
+    for (location, expected_ip) in locations {
         let description = async {
             let response = client
                 .get(location.clone())
@@ -413,6 +417,13 @@ async fn upnp(address: SocketAddr, description: Option<&reqwest::Url>) -> io::Re
                 None => location,
             };
             let control = http_url(base.join(&control).map_err(io::Error::other)?.as_str())?;
+            if let Some(expected_ip) = expected_ip
+                && !matches!(control.host(), Some(url::Host::Ipv4(ip)) if ip == expected_ip)
+            {
+                return Err(io::Error::other(
+                    "UPnP control URL host does not match SSDP responder",
+                ));
+            }
             let host = control.host_str().expect("validated HTTP host");
             let gateway = tokio::net::lookup_host((
                 host,

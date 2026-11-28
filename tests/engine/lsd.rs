@@ -75,9 +75,7 @@ async fn multicast_bootstraps_a_trackerless_magnet_and_transfers_payload() {
         let destination = Temp::new();
         let payload = vec![42; 128 * 1024];
         std::fs::write(source.0.join("x"), &payload).unwrap();
-        let meta = Profile::default()
-            .parse_owned(&seed_metainfo("x", &payload, None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", &payload, None)).unwrap();
         let settings = TorrentSettings {
             trackers: false,
             dht: true,

@@ -1,6 +1,5 @@
 use crate::payload::{Temp, seed_metainfo};
 use spill::engine::{
-    profile::Profile,
     session::{Limits, NetworkOptions, Session},
     torrent::{Destination, RecoveryState, RunPolicy, TorrentExit, TorrentOptions, TorrentSource},
 };
@@ -19,9 +18,7 @@ async fn completion_checkpoint_failures_preserve_the_writer_error() {
         for panic in [false, true] {
             let root = Temp::new();
             std::fs::write(root.0.join("x"), b"abc").unwrap();
-            let meta = Profile::default()
-                .parse_owned(&seed_metainfo("x", b"abc", None))
-                .unwrap();
+            let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
             let session = Session::bind(
                 NetworkOptions {
                     listen: "127.0.0.1:0".parse().unwrap(),
@@ -112,10 +109,7 @@ async fn completion_survives_later_checkpoint_failure_and_removal() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let root = Temp::new();
         std::fs::write(root.0.join("x"), b"abc").unwrap();
-        let profile = Profile::default();
-        let meta = profile
-            .parse_owned(&seed_metainfo("x", b"abc", None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
         let session = Session::bind(
             NetworkOptions {
                 listen: "127.0.0.1:0".parse().unwrap(),
@@ -179,10 +173,7 @@ async fn incomplete_recheck_and_callback_failures_retain_distinct_outcomes() {
     tokio::time::timeout(Duration::from_secs(5), async {
         for mode in 0..3 {
             let root = Temp::new();
-            let profile = Profile::default();
-            let meta = profile
-                .parse_owned(&seed_metainfo("x", b"abc", None))
-                .unwrap();
+            let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
             let session = Session::offline(Limits {
                 torrents: 1,
                 ..Default::default()
@@ -298,10 +289,7 @@ async fn tracker_checkpoint_panic_after_cancelled_stop_retains_cleanup_ownership
             }
         });
         let root = Temp::new();
-        let profile = Profile::default();
-        let meta = profile
-            .parse_owned(&seed_metainfo("x", b"abc", Some(&url)))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", Some(&url))).unwrap();
         // Record writable authority through an offline execution.
         let mut create = TorrentOptions::new(
             TorrentSource::Metainfo(meta.clone()),

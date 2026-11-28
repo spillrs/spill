@@ -4,12 +4,9 @@ use crate::{
 };
 use base64::{Engine, prelude::BASE64_STANDARD};
 use serde_json::{Value, json};
-use spill::{
-    engine::profile::Profile,
-    protocol::{
-        bencode::{self, Node, Value as BValue},
-        metainfo::OwnedMetainfo,
-    },
+use spill::protocol::{
+    bencode::{self, Node, Value as BValue},
+    metainfo::OwnedMetainfo,
 };
 use std::{
     collections::BTreeMap,
@@ -40,10 +37,10 @@ fn tracked(fixture: &[u8], address: SocketAddr) -> OwnedMetainfo {
     fields.insert(b"announce", Node::new(BValue::Bytes(url.as_bytes())));
     let bytes =
         bencode::encode(&Node::new(BValue::Dictionary(fields)), Default::default()).unwrap();
-    let meta = Profile::default().parse_owned(&bytes).unwrap();
+    let meta = spill::engine::parse_owned(&bytes).unwrap();
     assert_eq!(
         meta.info_hash(),
-        Profile::default().parse_owned(fixture).unwrap().info_hash()
+        spill::engine::parse_owned(fixture).unwrap().info_hash()
     );
     meta
 }
@@ -363,7 +360,7 @@ async fn cli_http_and_catalog_preserve_stable_ids_and_both_hybrid_aliases() {
         assert!(details.contains("SHA-256") && details.contains("completed_announces"));
         let mut ids = Vec::new();
         for fixture in [V2, HYBRID] {
-            let meta = Profile::default().parse_owned(fixture).unwrap();
+            let meta = spill::engine::parse_owned(fixture).unwrap();
             let identity = meta.info_hash();
             let v2 = identity.v2().unwrap().to_string();
             let file = root.0.join(format!("{v2}.torrent"));
@@ -441,7 +438,7 @@ async fn cli_http_and_catalog_preserve_stable_ids_and_both_hybrid_aliases() {
         assert!(listed.status.success());
         let listed = String::from_utf8(listed.stdout).unwrap();
         for (id, _) in &ids {
-            assert!(listed.contains(id));
+            assert!(listed.contains(&id[..12]), "{listed}");
         }
         daemon.stop().await;
         let mut daemon = Daemon::start_config(&root.0).await;

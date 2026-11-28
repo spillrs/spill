@@ -110,11 +110,21 @@ impl FileSelection {
     }
 
     pub fn all(layout: &Layout<'_>) -> Self {
+        Self::from_fn(layout, |_, _| FilePriority::Normal)
+    }
+
+    /// Build a selection by choosing a priority for each data file.
+    /// Padding entries are automatically kept at `FilePriority::Skip`.
+    pub fn from_fn(
+        layout: &Layout<'_>,
+        mut f: impl FnMut(usize, &crate::protocol::metainfo::File<'_>) -> FilePriority,
+    ) -> Self {
         let priorities: Vec<_> = layout
             .files()
             .iter()
-            .map(|file| match file.kind() {
-                FileKind::Data => FilePriority::Normal,
+            .enumerate()
+            .map(|(index, file)| match file.kind() {
+                FileKind::Data => f(index, file),
                 FileKind::Padding => FilePriority::Skip,
             })
             .collect();

@@ -223,7 +223,7 @@ async fn web_url_add_requires_auth_and_applies_private_torrent_policy() {
         "settings":{"dht":true,"pex":true,"upload_limit":123}})
     .to_string();
     let denied = http(address, "POST", "/api", None, body.as_bytes()).await;
-    assert!(denied.starts_with("HTTP/1.1 403"));
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
     assert_eq!(source.hits.load(Ordering::SeqCst), 0);
     let response = http(address, "POST", "/api", Some(token), body.as_bytes()).await;
     let added: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();

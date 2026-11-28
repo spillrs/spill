@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#f3f6fa">
-<title>spill — Transfers</title>
+<meta name="spill-token" content="__TOKEN__">
+<title>spill — Torrents</title>
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
 <script>
 document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
@@ -30,23 +31,23 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 <div class="app">
 <aside class="sidebar">
 <div class="brand"><img src="/logo.svg" alt="" width="28" height="28"><span>spill</span></div>
-<div class="section-label">Library</div><nav class="nav" aria-label="Transfer filters" id="navigation"></nav>
+<div class="section-label">Library</div><nav class="nav" aria-label="Torrent filters" id="navigation"></nav>
 </aside>
 <main class="main">
-<header class="topbar"><div class="top-actions"><button class="secondary" id="open-session-limits" type="button" aria-haspopup="dialog" disabled><svg aria-hidden="true"><use href="#sliders"/></svg>Global limits</button><button class="secondary" id="theme-button" type="button" aria-pressed="false"><svg aria-hidden="true"><use href="#moon"/></svg>Dark mode</button><button class="primary" id="add-button"><svg><use href="#plus"/></svg>Add torrent</button></div></header>
-<section class="overview" aria-label="Session transfer rates"><div class="stats">
-<div class="stat"><div class="stat-label"><svg class="download-color"><use href="#down"/></svg>Download</div><div class="stat-value" id="download-stat">—</div></div>
-<div class="stat"><div class="stat-label"><svg class="upload-color"><use href="#up"/></svg>Upload</div><div class="stat-value" id="upload-stat">—</div></div>
-<div class="stat"><div class="stat-label"><svg><use href="#peers"/></svg>Connected peers</div><div class="stat-value" id="peers-stat">—</div></div>
+<header class="topbar"><div class="top-actions"><button class="secondary" id="open-session-limits" type="button" aria-haspopup="dialog" disabled><svg aria-hidden="true"><use href="#sliders"/></svg>Session limits</button><button class="secondary" id="theme-button" type="button" aria-pressed="false"><svg aria-hidden="true"><use href="#moon"/></svg>Dark mode</button><button class="primary" id="add-button"><svg aria-hidden="true"><use href="#plus"/></svg>Add torrent</button></div></header>
+<section class="overview" id="overview-bar" aria-label="Session transfer rates"><div class="stats">
+<div class="stat"><div class="stat-label"><svg class="download-color" aria-hidden="true"><use href="#down"/></svg>Download</div><div class="stat-value" id="download-stat">—</div></div>
+<div class="stat"><div class="stat-label"><svg class="upload-color" aria-hidden="true"><use href="#up"/></svg>Upload</div><div class="stat-value" id="upload-stat">—</div></div>
+<div class="stat"><div class="stat-label"><svg aria-hidden="true"><use href="#peers"/></svg>Connected peers</div><div class="stat-value" id="peers-stat">—</div></div>
 </div></section>
 <section class="content" aria-label="Torrent library">
-<div class="toolbar"><div class="toolbar-left"><span class="toolbar-title" id="list-title">All transfers</span><div class="divider"></div><div class="tool-buttons">
-<button class="icon-button" id="resume-button" title="Resume selected" aria-label="Resume selected"><svg><use href="#play"/></svg></button>
-<button class="icon-button" id="pause-button" title="Pause selected" aria-label="Pause selected"><svg><use href="#pause"/></svg></button>
-<button class="icon-button" id="recheck-button" title="Recheck selected" aria-label="Recheck selected"><svg><use href="#refresh"/></svg></button>
-<button class="icon-button" id="reannounce-button" title="Reannounce selected" aria-label="Reannounce selected"><svg><use href="#link"/></svg></button>
-<button class="icon-button" id="remove-button" title="Remove selected" aria-label="Remove selected"><svg><use href="#trash"/></svg></button>
-</div></div><label class="search"><svg><use href="#search-icon"/></svg><input id="search" placeholder="Search torrents…" aria-label="Search torrents"><kbd>/</kbd></label></div>
+<div class="toolbar"><div class="toolbar-left"><span class="toolbar-title" id="list-title">All torrents</span><div class="divider"></div><div class="tool-buttons">
+<button class="icon-button" id="resume-button" title="Resume selected" aria-label="Resume selected"><svg aria-hidden="true"><use href="#play"/></svg></button>
+<button class="icon-button" id="pause-button" title="Pause selected" aria-label="Pause selected"><svg aria-hidden="true"><use href="#pause"/></svg></button>
+<button class="icon-button" id="recheck-button" title="Recheck selected (leaves torrent paused)" aria-label="Recheck selected"><svg aria-hidden="true"><use href="#refresh"/></svg></button>
+<button class="icon-button" id="reannounce-button" title="Reannounce selected" aria-label="Reannounce selected"><svg aria-hidden="true"><use href="#link"/></svg></button>
+<button class="icon-button" id="remove-button" title="Remove selected" aria-label="Remove selected"><svg aria-hidden="true"><use href="#trash"/></svg></button>
+</div></div><label class="search"><svg aria-hidden="true"><use href="#search-icon"/></svg><input id="search" placeholder="Search name, hash, path…" aria-label="Search torrents"><kbd>/</kbd></label></div>
 <div class="table-scroll"><table><thead><tr>
 <th><input type="checkbox" id="select-all" aria-label="Select all visible torrents"></th>
 <th><button data-sort="name">Name <span id="sort-name"></span></button></th>
@@ -55,34 +56,38 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 <th><button data-sort="state">Status <span id="sort-state"></span></button></th>
 <th><button data-sort="downloaded_bytes">Downloaded <span id="sort-downloaded_bytes"></span></button></th>
 <th><button data-sort="uploaded_bytes">Uploaded <span id="sort-uploaded_bytes"></span></button></th>
-<th><button data-sort="down">↓ /s <span id="sort-down"></span></button></th>
-<th><button data-sort="up">↑ /s <span id="sort-up"></span></button></th>
-<th>Peers</th><th>ETA</th><th>Discovery</th>
-</tr></thead><tbody id="torrents"></tbody></table><div id="empty" class="empty" hidden>No transfers match your search.</div></div>
-<div class="table-footer"><span id="visible-count">0 transfers</span></div>
+<th><button data-sort="down" aria-label="Download rate">↓ /s <span id="sort-down"></span></button></th>
+<th><button data-sort="up" aria-label="Upload rate">↑ /s <span id="sort-up"></span></button></th>
+<th><button data-sort="peers">Peers <span id="sort-peers"></span></button></th>
+<th><button data-sort="eta">ETA <span id="sort-eta"></span></button></th>
+<th>Discovery</th>
+</tr></thead><tbody id="torrents"></tbody></table><div id="empty" class="empty" hidden>Loading torrents…</div></div>
+<div class="table-footer"><span id="visible-count">0 torrents</span></div>
 </section>
 <section hidden class="inspector" id="inspector" aria-label="Selected torrent details">
 <div class="detail-resizer" id="detail-resizer" role="separator" aria-label="Resize torrent details" aria-orientation="horizontal" aria-controls="detail-body" aria-valuemin="60" aria-valuemax="245" aria-valuenow="245" tabindex="0" title="Drag to resize · Arrow keys to adjust · Double-click to reset"></div>
 <div class="detail-header"><div class="tabs" role="tablist" aria-label="Torrent details">
 <button id="tab-overview" class="tab active" role="tab" data-tab="overview" aria-controls="detail-body" aria-selected="true"><svg aria-hidden="true"><use href="#info"/></svg>Overview</button><button id="tab-files" class="tab" role="tab" data-tab="files" aria-controls="detail-body" aria-selected="false" tabindex="-1"><svg aria-hidden="true"><use href="#file"/></svg>Files</button><button id="tab-peers" class="tab" role="tab" data-tab="peers" aria-controls="detail-body" aria-selected="false" tabindex="-1"><svg aria-hidden="true"><use href="#peers"/></svg>Peers</button><button id="tab-sources" class="tab" role="tab" data-tab="sources" aria-controls="detail-body" aria-selected="false" tabindex="-1"><svg aria-hidden="true"><use href="#link"/></svg>Sources</button>
-</div><button class="secondary" id="limits-button" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#sliders"/></svg>Torrent limits</button><button class="secondary" id="seeding-button"><svg aria-hidden="true"><use href="#seed"/></svg>Seeding rules</button><button class="icon-button" id="close-detail" aria-label="Close details"><svg><use href="#close"/></svg></button></div>
+</div><button class="secondary" id="limits-button" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#sliders"/></svg>Torrent limits</button><button class="secondary" id="seeding-button"><svg aria-hidden="true"><use href="#seed"/></svg>Seeding rules</button><button class="icon-button" id="close-detail" aria-label="Close details"><svg aria-hidden="true"><use href="#close"/></svg></button></div>
 <div class="detail-body" id="detail-body" role="tabpanel" aria-labelledby="tab-overview" tabindex="0"></div>
 </section>
 <footer class="bottom-bar"><div class="left"><button id="daemon-button" aria-haspopup="dialog" aria-label="Daemon status: connecting"><span class="connection-dot" aria-hidden="true"></span><span id="daemon-version">spill</span></button><span class="optional" id="server-address"></span></div><span id="connection-status" role="status">Connecting…</span></footer>
 </main></div>
 <dialog id="add-dialog" aria-labelledby="add-title"><form id="add-form"><h2 id="add-title">Add torrent</h2><p>Add a magnet link, HTTP(S) torrent URL, or .torrent file. URLs are fetched by the daemon.</p>
 <label class="field" for="magnet">Magnet link or torrent URL</label><input type="text" id="magnet" placeholder="magnet:?xt=urn:btih:… or https://…">
-<label class="upload-area"><svg><use href="#file"/></svg>Or choose a .torrent file<input type="file" id="torrent-file" accept=".torrent"></label>
+<label class="upload-area" id="upload-area"><svg aria-hidden="true"><use href="#file"/></svg><span id="upload-label">Drop a .torrent file here or choose a file</span><input type="file" id="torrent-file" accept=".torrent"></label>
 <label class="field" for="output">Download location</label><input type="text" id="output" placeholder="Daemon default (or absolute path)">
 <div class="options"><label><input type="checkbox" id="start-now" checked> Start immediately</label></div>
 <div class="options"><label><input type="checkbox" id="allow-trackers"> Trackers</label><label><input type="checkbox" id="allow-dht"> DHT</label><label><input type="checkbox" id="allow-pex"> PEX</label><label><input type="checkbox" id="allow-web"> Web seeds</label></div>
 <p class="telemetry-note">Discovery follows daemon policy. Unresolved magnets may disclose their hash before privacy is known.</p>
+<p class="torrent-error" id="add-error" role="alert" hidden></p>
 <div class="actions"><button type="button" class="secondary" id="cancel-add">Cancel</button><button class="primary" type="submit">Add torrent</button></div></form></dialog>
-<dialog id="remove-dialog" aria-labelledby="remove-title" aria-describedby="remove-description"><h2 id="remove-title">Remove from spill?</h2><p id="remove-description"></p><ul class="remove-transfers" id="remove-transfers"></ul><label><input type="checkbox" id="delete-data"> Also delete downloaded files</label><div class="actions"><button class="secondary" id="cancel-remove">Keep transfers</button><button class="primary danger" id="confirm-remove">Remove</button></div></dialog>
+<dialog id="remove-dialog" aria-labelledby="remove-title" aria-describedby="remove-description"><h2 id="remove-title">Remove from spill?</h2><p id="remove-description"></p><ul class="remove-transfers" id="remove-transfers"></ul><label id="delete-data-label"><input type="checkbox" id="delete-data"> Also delete files created by spill (adopted files are kept)</label><p class="torrent-error" id="remove-error" role="alert" hidden></p><div class="actions"><button class="secondary" id="cancel-remove" autofocus>Keep torrents</button><button class="primary danger" id="confirm-remove">Remove</button></div></dialog>
 <dialog id="seeding-dialog" aria-labelledby="seeding-title"><form id="seeding-form"><h2 id="seeding-title"><svg aria-hidden="true"><use href="#seed"/></svg>Seeding rules</h2><p>Pause this torrent when either goal is reached. Set a goal to 0 to leave it off.</p>
-<div class="setting-card"><div class="setting-heading"><label for="seed-ratio"><svg aria-hidden="true"><use href="#up"/></svg>Upload ratio</label><div class="unit-input"><input id="seed-ratio" type="number" min="0" step="any" required aria-describedby="ratio-help"><span>×</span></div></div><input id="seed-ratio-range" type="range" min="0" max="10" step="0.1" aria-label="Upload ratio goal"><div class="range-hint">0 · Off<span id="ratio-help">Uploaded ÷ torrent size</span></div></div>
+<div class="setting-card"><div class="setting-heading"><label for="seed-ratio"><svg aria-hidden="true"><use href="#up"/></svg>Upload ratio</label><div class="unit-input"><input id="seed-ratio" type="number" min="0" step="any" required aria-describedby="ratio-help"><span>×</span></div></div><input id="seed-ratio-range" type="range" min="0" max="10" step="0.1" aria-label="Upload ratio goal"><div class="range-hint">0 · Off<span id="ratio-help">Uploaded ÷ torrent data size</span></div></div>
 <div class="setting-card"><div class="setting-heading"><label for="seed-time"><svg aria-hidden="true"><use href="#clock"/></svg>Seeding time</label><div class="unit-input"><input id="seed-time" type="number" min="0" step="any" required aria-describedby="seed-time-help"><span>hours</span></div></div><input id="seed-time-range" type="range" min="0" max="168" step="0.5" aria-label="Active seeding hours goal"><div class="range-hint">0 · Off<span>Active time only</span></div></div>
 <p class="telemetry-note" id="seed-time-help">Time excludes pauses and downtime and survives restart. Saved to the nearest whole second.</p>
+<p class="torrent-error" id="seeding-error" role="alert" hidden></p>
 <div class="actions"><button type="button" class="secondary" id="cancel-seeding">Cancel</button><button class="primary" type="submit">Save rules</button></div></form></dialog>
 <dialog id="daemon-dialog" aria-labelledby="daemon-title"><h2 id="daemon-title">Daemon status</h2><div id="daemon-details"></div><div class="actions"><button class="secondary" id="open-logs"><svg aria-hidden="true"><use href="#file"/></svg>Logs</button><button class="secondary" id="close-daemon">Close</button></div></dialog>
 <dialog id="limits-dialog" aria-labelledby="limits-title"><form id="limits-form">
@@ -90,7 +95,7 @@ document.documentElement.dataset.theme=localStorage.getItem('spill-theme')||(mat
 <div class="limit-row"><label for="limit-down">Download</label><div class="unit-input"><input id="limit-down" type="number" min="0" step="any" required aria-describedby="limits-help"><span>MiB/s</span></div></div>
 <div class="limit-row"><label for="limit-up">Upload</label><div class="unit-input"><input id="limit-up" type="number" min="0" step="any" required aria-describedby="limits-help"><span>MiB/s</span></div></div>
 <p class="telemetry-note" id="limits-help">Decimals are allowed. 0 means unlimited at this level.</p>
-<p class="telemetry-note" id="limits-error" role="status" hidden></p>
+<p class="torrent-error" id="limits-error" role="alert" hidden></p>
 <div class="actions"><button type="button" class="secondary" id="cancel-limits">Cancel</button><button class="primary" type="submit">Save limits</button></div></form></dialog>
 <dialog id="logs-dialog" aria-labelledby="logs-title"><h2 id="logs-title">Debug log</h2><div class="logs-toolbar"><label><input type="checkbox" id="logs-follow" checked> Follow</label><button class="secondary" id="refresh-logs">Refresh</button><button class="secondary" id="copy-logs">Copy</button><span id="logs-copy-status" role="status"></span></div><p id="logs-status">Loading…</p><pre id="logs-output" tabindex="0" aria-label="Recent debug log"></pre><div class="actions"><button class="secondary" id="close-logs">Close</button></div></dialog>
 <div class="toast" id="toast" role="status" hidden></div>

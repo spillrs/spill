@@ -102,12 +102,16 @@ impl Config {
                         "config exceeds 64 KiB",
                     ));
                 }
-                toml::from_str(std::str::from_utf8(&bytes).map_err(io::Error::other)?)
-                    .map_err(io::Error::other)?
+                toml::from_str(
+                    std::str::from_utf8(&bytes)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                )
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
             }
             None => Self::default(),
         };
         config.defaults.validate()?;
+        config.logging.validate()?;
         spill::engine::session::dht::validate_routers(&config.dht_bootstrap)?;
         config.profile().validate()?;
         if config
@@ -123,15 +127,31 @@ impl Config {
             || config.active_seeds > 64
             || config.active_downloads + config.active_seeds == 0
             || config.active_downloads + config.active_seeds > 64
-            || config.web_listen.is_some_and(|a| !a.ip().is_loopback())
-            || !config.state_dir.is_absolute()
-            || !config.download_dir.is_absolute()
-            || !config.control_socket.is_absolute()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "absolute paths and a nonzero active cap are required",
+                "active_downloads + active_seeds must be between 1 and 64 (nonzero active cap required)",
             ));
+        }
+        if config.web_listen.is_some_and(|a| !a.ip().is_loopback()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "web_listen must be a loopback address",
+            ));
+        }
+        for (name, path) in [
+            ("state_dir", &config.state_dir),
+            ("download_dir", &config.download_dir),
+            ("control_socket", &config.control_socket),
+        ] {
+            if !path.is_absolute() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "{name} must be an absolute path (tilde is not expanded; set HOME or specify {name})"
+                    ),
+                ));
+            }
         }
         Ok(config)
     }

@@ -36,6 +36,7 @@ fn bind_tcp(address: SocketAddr) -> io::Result<TcpListener> {
     TcpListener::from_std(socket.into())
 }
 /// Explicit consent and persisted state for the session-owned DHT node.
+#[derive(Clone, Debug)]
 pub struct DhtOptions {
     pub saved: Option<crate::engine::session::dht::SavedState>,
     /// An empty list disables router bootstrap.
@@ -81,6 +82,7 @@ impl PeerEncryption {
 
 /// Network permissions and listeners. Defaults use an ephemeral IPv4 port and uTP,
 /// with no LAN access, router mapping, DHT, or local service discovery.
+#[derive(Clone, Debug)]
 pub struct NetworkOptions {
     /// Bind TCP and UDP to the same address and port; zero selects a free port.
     pub listen: SocketAddr,
@@ -115,7 +117,7 @@ impl Default for NetworkOptions {
 }
 /// Session-wide resource budgets. Payload reservations are not a total RSS cap;
 /// transport buffers, hashing scratch space, and other bookkeeping are additional.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub torrents: usize,
     pub pending_handshakes: usize,
@@ -363,6 +365,13 @@ pub struct NetworkStatus {
 pub struct Session {
     shared: Arc<Shared>,
 }
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("local_addr", &self.shared.address)
+            .finish_non_exhaustive()
+    }
+}
 struct Registry {
     torrents: HashMap<[u8; 20], Owner>,
     closed: bool,
@@ -418,7 +427,7 @@ struct Shared {
     limits: Limits,
     routes: Routes,
     dial_queue: dial::Queue,
-    online: Option<Online>,
+    online: Mutex<Option<Online>>,
     udp_stop: watch::Sender<bool>,
     utp_stop: watch::Sender<bool>,
     pending: Pending,
@@ -475,6 +484,15 @@ impl Session {
                     status.send_modify(|s| s.last_error = Some(error.to_string()));
                 }
             }
+        } else if network.lsd {
+            let error = "LSD requires allow_local_network";
+            tracing::warn!(error, "lsd_disabled");
+            let (_, receiver) = watch::channel(LsdStatus {
+                enabled: true,
+                last_error: Some(error.to_owned()),
+                ..LsdStatus::default()
+            });
+            session.lsd_status = receiver;
         }
         session.dht = network.dht.map(|options| {
             Arc::new(dht::Dht::new(
@@ -508,11 +526,11 @@ impl Session {
         udp.utp = Some(mux.clone());
         session.tasks.get_mut().udp =
             Some(tokio::spawn(udp.clone().run(session.udp_stop.subscribe())));
-        session.online = Some(Online {
+        session.online = Mutex::new(Some(Online {
             tracker_http: client,
             tracker_udp: udp,
             utp: mux,
-        });
+        }));
         if let Some(gateway) = network.port_mapping {
             let (status, receiver) = watch::channel(port_map::Status {
                 enabled: true,
@@ -592,7 +610,7 @@ impl Shared {
                 allow_local_network,
                 peer_encryption,
             ),
-            online: None,
+            online: Mutex::new(None),
             udp_stop: watch::channel(false).0,
             utp_stop: watch::channel(false).0,
             pending,
@@ -630,8 +648,13 @@ impl Session {
         let (pending_dials, pending_dials_limit, queued_contacts) =
             self.shared.dial_queue.snapshot();
         let pending_handshakes = self.shared.pending.counts.lock().unwrap().values().sum();
-        let (utp_connections, utp_connections_limit) =
-            self.shared.online.as_ref().map_or((0, 0), |online| {
+        let (utp_connections, utp_connections_limit) = self
+            .shared
+            .online
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or((0, 0), |online| {
                 online.utp.lock().unwrap().capacity_status()
             });
         NetworkStatus {
@@ -751,29 +774,37 @@ impl Session {
         options.validate()?;
         let shared = &self.shared;
         let magnet = matches!(options.source, TorrentSource::Magnet(_));
-        if magnet && shared.online.is_none() {
+        let mut registry = shared.registry.lock().unwrap();
+        let online_guard = shared.online.lock().unwrap();
+        let has_online = online_guard.is_some();
+        if magnet && !has_online {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "offline verification requires metainfo",
             ));
         }
-        let mut registry = shared.registry.lock().unwrap();
         let hash = options.source.info_hash();
         let profile = options.profile;
         let recheck = matches!(options.run, RunPolicy::Recheck);
-        if registry.is_closed()
-            || (shared.online.is_none() && !recheck)
-            || registry.torrents.values().any(|owner| {
-                owner
-                    .known
-                    .wire_keys()
-                    .any(|known| hash.wire_keys().any(|key| key == known))
-            })
-        {
+        if registry.is_closed() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "session stopped, duplicate torrent or networking unavailable",
+                "session stopped",
             ));
+        }
+        if !has_online && !recheck {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "offline session only supports recheck",
+            ));
+        }
+        if registry.torrents.values().any(|owner| {
+            owner
+                .known
+                .wire_keys()
+                .any(|known| hash.wire_keys().any(|key| key == known))
+        }) {
+            return Err(crate::engine::profile::AdmissionError::Duplicate.into());
         }
         let mut available_payload = shared.limits.payload_bytes;
         for owner in registry.torrents.values() {
@@ -796,7 +827,7 @@ impl Session {
         let networking = if !online {
             Networking::Recheck
         } else {
-            let online = shared.online.as_ref().expect("online session");
+            let online = online_guard.as_ref().expect("online session");
             Networking::Online(Network {
                 incoming: shared.incoming.clone(),
                 peer_slots: shared.peer_slots.clone(),
@@ -814,6 +845,7 @@ impl Session {
                 lsd: shared.lsd.clone(),
             })
         };
+        drop(online_guard);
         let identity = Arc::new(());
         let retirement = Retirement {
             registry: Arc::downgrade(&shared.registry),
@@ -897,6 +929,8 @@ impl Session {
         shared.udp_stop.send_replace(true);
         let result = join_task(&mut tasks.udp, |r| r).await;
         tasks.record(result);
+        shared.dial_queue.set_utp(None);
+        shared.online.lock().unwrap().take();
         tasks.joined = true;
         tasks.result()
     }
@@ -907,7 +941,7 @@ impl Shared {
         registry.closed = true;
         self.stop.send_replace(true);
         self.routes.lock().unwrap().clear();
-        if let Some(online) = &self.online {
+        if let Some(online) = &*self.online.lock().unwrap() {
             online.utp.lock().unwrap().stop_accepting();
         }
         for owner in registry.torrents.values() {

@@ -3,7 +3,6 @@ use crate::engine::{
     core::extensions::invalid,
     discovery::{AnnounceOptions, Announcer},
     next_ready,
-    profile::Profile,
     torrent::shell::Shell,
 };
 use crate::protocol::{magnet::Magnet, metainfo::OwnedMetainfo};
@@ -126,13 +125,17 @@ impl crate::engine::torrent::Network {
             }
         };
         for key in identity.wire_keys() {
-            contacts.add_direct(key, &options.peers)?;
+            contacts.add_direct(key, &options.initial_peers)?;
             if let Some(announcer) = manager(key)? {
                 resources.managers.push((key, announcer));
             }
         }
         let managers = &mut resources.managers;
-        if managers.is_empty() && node.is_none() && lsd.is_none() && options.peers.is_empty() {
+        if managers.is_empty()
+            && node.is_none()
+            && lsd.is_none()
+            && options.initial_peers.is_empty()
+        {
             return Err(invalid("no metadata discovery sources are enabled"));
         }
         let (sender, mut incoming) = tokio::sync::mpsc::channel(crate::engine::profile::MAX_QUEUED);
@@ -261,7 +264,7 @@ impl crate::engine::torrent::Network {
                             });
                         }
                         if let Some(meta)=resolved {
-                            return retain_trackers(meta,magnet,profile);
+                            return retain_trackers(meta,magnet);
                         }
                     }
                     _=maintenance.tick()=>{},
@@ -306,11 +309,7 @@ async fn announce(
     )
     .await
 }
-fn retain_trackers(
-    meta: OwnedMetainfo,
-    magnet: &Magnet,
-    profile: Profile,
-) -> io::Result<OwnedMetainfo> {
+fn retain_trackers(meta: OwnedMetainfo, magnet: &Magnet) -> io::Result<OwnedMetainfo> {
     if magnet.trackers().next().is_none() {
         return Ok(meta);
     }
@@ -324,5 +323,5 @@ fn retain_trackers(
     }
     bytes.push(b'e');
     bytes.extend_from_slice(&meta.source_bytes()[1..]);
-    profile.parse_owned(&bytes).map_err(Into::into)
+    crate::engine::profile::parse_owned(&bytes).map_err(Into::into)
 }

@@ -1,5 +1,7 @@
 //! Per-torrent resource settings, separate from fixed protocol policy.
 mod admission;
+pub use admission::{parse, parse_owned};
+pub(in crate::engine) use admission::{parse_info, validate_metainfo};
 use std::{error::Error, fmt, io, time::Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,7 +61,7 @@ impl From<AdmissionError> for io::Error {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Profile {
     /// Per-torrent connection cap, including connecting and not-yet-joined peers.
     pub peers: usize,

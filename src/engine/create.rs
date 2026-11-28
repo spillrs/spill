@@ -23,7 +23,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::profile::{AdmissionError, AdmissionLimit, MAX_FILES, MAX_META, MAX_PIECES, Profile};
+use super::profile::{AdmissionError, AdmissionLimit, MAX_FILES, MAX_META, MAX_PIECES};
 
 /// Metainfo format. V1 preserves mktorrent-compatible file ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -356,15 +356,13 @@ pub fn create(
     }
     let metainfo =
         bencode::encode(&Node::new(Value::Dictionary(document)), limits).map_err(invalid)?;
-    let parsed = Profile::default()
-        .parse_owned(&metainfo)
-        .map_err(|error| match error {
-            AdmissionError::ResourceLimit(AdmissionLimit::Pieces)
-            | AdmissionError::Metainfo(crate::protocol::metainfo::Error::MetadataLimit) => {
-                invalid(format!("{error}; choose a larger piece length"))
-            }
-            _ => invalid(error),
-        })?;
+    let parsed = crate::engine::profile::parse_owned(&metainfo).map_err(|error| match error {
+        AdmissionError::ResourceLimit(AdmissionLimit::Pieces)
+        | AdmissionError::Metainfo(crate::protocol::metainfo::Error::MetadataLimit) => {
+            invalid(format!("{error}; choose a larger piece length"))
+        }
+        _ => invalid(error),
+    })?;
     let info_hash = parsed.info_hash();
     Ok(CreatedTorrent {
         metainfo,
@@ -591,7 +589,17 @@ fn unchanged(before: &Metadata, after: &Metadata) -> io::Result<()> {
     Ok(())
 }
 
+impl Options {
+    /// Validate creation options without accessing the filesystem.
+    pub fn validate(&self) -> io::Result<()> {
+        validate_options(self)
+    }
+}
+
 fn validate_options(options: &Options) -> io::Result<()> {
+    if let Some(name) = &options.name {
+        component(name.as_bytes())?;
+    }
     if !options.piece_length.is_power_of_two()
         || !(1 << 15..=1 << 28).contains(&options.piece_length)
     {

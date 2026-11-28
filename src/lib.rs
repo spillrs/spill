@@ -19,16 +19,12 @@
 //! ## Download a torrent
 //!
 //! ```no_run
-//! use spill::engine::{
-//!     download,
-//!     profile::Profile,
-//!     torrent::{Destination, TorrentSource},
-//! };
+//! use spill::engine::{Destination, TorrentSource, download};
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() -> std::io::Result<()> {
 //!     let bytes = tokio::fs::read("example.torrent").await?;
-//!     let source = TorrentSource::Metainfo(Profile::default().parse_owned(&bytes)?);
+//!     let source = TorrentSource::from_metainfo_bytes(&bytes)?;
 //!     tokio::fs::create_dir_all("downloads").await?;
 //!     download(source, Destination::Open("downloads".into())).await
 //! }
@@ -41,34 +37,32 @@
 //!
 //! ## Manage transfers in an application
 //!
-//! Use [`engine::session::Session`] for concurrent torrents, progress, explicit
+//! Use [`engine::Session`] for concurrent torrents, progress, explicit
 //! networking policy, persistence, and cancellation with joined cleanup.
-//! [`engine::torrent::TorrentOptions`] configures each execution;
-//! [`engine::torrent::Persistence`] acknowledges recovery records.
+//! [`engine::TorrentOptions`] configures each execution;
+//! [`engine::Persistence`] acknowledges recovery records.
 //! Dropping the one-shot download future or last session handle requests stop but
 //! cannot await cleanup. Retain handles and explicitly join shutdown before reusing
 //! destinations.
 //!
 //! This example uses tracker discovery, reports wanted-content progress, and joins
 //! shutdown even when admission or the transfer fails. Enable DHT explicitly in
-//! [`engine::session::NetworkOptions`] when needed.
+//! [`engine::NetworkOptions`] when needed.
 //!
 //! ```no_run
 //! use spill::engine::{
-//!     profile::Profile,
-//!     session::{Limits, NetworkOptions, Session},
-//!     torrent::{Destination, RunPolicy, TorrentOptions, TorrentSource},
+//!     Destination, Limits, NetworkOptions, RunPolicy, Session, TorrentOptions, TorrentSource,
 //! };
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() -> std::io::Result<()> {
 //!     let bytes = tokio::fs::read("example.torrent").await?;
-//!     let meta = Profile::default().parse_owned(&bytes)?;
+//!     let source = TorrentSource::from_metainfo_bytes(&bytes)?;
 //!     tokio::fs::create_dir_all("downloads").await?;
 //!     let session = Session::bind(NetworkOptions::default(), Limits::default()).await?;
 //!     let result = async {
 //!         let mut options = TorrentOptions::new(
-//!             TorrentSource::Metainfo(meta),
+//!             source,
 //!             Destination::Open("downloads".into()),
 //!         );
 //!         options.run = RunPolicy::UntilComplete;
@@ -80,8 +74,7 @@
 //!                 break;
 //!             }
 //!         }
-//!         torrent.join().await?;
-//!         torrent.wait_complete().await
+//!         torrent.outcome().await.require_complete()
 //!     }.await;
 //!     let shutdown = session.shutdown().await;
 //!     result.and(shutdown)
@@ -91,7 +84,7 @@
 //! ## Offline utilities
 //!
 //! [`engine::create::create`] builds torrent files from local payload, and
-//! [`engine::provisioning::NamedDestination::verify`] checks complete existing
+//! [`engine::provisioning::verify`] checks complete existing
 //! payload against metainfo. Both are blocking, read-only operations on the
 //! payload and need neither a session nor a Tokio runtime. Their API pages include
 //! examples.

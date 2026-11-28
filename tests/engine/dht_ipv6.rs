@@ -1,7 +1,6 @@
 use crate::payload::{Temp, seed_metainfo};
 use spill::{
     engine::{
-        profile::Profile,
         session::{DhtOptions, Limits, NetworkOptions, Session, dht::SavedState},
         settings::TorrentSettings,
         torrent::{Destination, TorrentHandle, TorrentOptions, TorrentSource},
@@ -62,9 +61,7 @@ async fn start_node(
     .unwrap();
     let root = Temp::new();
     std::fs::write(root.0.join("warm"), b"abc").unwrap();
-    let meta = Profile::default()
-        .parse_owned(&seed_metainfo("warm", b"abc", None))
-        .unwrap();
+    let meta = spill::engine::parse_owned(&seed_metainfo("warm", b"abc", None)).unwrap();
     let mut options = TorrentOptions::new(
         TorrentSource::Metainfo(meta),
         Destination::Adopt(root.0.clone()),
@@ -487,9 +484,7 @@ async fn ipv6_router_bootstrap_discovers_download_and_magnet_peers() {
         let root = Temp::new();
         let payload = b"IPv6 DHT download";
         std::fs::write(root.0.join("payload"), payload).unwrap();
-        let meta = Profile::default()
-            .parse_owned(&seed_metainfo("payload", payload, None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("payload", payload, None)).unwrap();
         let seed = Session::bind(
             NetworkOptions {
                 listen: "[::1]:0".parse().unwrap(),

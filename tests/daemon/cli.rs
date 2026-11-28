@@ -74,7 +74,14 @@ async fn client_commands_are_top_level_without_a_ctl_alias() {
         .await
         .unwrap();
     assert!(details.status.success());
-    let details: Value = serde_json::from_slice(&details.stdout).unwrap();
+    let details_text = String::from_utf8(details.stdout).unwrap();
+    assert!(
+        serde_json::from_str::<Value>(&details_text).is_err(),
+        "{details_text}"
+    );
+    assert!(details_text.contains(id), "{details_text}");
+    assert!(details_text.contains("seeding"), "{details_text}");
+    let details = client(&daemon, &["get", id]).await;
     assert_eq!(details["id"], id);
     assert_eq!(details["state"], "seeding");
     assert_eq!(details["verified_bytes"], 3);

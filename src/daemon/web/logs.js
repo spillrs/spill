@@ -1,5 +1,5 @@
 'use strict';
-let logTimer, logLoading = false;
+let logTimer, logCopyTimer, logLoading = false;
 async function refreshLogs() {
   if (logLoading || !$('#logs-dialog').open) return;
   clearTimeout(logTimer);
@@ -23,6 +23,13 @@ async function refreshLogs() {
     if ($('#logs-dialog').open && $('#logs-follow').checked) logTimer = setTimeout(refreshLogs, 1000);
   }
 }
+$('#logs-output').addEventListener('scroll', () => {
+  const out = $('#logs-output');
+  if ($('#logs-follow').checked && out.scrollTop + out.clientHeight < out.scrollHeight - 24) {
+    $('#logs-follow').checked = false;
+    clearTimeout(logTimer);
+  }
+});
 $('#open-logs').onclick = () => {
   $('#logs-status').textContent = 'Loading…';
   $('#logs-copy-status').textContent = '';
@@ -36,8 +43,10 @@ $('#logs-follow').onchange = e => {
   if (e.target.checked) void refreshLogs();
 };
 $('#copy-logs').onclick = async () => {
+  clearTimeout(logCopyTimer);
   try { await navigator.clipboard.writeText($('#logs-output').textContent); $('#logs-copy-status').textContent = 'Copied.'; }
   catch { $('#logs-copy-status').textContent = 'Could not copy. Select the text and copy it manually.'; }
+  logCopyTimer = setTimeout(() => { $('#logs-copy-status').textContent = ''; }, 3000);
 };
 $('#close-logs').onclick = () => $('#logs-dialog').close();
-$('#logs-dialog').onclose = () => clearTimeout(logTimer);
+$('#logs-dialog').onclose = () => { clearTimeout(logTimer); clearTimeout(logCopyTimer); };

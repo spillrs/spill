@@ -18,7 +18,9 @@ fn validate(url: &Url, allow_local_network: bool) -> io::Result<()> {
         return Err(invalid("torrent URL must not contain credentials"));
     }
     if !crate::http::destination_allowed(url, allow_local_network) {
-        return Err(invalid("torrent URL destination is not allowed"));
+        return Err(invalid(
+            "torrent URL destination is not allowed (set allow_local_network = true in config for local addresses)",
+        ));
     }
     Ok(())
 }

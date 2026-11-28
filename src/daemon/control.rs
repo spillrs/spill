@@ -101,6 +101,8 @@ pub enum Error {
     Invalid(String),
     #[error("torrent not found: {0}")]
     Missing(String),
+    #[error("{0}")]
+    Unavailable(String),
     #[error(transparent)]
     Catalog(#[from] crate::catalog::Error),
     #[error(transparent)]
@@ -119,6 +121,7 @@ impl Response {
             Err(e) => Self {
                 code: match e {
                     Error::Missing(_) => 3,
+                    Error::Unavailable(_) => 4,
                     Error::Invalid(_)
                     | Error::Json(_)
                     | Error::Catalog(crate::catalog::Error::Duplicate) => 2,
@@ -156,7 +159,22 @@ fn find(db: &Catalog, id: &str) -> Result<Arc<Row>, Error> {
     match rows.len() {
         0 => Err(Error::Missing(id)),
         1 => Ok(rows.into_iter().next().unwrap()),
-        _ => Err(Error::Invalid("ambiguous ID".into())),
+        count => {
+            let matches: Vec<_> = rows
+                .iter()
+                .take(5)
+                .map(|r| &r.id[..r.id.len().min(12)])
+                .collect();
+            let suffix = if count > 5 {
+                format!(", … ({count} total)")
+            } else {
+                String::new()
+            };
+            Err(Error::Invalid(format!(
+                "ambiguous ID '{id}' (matches {}{suffix})",
+                matches.join(", ")
+            )))
+        }
     }
 }
 impl Control {
@@ -164,6 +182,7 @@ impl Control {
         Response::from_result(self.dispatch(request).await)
     }
     async fn dispatch(&self, mut request: Request) -> Result<Value, Error> {
+        let mut from_url = false;
         if let Request::Add {
             metainfo,
             magnet,
@@ -185,6 +204,7 @@ impl Control {
                 return Err(Error::Invalid("output_dir must be absolute".into()));
             }
             if let Some(source) = url.take() {
+                from_url = true;
                 let (mut shutdown, allow_local_network) = {
                     let supervisor = self.0.lock().await;
                     (
@@ -193,18 +213,18 @@ impl Control {
                     )
                 };
                 if *shutdown.borrow() {
-                    return Err(Error::Invalid("daemon is shutting down".into()));
+                    return Err(Error::Unavailable("daemon is shutting down".into()));
                 }
                 // Network I/O must not hold up other control requests.
                 *metainfo = Some(tokio::select! {
                     result = crate::metainfo_url::fetch(&source, allow_local_network) => result?,
-                    _ = shutdown.changed() => return Err(Error::Invalid("daemon is shutting down".into())),
+                    _ = shutdown.changed() => return Err(Error::Unavailable("daemon is shutting down".into())),
                 });
             }
         }
         let mut supervisor = self.0.lock().await;
         if *supervisor.shutdown.borrow() && !matches!(request, Request::Health | Request::Status) {
-            return Err(Error::Invalid("daemon is shutting down".into()));
+            return Err(Error::Unavailable("daemon is shutting down".into()));
         }
         match request {
             Request::Health => Ok(supervisor.health().await),
@@ -243,11 +263,15 @@ impl Control {
                 let mut parsed_magnet = None;
                 let identity = match (&metainfo, &magnet) {
                     (Some(bytes), None) if bytes.len() <= spill::engine::profile::MAX_META => {
-                        let meta = supervisor
-                            .config
-                            .profile()
-                            .parse_owned(bytes)
-                            .map_err(io::Error::from)?;
+                        let meta = spill::engine::parse_owned(bytes).map_err(|error| {
+                            if from_url {
+                                Error::Invalid(format!(
+                                    "fetched URL is not valid .torrent metainfo: {error}"
+                                ))
+                            } else {
+                                Error::from(io::Error::from(error))
+                            }
+                        })?;
                         if meta.is_private() {
                             settings.dht = false;
                             settings.pex = false;
@@ -345,7 +369,7 @@ impl Control {
             }
             Request::Set { id, values } => {
                 let row = find(&supervisor.db, &id)?;
-                let settings = patch_settings(&row.settings, values.clone())?;
+                let settings = patch_row_settings(&row, values.clone())?;
                 validate_settings(&row, &settings)?;
                 let rate_only = Settings {
                     download_limit: settings.download_limit,
@@ -368,7 +392,7 @@ impl Control {
                     supervisor.stop(&row.id).await?;
                     // Resolution may have persisted magnet file_priorities while stopping.
                     let current = supervisor.db.row(&row.id)?.expect("existing torrent");
-                    let settings = patch_settings(&current.settings, values)?;
+                    let settings = patch_row_settings(&current, values)?;
                     let validated = validate_settings(&current, &settings);
                     let updated = validated.and_then(|()| {
                         supervisor.db.settings(&row.id, &settings)?;
@@ -391,7 +415,8 @@ impl Control {
                 Ok(
                     json!({"id":row.id,"files":meta.layout().files().iter().enumerate().map(|(index,f)|
                     json!({"index":index,"path":f.path().iter().map(|s|String::from_utf8_lossy(s)).collect::<Vec<_>>().join("/"),
-                        "length":f.length(),"priority":priorities.file_priorities()[index]})).collect::<Vec<_>>()}),
+                        "length":f.length(),"priority":priorities.file_priorities()[index],
+                        "padding":f.kind() == spill::protocol::metainfo::FileKind::Padding})).collect::<Vec<_>>()}),
                 )
             }
             Request::Remove { id, delete_payload } => {
@@ -404,9 +429,11 @@ impl Control {
                         Intent::RemoveKeep
                     },
                 )?;
-                supervisor.remove(&row.id, delete_payload).await?;
+                let deleted_payload = supervisor.remove(&row.id, delete_payload).await?;
                 supervisor.reconcile().await?;
-                Ok(json!({"removed":row.id,"delete_payload":delete_payload}))
+                Ok(
+                    json!({"removed":row.id,"delete_payload":delete_payload,"deleted_payload":deleted_payload}),
+                )
             }
             action => {
                 let (id, intent) = match action {
@@ -425,6 +452,33 @@ impl Control {
             }
         }
     }
+}
+fn patch_row_settings(row: &Row, mut values: Map<String, Value>) -> Result<Settings, Error> {
+    if let Some(Value::Object(sparse)) = values.get("file_priorities") {
+        let _ = row
+            .metainfo
+            .as_deref()
+            .ok_or_else(|| Error::Invalid("wait for metadata before selecting files".into()))?;
+        let meta = row.meta()?;
+        let mut priorities =
+            FileSelection::from_priorities(meta.layout(), &row.settings.file_priorities)?
+                .file_priorities()
+                .to_vec();
+        let len = priorities.len();
+        for (key, value) in sparse {
+            let index: usize = key.parse().map_err(|_| {
+                Error::Invalid(format!("invalid file index '{key}' in file_priorities"))
+            })?;
+            let slot = priorities.get_mut(index).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "file index {index} out of range (manifest has {len} entries)"
+                ))
+            })?;
+            *slot = serde_json::from_value(value.clone())?;
+        }
+        values.insert("file_priorities".into(), serde_json::to_value(priorities)?);
+    }
+    patch_settings(&row.settings, values)
 }
 fn patch_settings(base: &Settings, values: Map<String, Value>) -> Result<Settings, Error> {
     let mut settings = serde_json::to_value(base)?;

@@ -49,12 +49,14 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
         .next()
         .unwrap();
     let denied = http(address, "POST", "/api", None, b"{\"op\":\"shutdown\"}").await;
-    assert!(denied.starts_with("HTTP/1.1 403"));
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
     let denied = http(address, "POST", "/api/logs", None, b"{}").await;
-    assert!(denied.starts_with("HTTP/1.1 403"));
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
     let bytes = metainfo(Some(&source.url));
     let denied = http(address, "POST", "/api/upload", None, &bytes).await;
-    assert!(denied.starts_with("HTTP/1.1 403"));
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+    let bad_method = http(address, "GET", "/api", None, b"").await;
+    assert!(bad_method.starts_with("HTTP/1.1 405"), "{bad_method}");
     assert!(
         daemon.call(json!({"op":"list"})).await["torrents"]
             .as_array()
@@ -99,7 +101,7 @@ async fn web_smoke_dispatches_in_process_with_csrf_protection() {
     );
     let caps = b"{\"op\":\"set_bandwidth\",\"upload_limit\":1048576}";
     let denied = http(address, "POST", "/api", None, caps).await;
-    assert!(denied.starts_with("HTTP/1.1 403"));
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
     let saved = http(address, "POST", "/api", Some(token), caps).await;
     let response: serde_json::Value =
         serde_json::from_str(saved.split("\r\n\r\n").nth(1).unwrap()).unwrap();

@@ -49,7 +49,7 @@ async fn dht_is_lazy_respects_execution_policy_and_retains_final_state() {
                     bytes.truncate(bytes.len() - 2);
                     bytes.extend_from_slice(b"7:privatei1eee");
                 }
-                let meta = profile.parse_owned(&bytes).unwrap();
+                let meta = spill::engine::parse_owned(&bytes).unwrap();
                 let mut options = TorrentOptions::new(
                     TorrentSource::Metainfo(meta),
                     Destination::Open(root.0.clone()),
@@ -190,8 +190,7 @@ async fn invalid_dht_capabilities_are_rejected_before_binding() {
             Limits::default(),
         )
         .await
-        .err()
-        .expect("invalid DHT capability");
+        .expect_err("invalid DHT capability");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }

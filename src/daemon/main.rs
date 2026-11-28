@@ -15,7 +15,7 @@ mod settings;
 mod supervisor;
 mod verify;
 mod web;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use std::{
     fs::OpenOptions,
     io,
@@ -27,7 +27,17 @@ use std::{
 use tokio::{sync::Mutex, task::JoinSet};
 
 fn main() -> ExitCode {
-    let cli = match cli::Cli::try_parse() {
+    let matches = match cli::Cli::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(e) => {
+            let code = e.exit_code() as u8;
+            let _ = e.print();
+            return ExitCode::from(code);
+        }
+    };
+    let socket_flag = matches.value_source("socket") == Some(ValueSource::CommandLine);
+    let json_flag = matches.value_source("json") == Some(ValueSource::CommandLine);
+    let cli = match cli::Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(e) => {
             let code = e.exit_code() as u8;
@@ -35,10 +45,22 @@ fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
+    if socket_flag && !matches!(cli.command, cli::Command::Client(_)) {
+        eprintln!("--socket is only valid for daemon client commands");
+        return ExitCode::from(2);
+    }
+    if json_flag && matches!(cli.command, cli::Command::Serve { check: false, .. }) {
+        eprintln!("--json is not supported with 'spill serve' (pass --check to validate config)");
+        return ExitCode::from(2);
+    }
     let offline = match &cli.command {
         cli::Command::Create(args) => Some(create::run(args, cli.json)),
         cli::Command::Inspect(args) => Some(inspect::run(args, cli.json)),
         cli::Command::Verify(args) => Some(verify::run(args, cli.json)),
+        cli::Command::Serve {
+            config,
+            check: true,
+        } => Some(check_config(config.as_deref(), cli.json)),
         _ => None,
     };
     if let Some(result) = offline {
@@ -60,21 +82,30 @@ fn main() -> ExitCode {
         .expect("runtime");
     let code = runtime.block_on(async {
         match cli.command {
-            cli::Command::Create(_) | cli::Command::Inspect(_) | cli::Command::Verify(_) => {
+            cli::Command::Create(_)
+            | cli::Command::Inspect(_)
+            | cli::Command::Verify(_)
+            | cli::Command::Serve { check: true, .. } => {
                 unreachable!("offline commands are dispatched before starting the runtime")
             }
-            cli::Command::Serve { config } => {
+            cli::Command::Serve { config, .. } => {
                 let mut logging = logging::Logging::init();
                 match serve(config.as_deref(), &mut logging).await {
                     Ok(()) => 0,
                     Err(error) => {
+                        let code = if error.kind() == io::ErrorKind::InvalidInput {
+                            2
+                        } else {
+                            1
+                        };
                         tracing::error!(%error, "daemon_failed");
-                        1
+                        code
                     }
                 }
             }
             cli::Command::Client(command) => match cli::run(command, cli.socket, cli.json).await {
                 Ok(()) => 0,
+                Err(cli::Error::Interrupted) => 130,
                 Err(e) => {
                     eprintln!("{e}");
                     e.code()
@@ -83,6 +114,29 @@ fn main() -> ExitCode {
         }
     });
     ExitCode::from(code)
+}
+
+fn check_config(path: Option<&std::path::Path>, json: bool) -> io::Result<()> {
+    let config = config::Config::load(path)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "valid": true,
+                "config": path.map(|p| p.display().to_string()),
+                "state_dir": config.state_dir,
+                "download_dir": config.download_dir,
+                "control_socket": config.control_socket,
+                "listen": config.listen,
+                "web_listen": config.web_listen,
+            })
+        );
+    } else if let Some(path) = path {
+        println!("Configuration valid: {}", path.display());
+    } else {
+        println!("Configuration valid (built-in defaults)");
+    }
+    Ok(())
 }
 #[cfg(target_os = "macos")]
 fn macos_file_limit() -> io::Result<u64> {
@@ -127,19 +181,75 @@ async fn serve(path: Option<&std::path::Path>, logging: &mut logging::Logging) -
         let _ = raised;
     }
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
-    std::fs::create_dir_all(&config.state_dir)?;
-    std::fs::set_permissions(&config.state_dir, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::create_dir_all(&config.state_dir).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "cannot create state_dir {}: {e}",
+                config.state_dir.display()
+            ),
+        )
+    })?;
+    std::fs::set_permissions(&config.state_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+        |e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "cannot set permissions on state_dir {}: {e}",
+                    config.state_dir.display()
+                ),
+            )
+        },
+    )?;
+    let lock_path = config.state_dir.join("daemon.lock");
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(config.state_dir.join("daemon.lock"))?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+        .open(&lock_path)
+        .map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("cannot open {}: {e}", lock_path.display()),
+            )
+        })?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(
+        |e| {
+            let err: io::Error = e.into();
+            if err.kind() == io::ErrorKind::WouldBlock {
+                io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!(
+                        "state directory {} is already locked by another spill daemon",
+                        config.state_dir.display()
+                    ),
+                )
+            } else {
+                io::Error::new(
+                    err.kind(),
+                    format!("cannot lock {}: {err}", lock_path.display()),
+                )
+            }
+        },
+    )?;
     logging.configure(&config.logging, &config.state_dir, lock)?;
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), state_dir = %config.state_dir.display(), "daemon_starting");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        config = %path.map_or_else(|| "built-in defaults".to_owned(), |p| p.display().to_string()),
+        state_dir = %config.state_dir.display(),
+        "daemon_starting"
+    );
     if let Some(parent) = config.control_socket.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "cannot create control_socket directory {}: {e}",
+                    parent.display()
+                ),
+            )
+        })?;
     }
     if let Ok(metadata) = std::fs::symlink_metadata(&config.control_socket) {
         if !metadata.file_type().is_socket()
@@ -147,23 +257,43 @@ async fn serve(path: Option<&std::path::Path>, logging: &mut logging::Logging) -
         {
             return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
-                "control socket already in use",
+                format!(
+                    "control socket already in use: {}",
+                    config.control_socket.display()
+                ),
             ));
         }
         std::fs::remove_file(&config.control_socket)?;
     }
-    let listener = tokio::net::UnixListener::bind(&config.control_socket)?;
+    let listener = tokio::net::UnixListener::bind(&config.control_socket).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "cannot bind control_socket {}: {e}",
+                config.control_socket.display()
+            ),
+        )
+    })?;
     std::fs::set_permissions(
         &config.control_socket,
         std::fs::Permissions::from_mode(0o600),
     )?;
     let db = catalog::Catalog::open(&config.state_dir.join("catalog.sqlite"))
         .map_err(io::Error::other)?;
-    let supervisor = supervisor::Supervisor::new(config.clone(), db, logging.health()).await?;
+    let supervisor = supervisor::Supervisor::new(config.clone(), db, logging.health())
+        .await
+        .map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("cannot start torrent session on {}: {e}", config.listen),
+            )
+        })?;
     let mut stopping = supervisor.shutdown.subscribe();
     let control = control::Control(Arc::new(Mutex::new(supervisor)));
     let web = if let Some(address) = config.web_listen {
-        let listener = tokio::net::TcpListener::bind(address).await?;
+        let listener = tokio::net::TcpListener::bind(address).await.map_err(|e| {
+            io::Error::new(e.kind(), format!("cannot bind web_listen {address}: {e}"))
+        })?;
         Some(tokio::spawn(web::serve(
             listener,
             control.clone(),

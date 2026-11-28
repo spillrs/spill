@@ -17,8 +17,8 @@ pub struct Arguments {
 pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
     let data = if args
         .source
-        .get(..8)
-        .is_some_and(|s| s.eq_ignore_ascii_case("magnet:?"))
+        .get(..7)
+        .is_some_and(|s| s.eq_ignore_ascii_case("magnet:"))
     {
         let magnet = Magnet::parse(&args.source, magnet::Limits::default())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -97,17 +97,115 @@ pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
         }
         data
     };
-    // JSON escaping also keeps untrusted names and URLs safe on terminals.
-    println!(
-        "{}",
-        if json {
-            serde_json::to_string(&data)
-        } else {
-            serde_json::to_string_pretty(&data)
-        }
-        .map_err(io::Error::other)?
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&data).map_err(io::Error::other)?
+        );
+    } else {
+        print_summary(&data);
+    }
     Ok(())
+}
+
+fn clean(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+fn print_summary(data: &Value) {
+    let kind = data["kind"].as_str().unwrap_or("");
+    if let Some(name) = data["name"].as_str() {
+        println!("{:<16} {}", "Name:", clean(name));
+    }
+    println!(
+        "{:<16} {}",
+        "Info hash:",
+        data["info_hash"].as_str().unwrap_or("")
+    );
+    println!(
+        "{:<16} {}",
+        "Format:",
+        data["format"].as_str().unwrap_or("")
+    );
+    if let Some(v1) = data["v1"].as_str() {
+        println!("{:<16} {v1}", "SHA-1:");
+    }
+    if let Some(v2) = data["v2"].as_str() {
+        println!("{:<16} {v2}", "SHA-256:");
+    }
+    if kind == "magnet" {
+        let params = data["parameters"].as_array().map_or(0, Vec::len);
+        println!("{:<16} {params}", "Parameters:");
+        if let Some(list) = data["parameters"].as_array() {
+            for p in list {
+                let key = p["key"].as_str().unwrap_or("");
+                if matches!(key, "tr" | "ws" | "so") {
+                    println!("  {key}={}", clean(p["value"].as_str().unwrap_or("")));
+                }
+            }
+        }
+        return;
+    }
+    println!(
+        "{:<16} {}",
+        "Private:",
+        if data["private"] == true { "yes" } else { "no" }
+    );
+    let data_bytes = data["data_bytes"].as_u64().unwrap_or(0);
+    let total_bytes = data["total_bytes"].as_u64().unwrap_or(0);
+    if data_bytes != total_bytes {
+        println!(
+            "{:<16} {} ({} with padding)",
+            "Size:",
+            crate::cli::human_bytes(data_bytes),
+            crate::cli::human_bytes(total_bytes)
+        );
+    } else {
+        println!("{:<16} {}", "Size:", crate::cli::human_bytes(data_bytes));
+    }
+    println!(
+        "{:<16} {} × {}",
+        "Pieces:",
+        data["piece_count"],
+        crate::cli::human_bytes(data["piece_length"].as_u64().unwrap_or(0))
+    );
+    if let Some(files) = data["files"].as_array() {
+        let data_files = files.iter().filter(|f| f["padding"] != true).count();
+        let padding_files = files.len() - data_files;
+        if padding_files > 0 {
+            println!("{:<16} {data_files} ({padding_files} padding)", "Files:");
+        } else {
+            println!("{:<16} {data_files}", "Files:");
+        }
+        for file in files.iter().take(20) {
+            let tag = if file["padding"] == true {
+                " [padding]"
+            } else {
+                ""
+            };
+            println!(
+                "  {:>4}  {:>10}  {}{tag}",
+                file["index"],
+                crate::cli::human_bytes(file["length"].as_u64().unwrap_or(0)),
+                clean(file["path"].as_str().unwrap_or(""))
+            );
+        }
+        if files.len() > 20 {
+            println!("  … {} more (use --json for full list)", files.len() - 20);
+        }
+    }
+    if let Some(announce) = data["announce"].as_str() {
+        println!("{:<16} {}", "Tracker:", clean(announce));
+    }
+    if let Some(comment) = data["comment"].as_str() {
+        println!("{:<16} {}", "Comment:", clean(comment));
+    }
+    if let Some(source) = data["source"].as_str() {
+        println!("{:<16} {}", "Source:", clean(source));
+    }
 }
 
 fn identity(hash: TorrentIdentity) -> Value {

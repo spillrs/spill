@@ -14,7 +14,7 @@ use tokio::{
 
 /// Persist at most 300 contacts per address family, retaining only good nodes.
 pub const MAX_SAVED_NODES: usize = 300;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SavedState {
     /// Stable random identity material. Live BEP 42 IDs are derived separately
     /// for each confirmed public address; addresses are rediscovered on restart.
@@ -78,6 +78,14 @@ pub(in crate::engine) fn endpoint(value: &str) -> io::Result<(&str, u16)> {
     }
     Ok((host, port))
 }
+impl Default for DhtOptions {
+    fn default() -> Self {
+        Self {
+            saved: None,
+            routers: default_routers(),
+        }
+    }
+}
 impl DhtOptions {
     pub(super) fn validate(&self, listen: SocketAddr) -> io::Result<()> {
         if !crate::engine::dht::valid_address(listen, true) {
@@ -135,7 +143,7 @@ impl Initialization {
 pub(in crate::engine) struct Dht {
     initialization: AsyncMutex<Initialization>,
     node: Arc<AsyncMutex<Option<OwnedDht>>>,
-    udp: udp::Transport,
+    udp: Mutex<Option<udp::Transport>>,
     allow_local_network: bool,
     registry: Weak<Mutex<Registry>>,
     stop: watch::Receiver<bool>,
@@ -157,7 +165,7 @@ impl Dht {
                 result: None,
             }),
             node: Arc::new(AsyncMutex::new(None)),
-            udp,
+            udp: Mutex::new(Some(udp)),
             allow_local_network,
             registry,
             stop,
@@ -173,7 +181,9 @@ impl Dht {
             return Err(io::ErrorKind::Interrupted.into());
         }
         if let Some(options) = initialization.options.take() {
-            let udp = self.udp.clone();
+            let Some(udp) = self.udp.lock().unwrap().clone() else {
+                return Err(io::ErrorKind::Interrupted.into());
+            };
             let allow_local_network = self.allow_local_network;
             let registry = self.registry.clone();
             let stop = self.stop.clone();
@@ -233,6 +243,7 @@ impl Dht {
         let mut initialization = self.initialization.lock().await;
         initialization.closed = true;
         if initialization.options.is_some() {
+            self.udp.lock().unwrap().take();
             return Ok(());
         }
         let initialized = initialization.join().await.map(|_| ());
@@ -243,7 +254,9 @@ impl Dht {
         } else {
             Ok(())
         };
-        self.udp.routes.lock().unwrap().dht = None;
+        if let Some(udp) = self.udp.lock().unwrap().take() {
+            udp.routes.lock().unwrap().dht = None;
+        }
         // Closing admission can win before initialization publishes a node.
         let initialized = initialized.or_else(|error| {
             if error.kind() == io::ErrorKind::Interrupted {

@@ -2,7 +2,6 @@
 use serde::Deserialize;
 use serde_json::json;
 use spill::engine::{
-    profile::Profile,
     provisioning::DestinationBinding,
     selection::FilePriority,
     session::{Limits, NetworkOptions, PeerEncryption, Session},
@@ -86,9 +85,9 @@ async fn main() -> io::Result<()> {
     } else {
         Destination::Open(root.clone())
     };
-    let meta = Profile::default().parse_owned(&std::fs::read(&config.torrent)?)?;
+    let meta = spill::engine::parse_owned(&std::fs::read(&config.torrent)?)?;
     let mut options = TorrentOptions::new(TorrentSource::Metainfo(meta), destination);
-    options.peers = config.peers;
+    options.initial_peers = config.peers;
     options.diagnostics = true;
     options.settings.trackers = false;
     options.settings.dht = false;
@@ -97,7 +96,7 @@ async fn main() -> io::Result<()> {
     options.settings.upload_limit = config.upload_limit;
     options.settings.download_limit = config.download_limit;
     options.settings.file_priorities = config.file_priorities;
-    options.no_progress_timeout = Duration::from_secs(300);
+    options.no_progress_timeout = Some(Duration::from_secs(300));
     options.persistence.binding = Some(Box::new(move |record| {
         save(
             &binding,
@@ -141,7 +140,7 @@ async fn main() -> io::Result<()> {
                 "completed": p.completed, "full_complete": p.full_complete, "joined": p.joined,
                 "verified_bytes": p.verified_bytes, "verified_pieces": p.verified_pieces,
                 "wanted_bytes": p.wanted_bytes, "wanted_verified_bytes": p.wanted_verified_bytes,
-                "received_bytes": p.processed_payload_bytes, "uploaded_bytes": p.written_payload_bytes,
+                "received_bytes": p.downloaded_bytes, "uploaded_bytes": p.uploaded_bytes,
                 "hash_failed_pieces": p.hash_failed_pieces, "peers": peers,
             })
         );

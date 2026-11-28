@@ -78,7 +78,7 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
         peers: 1,
         write_queue_bytes: 2 * spill::engine::profile::BLOCK_LEN as usize,
     };
-    let meta = profile.parse_owned(&bytes).unwrap();
+    let meta = spill::engine::parse_owned(&bytes).unwrap();
     let address = daemon.call(json!({"op":"health"})).await["listen"]
         .as_str()
         .unwrap()
@@ -119,7 +119,7 @@ async fn multi_block_download_and_parallel_recheck_preserve_piece_membership() {
                 download_limit: 512 * 1024,
                 ..Default::default()
             };
-            options.peers = vec![address];
+            options.initial_peers = vec![address];
             options.diagnostics = diagnostics;
             let mut observer = session.admit(options).unwrap();
             assert_eq!(observer.snapshot().diagnostics.is_some(), diagnostics);

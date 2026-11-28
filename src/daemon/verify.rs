@@ -1,8 +1,5 @@
 //! Offline verification delegates payload handling to the engine.
-use spill::engine::{
-    profile::{MAX_META, Profile},
-    provisioning::NamedDestination,
-};
+use spill::engine::{parse_owned, profile::MAX_META, provisioning};
 use std::{
     io::{self, Read},
     path::PathBuf,
@@ -13,7 +10,7 @@ pub struct Arguments {
     /// Local .torrent file describing the payload.
     torrent: PathBuf,
     /// Parent download directory, containing NAME or NAME/ as in spill add.
-    #[arg(long)]
+    #[arg(long, alias = "output")]
     path: PathBuf,
 }
 
@@ -22,10 +19,8 @@ pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
     std::fs::File::open(&args.torrent)?
         .take(MAX_META as u64 + 1)
         .read_to_end(&mut bytes)?;
-    let meta = Profile::default()
-        .parse_owned(&bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    NamedDestination::verify(&args.path, &meta).map_err(io::Error::other)?;
+    let meta = parse_owned(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    provisioning::verify(&args.path, &meta).map_err(io::Error::other)?;
     if json {
         println!(
             "{}",

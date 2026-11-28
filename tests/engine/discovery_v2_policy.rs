@@ -1,7 +1,6 @@
 use crate::payload::Temp;
 use spill::{
     engine::{
-        profile::Profile,
         session::{Limits, NetworkOptions, Session},
         settings::TorrentSettings,
         torrent::{Destination, TorrentOptions, TorrentSource},
@@ -46,7 +45,7 @@ async fn frame(socket: &mut TcpStream) -> Vec<u8> {
 #[tokio::test]
 async fn hybrid_pex_shares_legacy_and_v2_contacts_with_recipients_in_either_mode() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(HYBRID).unwrap();
+        let meta = spill::engine::parse_owned(HYBRID).unwrap();
         let v1 = *meta.info_hash().v1().unwrap().as_bytes();
         let v2 = meta.info_hash().v2().unwrap().wire_key();
         for recipient_key in [v1, v2] {
@@ -127,7 +126,7 @@ async fn hybrid_pex_shares_legacy_and_v2_contacts_with_recipients_in_either_mode
             let SocketAddr::V4(address) = session.local_addr() else {
                 unreachable!()
             };
-            utp_options.peers.extend([
+            utp_options.initial_peers.extend([
                 SocketAddr::new(address.ip().to_ipv6_mapped().into(), address.port()),
                 session.local_addr(),
             ]);

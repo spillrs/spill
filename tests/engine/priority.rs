@@ -5,7 +5,6 @@ use crate::{
 };
 use spill::{
     engine::{
-        profile::Profile,
         session::{Limits, NetworkOptions, PeerEncryption, Session},
         settings::TorrentSettings,
         torrent::{Destination, TorrentOptions, TorrentPhase, TorrentSource},
@@ -76,9 +75,8 @@ async fn canonical_admission_replaces_payload_peers_but_preserves_metadata_sourc
             let root = Temp::new();
             let (url, tracker) = metadata_peer::tracker(&[]).await;
             let payload = raw::payload(0, 32768);
-            let meta = Profile::default()
-                .parse_owned(&seed_metainfo("x", &payload, Some(&url)))
-                .unwrap();
+            let meta =
+                spill::engine::parse_owned(&seed_metainfo("x", &payload, Some(&url))).unwrap();
             let key = meta.info_hash().wire_key();
             let info = meta.info_bytes().to_vec();
             let source = if magnet {
@@ -126,7 +124,7 @@ async fn canonical_admission_replaces_payload_peers_but_preserves_metadata_sourc
                 let mut block = request[1..9].to_vec();
                 block.extend_from_slice(&payload[..16384]);
                 raw::send(&mut low, 7, &block).await;
-                while handle.snapshot().progress.processed_payload_bytes < 16384 {
+                while handle.snapshot().progress.downloaded_bytes < 16384 {
                     assert!(handle.changed().await);
                 }
             } else {
@@ -201,12 +199,10 @@ async fn outgoing_candidates_prefer_higher_canonical_rank() {
         let low = listeners.remove(0);
         let high = listeners.remove(0);
         let root = Temp::new();
-        let meta = Profile::default()
-            .parse_owned(&seed_metainfo("x", b"abc", None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
         let key = meta.info_hash().wire_key();
         let mut options = options(TorrentSource::Metainfo(meta), &root);
-        options.peers = vec![low.local_addr().unwrap(), high.local_addr().unwrap()];
+        options.initial_peers = vec![low.local_addr().unwrap(), high.local_addr().unwrap()];
         let handle = session.admit(options).unwrap();
         let (mut peer, _) = high.accept().await.unwrap();
         raw::accept(&mut peer, key, 4).await;

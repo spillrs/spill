@@ -121,8 +121,7 @@ async fn shared_root_ranges_are_disjoint_and_reassigned_after_reject_or_timeout(
                 )]))),
             ),
         ])));
-        let meta = Profile::default()
-            .parse_owned(&bencode::encode(&doc, Default::default()).unwrap())
+        let meta = spill::engine::parse_owned(&bencode::encode(&doc, Default::default()).unwrap())
             .unwrap();
         for reject in [true, false] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -309,7 +308,7 @@ async fn metadata_resolution_preserves_pending_dials_and_inflight_handshakes() {
         }
     }
     tokio::time::timeout(Duration::from_secs(15), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let bootstrap = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let pending = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let inflight = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -438,7 +437,7 @@ async fn raw_magnets_authenticate_layers_download_and_own_learned_aliases() {
                 "v2",
             ),
         ] {
-            let meta = Profile::default().parse_owned(fixture).unwrap();
+            let meta = spill::engine::parse_owned(fixture).unwrap();
             let fault = if meta.info_hash().v1().is_some() && topic == "v1" {
                 7
             } else {
@@ -583,7 +582,7 @@ async fn select_only_waits_for_metadata_and_explicit_priorities_take_precedence(
             (V2, "4294967295", false),
             (V2, "4294967295", true),
         ] {
-            let meta = Profile::default().parse_owned(fixture).unwrap();
+            let meta = spill::engine::parse_owned(fixture).unwrap();
             let (address, source) = source(&meta, 0).await;
             let (url, tracker) = metadata_peer::tracker(&[address]).await;
             let topic = meta.info_hash().v1().map_or_else(
@@ -647,7 +646,7 @@ async fn select_only_waits_for_metadata_and_explicit_priorities_take_precedence(
 #[tokio::test]
 async fn magnet_tracker_tiers_skip_failed_tracker_on_later_announce() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let (address, source) = source(&meta, 0).await;
         let (url, tracker) = metadata_peer::tracker(&[address]).await;
         // Reserve a non-listening port so refusal is immediate and cannot race reuse.
@@ -795,7 +794,7 @@ async fn magnet_tracker_tiers_skip_failed_tracker_on_later_announce() {
 #[tokio::test]
 async fn corrupt_metadata_and_bad_hash_peers_do_not_poison_honest_resolution() {
     tokio::time::timeout(Duration::from_secs(20), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         for fault in [1, 2, 3, 4, 5, 6] {
             let (bad, bad_task) = source(&meta, fault).await;
             let (good, good_task) = source(&meta, 0).await;
@@ -825,7 +824,7 @@ async fn full_v2_topics_are_checked_even_when_the_wire_prefix_matches() {
     use spill::protocol::bencode::{self, Value};
     use tokio::io::AsyncReadExt;
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(HYBRID).unwrap();
+        let meta = spill::engine::parse_owned(HYBRID).unwrap();
         let mut wrong = *meta.info_hash().v2().unwrap().as_bytes();
         wrong[31] ^= 1;
         let wrong = spill::protocol::identity::InfoHashV2::from_bytes(wrong);
@@ -936,8 +935,7 @@ async fn large_layers_use_bounded_ranges_proofs_and_a_padded_final_pair() {
                 )]))),
             ),
         ])));
-        let meta = Profile::default()
-            .parse_owned(&bencode::encode(&doc, Default::default()).unwrap())
+        let meta = spill::engine::parse_owned(&bencode::encode(&doc, Default::default()).unwrap())
             .unwrap();
         let (address, source) = source(&meta, 0).await;
         let (url, tracker) = metadata_peer::tracker(&[address]).await;
@@ -966,9 +964,9 @@ async fn inbound_metadata_peer_is_reused_for_payload_without_tracker_peers() {
     tokio::time::timeout(Duration::from_secs(10), async {
         for fast in [false, true] {
             let destination = Temp::new();
-            let meta = Profile::default()
-                .parse_owned(&crate::payload::seed_metainfo("inbound", b"abc", None))
-                .unwrap();
+            let meta =
+                spill::engine::parse_owned(&crate::payload::seed_metainfo("inbound", b"abc", None))
+                    .unwrap();
             let download = Session::bind(
                 NetworkOptions {
                     listen: "127.0.0.1:0".parse().unwrap(),
@@ -1073,7 +1071,7 @@ async fn inbound_metadata_peer_is_reused_for_payload_without_tracker_peers() {
 #[tokio::test]
 async fn stop_during_layers_and_duplicate_learned_alias_never_prepare_payload() {
     tokio::time::timeout(Duration::from_secs(20), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let (stalled, stalled_task) = source(&meta, 4).await;
         let (url, tracker) = metadata_peer::tracker(&[stalled]).await;
         let session = session().await;
@@ -1119,7 +1117,7 @@ async fn stop_during_layers_and_duplicate_learned_alias_never_prepare_payload() 
         pending.stop().await.unwrap();
         assert!(pending.outcome().await.cleanup_complete);
         assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
-        let meta = Profile::default().parse_owned(HYBRID).unwrap();
+        let meta = spill::engine::parse_owned(HYBRID).unwrap();
         let (good, good_task) = source(&meta, 0).await;
         let (good_url, good_tracker) = metadata_peer::tracker(&[good]).await;
         // Disjoint topics admit two executions; the first to validate info

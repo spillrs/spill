@@ -200,14 +200,12 @@ async fn session_network_policy_controls_trackers_and_web_seeds() {
 #[tokio::test]
 async fn magnet_resolves_metadata_then_downloads_and_seeds() {
     use spill::engine::{
-        profile::Profile,
         session::{Limits, NetworkOptions, Session},
         torrent::{Destination, TorrentOptions, TorrentSource},
     };
     use spill::protocol::{compact::PeersV4, tracker::udp};
     use tokio::net::UdpSocket;
-    let profile = Profile::DEFAULT;
-    let meta = profile.parse_owned(&metainfo(None)).unwrap();
+    let meta = spill::engine::parse_owned(&metainfo(None)).unwrap();
     let hash = meta.info_hash().v1().unwrap();
     let seed = Session::bind(
         NetworkOptions {

@@ -39,6 +39,26 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        parse_filter(&self.console_filter).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid logging.console_filter: {e}"),
+            )
+        })?;
+        if self.file_enabled {
+            parse_filter(&self.file_filter).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid logging.file_filter: {e}"),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Health {
     pub(crate) events_dropped: AtomicU64,
@@ -144,7 +164,7 @@ where
     S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
     fmt::layer()
-        .with_ansi(io::stderr().is_terminal())
+        .with_ansi(io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
         .with_writer(Console::new())
 }
 fn console() -> impl Layer<Registry> + Send + Sync {

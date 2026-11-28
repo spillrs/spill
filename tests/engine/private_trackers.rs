@@ -41,7 +41,7 @@ async fn private_failover_discards_old_peers_and_contacts_and_stops_every_regist
             &info, b"e",
         ].concat();
         let profile = Profile { peers: 1, ..Profile::default() };
-        let meta = profile.parse_owned(&bytes).unwrap();
+        let meta = spill::engine::parse_owned(&bytes).unwrap();
         let key = meta.info_hash().wire_key();
         let records = Arc::new(Mutex::new(Vec::new()));
         let (sent, mut requests) = mpsc::unbounded_channel();
@@ -141,9 +141,9 @@ async fn private_failover_discards_old_peers_and_contacts_and_stops_every_regist
         options.profile = profile;
         options.diagnostics = true;
         options.settings = TorrentSettings { trackers: true, dht: false, pex: false, web_seeds: false, ..Default::default() };
-        options.peers.push(endpoints[1]);
+        options.initial_peers.push(endpoints[1]);
         assert_eq!(session.admit(options).err().unwrap().kind(), std::io::ErrorKind::InvalidInput);
-        let meta = profile.parse_owned(&bytes).unwrap();
+        let meta = spill::engine::parse_owned(&bytes).unwrap();
         let mut options = TorrentOptions::new(TorrentSource::Metainfo(meta), Destination::Open(root.0.clone()));
         options.profile = profile;
         options.diagnostics = true;
@@ -195,8 +195,8 @@ async fn private_failover_discards_old_peers_and_contacts_and_stops_every_regist
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         handle.stop().await.unwrap();
-        assert_eq!(handle.snapshot().progress.processed_payload_bytes, 6);
-        assert_eq!(handle.snapshot().progress.written_payload_bytes, 3);
+        assert_eq!(handle.snapshot().progress.downloaded_bytes, 6);
+        assert_eq!(handle.snapshot().progress.uploaded_bytes, 3);
         new_peer.await.unwrap();
         assert!(tokio::time::timeout(Duration::from_millis(100), stale.accept()).await.is_err());
         let records = records.lock().unwrap().clone();

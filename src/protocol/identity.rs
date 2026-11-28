@@ -1,13 +1,47 @@
 //! Torrent identities. SHA-1 is used only as mandated by BitTorrent v1,
 //! not as a choice for new authentication or security protocols.
 
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidInfoHash;
+
+impl fmt::Display for InvalidInfoHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid hex info hash")
+    }
+}
+
+impl std::error::Error for InvalidInfoHash {}
+
+fn decode_hex<const N: usize>(s: &str) -> Result<[u8; N], InvalidInfoHash> {
+    if s.len() != N * 2 {
+        return Err(InvalidInfoHash);
+    }
+    let mut out = [0u8; N];
+    let (chunks, _) = s.as_bytes().as_chunks::<2>();
+    for (slot, chunk) in out.iter_mut().zip(chunks) {
+        let hi = hex_nibble(chunk[0]).ok_or(InvalidInfoHash)?;
+        let lo = hex_nibble(chunk[1]).ok_or(InvalidInfoHash)?;
+        *slot = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// The SHA-1 identity of a BitTorrent v1 info dictionary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InfoHashV1([u8; 20]);
 
 impl InfoHashV1 {
@@ -31,7 +65,7 @@ impl InfoHashV1 {
 /// The full SHA-256 identity of a BitTorrent v2 info dictionary.
 ///
 /// A truncated wire key is not sufficient to authenticate acquired metadata.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InfoHashV2([u8; 32]);
 
 impl InfoHashV2 {
@@ -65,7 +99,7 @@ impl fmt::Display for InfoHashV2 {
 
 /// Known info-dictionary identities, not proof that content has been validated.
 /// Display uses v1 for a hybrid and the full hash for v2-only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TorrentIdentity {
     V1(InfoHashV1),
     V2(InfoHashV2),
@@ -133,5 +167,33 @@ impl fmt::Display for InfoHashV1 {
             write!(f, "{byte:02x}")?;
         }
         Ok(())
+    }
+}
+
+impl FromStr for InfoHashV1 {
+    type Err = InvalidInfoHash;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        decode_hex(s).map(Self)
+    }
+}
+
+impl FromStr for InfoHashV2 {
+    type Err = InvalidInfoHash;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        decode_hex(s).map(Self)
+    }
+}
+
+impl FromStr for TorrentIdentity {
+    type Err = InvalidInfoHash;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.len() {
+            40 => s.parse().map(Self::V1),
+            64 => s.parse().map(Self::V2),
+            _ => Err(InvalidInfoHash),
+        }
     }
 }

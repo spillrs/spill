@@ -11,11 +11,13 @@ mod verify;
 use verify::{check_canceled, verify_content_cancellable};
 mod file;
 mod named;
+pub(in crate::engine) use named::{
+    adopt_complete_cancellable, create, open_cancellable, reopen_for_recovery,
+};
+pub use named::{remove, verify};
 pub(in crate::engine) mod paths;
 pub(in crate::engine) mod seed_files;
 use paths::PayloadPaths;
-
-pub struct NamedDestination;
 
 /// Opaque provisioned payload authority, consumed by torrent admission.
 pub(in crate::engine) struct FileStorage {
@@ -47,7 +49,7 @@ impl DestinationBinding {
                 .collect(),
         })
     }
-    pub(in crate::engine) fn is_read_only(&self) -> bool {
+    pub fn is_read_only(&self) -> bool {
         self.read_only
     }
     fn payload_paths(&self) -> io::Result<PayloadPaths> {

@@ -2,175 +2,184 @@
 //! Removal is restricted to recorded paths.
 use super::*;
 
-impl NamedDestination {
-    /// Check complete existing payload without creating or modifying files.
-    ///
-    /// `root` is the parent download directory. Paths use spill's normalized
-    /// disk names, including the torrent root for multi-file layouts. Missing,
-    /// incorrectly sized, partial (`.part`) or corrupt files fail verification;
-    /// symlinks beneath `root` and non-regular files are rejected. Padding files
-    /// are not read. Hybrids with missing v2 layers are checked using SHA-1.
-    ///
-    /// This blocks and stops at the first failure. It does not use networking,
-    /// acquire payload leases, or read/write resume data. Keep files unchanged
-    /// during the scan: it is not a filesystem snapshot. Async callers should
-    /// use `spawn_blocking`.
-    ///
-    /// Check `downloads/NAME` (or `downloads/NAME/` for a directory torrent)
-    /// before adding it to a session:
-    ///
-    /// ```no_run
-    /// use spill::engine::{profile::Profile, provisioning::NamedDestination};
-    /// use std::path::Path;
-    ///
-    /// let bytes = std::fs::read("example.torrent")?;
-    /// let meta = Profile::default().parse_owned(&bytes)?;
-    /// NamedDestination::verify(Path::new("downloads"), &meta)?;
-    /// println!("Verified {}", meta.info_hash());
-    /// # Ok::<(), std::io::Error>(())
-    /// ```
-    pub fn verify(root: &std::path::Path, meta: &OwnedMetainfo) -> io::Result<()> {
-        let root = File::open(root)?;
-        if !root.metadata()?.is_dir() {
-            return Err(invalid("output is not a directory"));
-        }
-        let mut files = PayloadPaths::new(meta)?
+/// Check complete existing payload without creating or modifying files.
+///
+/// `root` is the parent download directory. Paths use spill's normalized
+/// disk names, including the torrent root for multi-file layouts. Missing,
+/// incorrectly sized, partial (`.part`) or corrupt files fail verification;
+/// symlinks beneath `root` and non-regular files are rejected. Padding files
+/// are not read. Hybrids with missing v2 layers are checked using SHA-1.
+///
+/// This blocks and stops at the first failure. It does not use networking,
+/// acquire payload leases, or read/write resume data. Keep files unchanged
+/// during the scan: it is not a filesystem snapshot. Async callers should
+/// use `spawn_blocking`.
+///
+/// Check `downloads/NAME` (or `downloads/NAME/` for a directory torrent)
+/// before adding it to a session:
+///
+/// ```no_run
+/// use spill::engine::{parse_owned, provisioning};
+/// use std::path::Path;
+///
+/// let bytes = std::fs::read("example.torrent")?;
+/// let meta = parse_owned(&bytes)?;
+/// provisioning::verify(Path::new("downloads"), &meta)?;
+/// println!("Verified {}", meta.info_hash());
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn verify(root: &std::path::Path, meta: &OwnedMetainfo) -> io::Result<()> {
+    let root = File::open(root)?;
+    if !root.metadata()?.is_dir() {
+        return Err(invalid("output is not a directory"));
+    }
+    let mut files = PayloadPaths::new(meta)?
+        .complete_files(&root, meta.layout())?
+        .ok_or_else(|| invalid("payload is missing, partial or incorrectly sized"))?;
+    verify_content_cancellable(meta, &mut files, &|| false)
+}
+
+/// Remove writable payload files recorded in `binding` beneath `root`.
+/// Read-only adopted bindings are left untouched and return `Ok(())`.
+pub fn remove(root: &std::path::Path, binding: &DestinationBinding) -> io::Result<()> {
+    if binding.is_read_only() {
+        return Ok(());
+    }
+    let root = File::open(root)?;
+    binding.payload_paths()?.remove_at(&root)
+}
+
+/// Record writable paths before creating payloads so interrupted creation
+/// can be reopened for recovery. Complete existing seeds stay read-only.
+pub(in crate::engine) fn open_cancellable(
+    root: File,
+    meta: &OwnedMetainfo,
+    record: impl FnOnce(&DestinationBinding) -> io::Result<()>,
+    canceled: impl Fn() -> bool,
+) -> io::Result<FileStorage> {
+    if let Some(sink) = adopt_complete_cancellable(root.try_clone()?, meta, &canceled)? {
+        record(sink.binding())?;
+        return Ok(sink);
+    }
+    let binding = DestinationBinding::new(meta, false)?;
+    record(&binding)?;
+    open_bound(root, meta, None, true, &canceled)
+}
+
+pub(in crate::engine) fn create(
+    root: File,
+    meta: &OwnedMetainfo,
+    record: impl FnOnce(&DestinationBinding) -> io::Result<()>,
+    canceled: impl Fn() -> bool,
+) -> io::Result<FileStorage> {
+    check_canceled(&canceled)?;
+    PayloadPaths::new(meta)?.reject_existing(&root, meta.layout())?;
+    record(&DestinationBinding::new(meta, false)?)?;
+    open_bound(root, meta, None, true, &canceled)
+}
+
+/// Probe final files without creating payloads, then verify once under the
+/// shared leases on the payload files.
+pub(in crate::engine) fn adopt_complete_cancellable(
+    root: File,
+    meta: &OwnedMetainfo,
+    canceled: impl Fn() -> bool,
+) -> io::Result<Option<FileStorage>> {
+    check_canceled(&canceled)?;
+    if !root.metadata()?.is_dir() {
+        return Err(invalid("output is not a directory"));
+    }
+    let paths = PayloadPaths::new(meta)?;
+    let Some(files) = paths.complete_files(&root, meta.layout())? else {
+        paths.reject_existing(&root, meta.layout())?;
+        return Ok(None);
+    };
+    finish_read_only(root, paths, meta, files, None, true, &canceled).map(Some)
+}
+
+/// Reopen an existing binding without hashing. This does NOT grant piece
+/// availability: the caller must run fingerprint-based storage recovery (or
+/// explicit recheck) before advertising/uploading.
+pub(in crate::engine) fn reopen_for_recovery(
+    root: File,
+    meta: &OwnedMetainfo,
+    binding: &DestinationBinding,
+    canceled: impl Fn() -> bool,
+) -> io::Result<FileStorage> {
+    open_bound(root, meta, Some(binding), false, &canceled)
+}
+
+fn open_bound(
+    root: File,
+    meta: &OwnedMetainfo,
+    binding: Option<&DestinationBinding>,
+    verify: bool,
+    canceled: &dyn Fn() -> bool,
+) -> io::Result<FileStorage> {
+    check_canceled(canceled)?;
+    if !root.metadata()?.is_dir() {
+        return Err(invalid("output is not a directory"));
+    }
+    let paths = PayloadPaths::new(meta)?;
+    if binding.is_some_and(DestinationBinding::is_read_only) {
+        let files = paths
             .complete_files(&root, meta.layout())?
-            .ok_or_else(|| invalid("payload is missing, partial or incorrectly sized"))?;
-        verify_content_cancellable(meta, &mut files, &|| false)
+            .ok_or_else(|| invalid("seed payload is incomplete"))?;
+        return finish_read_only(root, paths, meta, files, binding, verify, canceled);
     }
-    /// Record writable paths before creating payloads so interrupted creation
-    /// can be reopened for recovery. Complete existing seeds stay read-only.
-    pub(in crate::engine) fn open_cancellable(
-        root: File,
-        meta: &OwnedMetainfo,
-        record: impl FnOnce(&DestinationBinding) -> io::Result<()>,
-        canceled: impl Fn() -> bool,
-    ) -> io::Result<FileStorage> {
-        if let Some(sink) = Self::adopt_complete_cancellable(root.try_clone()?, meta, &canceled)? {
-            record(sink.binding())?;
-            return Ok(sink);
-        }
-        let binding = DestinationBinding::new(meta, false)?;
-        record(&binding)?;
-        Self::open_bound(root, meta, None, true, &canceled)
-    }
-    pub(in crate::engine) fn create(
-        root: File,
-        meta: &OwnedMetainfo,
-        record: impl FnOnce(&DestinationBinding) -> io::Result<()>,
-        canceled: impl Fn() -> bool,
-    ) -> io::Result<FileStorage> {
-        check_canceled(&canceled)?;
-        PayloadPaths::new(meta)?.reject_existing(&root, meta.layout())?;
-        record(&DestinationBinding::new(meta, false)?)?;
-        Self::open_bound(root, meta, None, true, &canceled)
-    }
-    /// Probe final files without creating payloads, then verify once under the
-    /// shared leases on the payload files.
-    pub(in crate::engine) fn adopt_complete_cancellable(
-        root: File,
-        meta: &OwnedMetainfo,
-        canceled: impl Fn() -> bool,
-    ) -> io::Result<Option<FileStorage>> {
-        check_canceled(&canceled)?;
-        if !root.metadata()?.is_dir() {
-            return Err(invalid("output is not a directory"));
-        }
-        let paths = PayloadPaths::new(meta)?;
-        let Some(files) = paths.complete_files(&root, meta.layout())? else {
-            paths.reject_existing(&root, meta.layout())?;
-            return Ok(None);
-        };
-        Self::finish_read_only(root, paths, meta, files, None, true, &canceled).map(Some)
-    }
-    /// Reopen an existing binding without hashing. This does NOT grant piece
-    /// availability: the caller must run fingerprint-based storage recovery (or
-    /// explicit recheck) before advertising/uploading.
-    pub(in crate::engine) fn reopen_for_recovery(
-        root: File,
-        meta: &OwnedMetainfo,
-        binding: &DestinationBinding,
-        canceled: impl Fn() -> bool,
-    ) -> io::Result<FileStorage> {
-        Self::open_bound(root, meta, Some(binding), false, &canceled)
-    }
-    fn open_bound(
-        root: File,
-        meta: &OwnedMetainfo,
-        binding: Option<&DestinationBinding>,
-        verify: bool,
-        canceled: &dyn Fn() -> bool,
-    ) -> io::Result<FileStorage> {
+    let record = check_binding(meta, binding, false)?;
+    let files = paths.files_at(&root, meta.layout(), binding.is_none())?;
+    Ok(FileStorage::named(meta.clone(), files, root)?.with_binding(record, None))
+}
+
+fn finish_read_only(
+    root: File,
+    paths: PayloadPaths,
+    meta: &OwnedMetainfo,
+    mut files: Vec<Option<File>>,
+    binding: Option<&DestinationBinding>,
+    verify: bool,
+    canceled: &dyn Fn() -> bool,
+) -> io::Result<FileStorage> {
+    for file in files.iter().flatten() {
         check_canceled(canceled)?;
-        if !root.metadata()?.is_dir() {
-            return Err(invalid("output is not a directory"));
-        }
-        let paths = PayloadPaths::new(meta)?;
-        if binding.is_some_and(DestinationBinding::is_read_only) {
-            let files = paths
-                .complete_files(&root, meta.layout())?
-                .ok_or_else(|| invalid("seed payload is incomplete"))?;
-            return Self::finish_read_only(root, paths, meta, files, binding, verify, canceled);
-        }
-        let record = Self::check_binding(meta, binding, false)?;
-        let files = paths.files_at(&root, meta.layout(), binding.is_none())?;
-        Ok(FileStorage::named(meta.clone(), files, root)?.with_binding(record, None))
+        lock_shared(file)?;
     }
-    fn finish_read_only(
-        root: File,
-        paths: PayloadPaths,
-        meta: &OwnedMetainfo,
-        mut files: Vec<Option<File>>,
-        binding: Option<&DestinationBinding>,
-        verify: bool,
-        canceled: &dyn Fn() -> bool,
-    ) -> io::Result<FileStorage> {
-        for file in files.iter().flatten() {
-            check_canceled(canceled)?;
-            lock_shared(file)?;
+    let record = check_binding(meta, binding, true)?;
+    let identities = FileStorage::seed_identities(&files)?;
+    let verified_resume = if verify {
+        verify_content_cancellable(meta, &mut files, canceled)?;
+        check_canceled(canceled)?;
+        if identities != FileStorage::seed_identities(&files)? {
+            return Err(invalid("seed payload changed during verification"));
         }
-        let record = Self::check_binding(meta, binding, true)?;
-        let identities = FileStorage::seed_identities(&files)?;
-        let verified_resume = if verify {
-            verify_content_cancellable(meta, &mut files, canceled)?;
-            check_canceled(canceled)?;
-            if identities != FileStorage::seed_identities(&files)? {
-                return Err(invalid("seed payload changed during verification"));
-            }
-            let count = meta.layout().piece_count();
-            let mut bits = vec![255; count.div_ceil(8) as usize];
-            if !count.is_multiple_of(8)
-                && let Some(last) = bits.last_mut()
-            {
-                *last <<= 8 - count % 8;
-            }
-            let fingerprint = FileStorage::seed_fingerprint(&identities);
-            let resume = crate::protocol::resume::encode(meta, &bits, &fingerprint)?;
-            Some(resume)
-        } else {
-            None
-        };
-        Ok(
-            FileStorage::read_only(meta.clone(), files, root, paths, identities)?
-                .with_binding(record, verified_resume),
-        )
-    }
-    fn check_binding(
-        meta: &OwnedMetainfo,
-        binding: Option<&DestinationBinding>,
-        read_only: bool,
-    ) -> io::Result<DestinationBinding> {
-        let record = DestinationBinding::new(meta, read_only)?;
-        if binding.is_some_and(|binding| binding != &record) {
-            return Err(invalid("download destination paths changed"));
+        let count = meta.layout().piece_count();
+        let mut bits = vec![255; count.div_ceil(8) as usize];
+        if !count.is_multiple_of(8)
+            && let Some(last) = bits.last_mut()
+        {
+            *last <<= 8 - count % 8;
         }
-        Ok(record)
+        let fingerprint = FileStorage::seed_fingerprint(&identities);
+        let resume = crate::protocol::resume::encode(meta, &bits, &fingerprint)?;
+        Some(resume)
+    } else {
+        None
+    };
+    Ok(
+        FileStorage::read_only(meta.clone(), files, root, paths, identities)?
+            .with_binding(record, verified_resume),
+    )
+}
+
+fn check_binding(
+    meta: &OwnedMetainfo,
+    binding: Option<&DestinationBinding>,
+    read_only: bool,
+) -> io::Result<DestinationBinding> {
+    let record = DestinationBinding::new(meta, read_only)?;
+    if binding.is_some_and(|binding| binding != &record) {
+        return Err(invalid("download destination paths changed"));
     }
-    pub fn remove(root: File, binding: &DestinationBinding) -> io::Result<()> {
-        if binding.is_read_only() {
-            return Ok(());
-        }
-        binding.payload_paths()?.remove_at(&root)
-    }
+    Ok(record)
 }

@@ -5,10 +5,7 @@ use crate::{
 };
 use serde_json::json;
 use sha1::{Digest, Sha1};
-use spill::{
-    engine::profile::Profile,
-    protocol::bencode::{self, Node, Value},
-};
+use spill::protocol::bencode::{self, Node, Value};
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -67,7 +64,7 @@ async fn magnets_keep_primary_ids_learn_aliases_and_recover_authenticated_layers
                 true,
             ),
         ] {
-            let meta = Profile::default().parse_owned(fixture).unwrap();
+            let meta = spill::engine::parse_owned(fixture).unwrap();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let (url, tracker) = metadata_peer::tracker(&[address]).await;
@@ -167,7 +164,7 @@ async fn magnets_keep_primary_ids_learn_aliases_and_recover_authenticated_layers
                     row.get(0)
                 })
                 .unwrap();
-            let stored = Profile::default().parse_owned(&stored).unwrap();
+            let stored = spill::engine::parse_owned(&stored).unwrap();
             assert!(!stored.layers_pending());
             assert_eq!(stored.info_bytes(), meta.info_bytes());
             for piece in 0..meta.layout().piece_count() {
@@ -239,11 +236,10 @@ async fn private_v2_magnets_fail_before_layers_or_payload_and_retain_failure() {
         info.insert(b"private", Node::new(Value::Integer(1)));
         let mut outer = outer.clone();
         outer.insert(b"info", Node::new(Value::Dictionary(info)));
-        let meta = Profile::default()
-            .parse_owned(
-                &bencode::encode(&Node::new(Value::Dictionary(outer)), Default::default()).unwrap(),
-            )
-            .unwrap();
+        let meta = spill::engine::parse_owned(
+            &bencode::encode(&Node::new(Value::Dictionary(outer)), Default::default()).unwrap(),
+        )
+        .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (url, tracker) = metadata_peer::tracker(&[listener.local_addr().unwrap()]).await;
         let source = tokio::spawn(metadata_peer::serve_full(listener, meta.clone(), 4));
@@ -292,7 +288,7 @@ async fn private_v2_magnets_fail_before_layers_or_payload_and_retain_failure() {
 #[tokio::test]
 async fn learned_catalog_alias_collision_fails_without_publishing_metadata() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let meta = Profile::default().parse_owned(include_bytes!("../protocol/fixtures/libtorrent-hybrid.torrent")).unwrap();
+        let meta = spill::engine::parse_owned(include_bytes!("../protocol/fixtures/libtorrent-hybrid.torrent")).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (url, tracker) = metadata_peer::tracker(&[listener.local_addr().unwrap()]).await;
         let source = tokio::spawn(metadata_peer::serve_full(listener, meta.clone(), 0));

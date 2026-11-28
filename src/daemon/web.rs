@@ -81,6 +81,35 @@ fn authorized_host(headers: &HeaderMap) -> bool {
             .get("origin")
             .is_none_or(|o| o.to_str().ok() == Some(format!("http://{host}").as_str()))
 }
+fn json_error(status: StatusCode, code: u8, message: &str) -> axum::response::Response {
+    (
+        status,
+        [("cache-control", "no-store")],
+        Json(Response {
+            code,
+            data: serde_json::Value::Null,
+            error: Some(message.to_owned()),
+        }),
+    )
+        .into_response()
+}
+fn reject_auth(app: &App, headers: &HeaderMap) -> Option<axum::response::Response> {
+    if !authorized_host(headers) {
+        return Some(json_error(
+            StatusCode::FORBIDDEN,
+            1,
+            "host or origin not allowed",
+        ));
+    }
+    if headers.get("x-spill-token").and_then(|v| v.to_str().ok()) != Some(app.token.as_str()) {
+        return Some(json_error(
+            StatusCode::UNAUTHORIZED,
+            1,
+            "invalid or missing X-Spill-Token",
+        ));
+    }
+    None
+}
 async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Response {
     if !authorized_host(&headers) {
         return StatusCode::FORBIDDEN.into_response();
@@ -89,12 +118,14 @@ async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Re
         let supervisor = app.control.0.lock().await;
         serde_json::json!({
             "settings": supervisor.config.defaults,
+            "download_dir": supervisor.config.download_dir,
         })
     };
+    let defaults_json = defaults.to_string().replace('<', "\\u003c");
     let mut response = Html(
         include_str!("web/index.html")
             .replace("__TOKEN__", &app.token)
-            .replace("__ADD_DEFAULTS__", &defaults.to_string()),
+            .replace("__ADD_DEFAULTS__", &defaults_json),
     )
     .into_response();
     response
@@ -108,6 +139,13 @@ async fn index(State(app): State<App>, headers: HeaderMap) -> axum::response::Re
 async fn asset(State(app): State<App>, headers: HeaderMap, uri: Uri) -> axum::response::Response {
     if !authorized_host(&headers) {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    if matches!(uri.path(), "/api" | "/api/logs" | "/api/upload") {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [("allow", "POST"), ("cache-control", "no-store")],
+        )
+            .into_response();
     }
     if uri.path() == "/index.html" {
         return index(State(app), headers).await;
@@ -125,10 +163,6 @@ async fn asset(State(app): State<App>, headers: HeaderMap, uri: Uri) -> axum::re
     )
         .into_response()
 }
-fn authorized(app: &App, headers: &HeaderMap) -> bool {
-    authorized_host(headers)
-        && headers.get("x-spill-token").and_then(|v| v.to_str().ok()) == Some(app.token.as_str())
-}
 #[derive(serde::Deserialize)]
 struct Upload {
     output_dir: Option<PathBuf>,
@@ -141,42 +175,61 @@ async fn upload(
     Query(options): Query<Upload>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Response>, StatusCode> {
-    if !authorized(&app, &headers) {
-        return Err(StatusCode::FORBIDDEN);
+) -> axum::response::Response {
+    if let Some(response) = reject_auth(&app, &headers) {
+        return response;
     }
-    Ok(Json(
-        app.control
-            .handle(Request::Add {
-                metainfo: Some(body.to_vec()),
-                magnet: None,
-                url: None,
-                output_dir: options.output_dir,
-                paused: options.paused,
-                settings: options
-                    .settings
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()
-                    .map_err(|_| StatusCode::BAD_REQUEST)?
-                    .unwrap_or_default(),
-            })
-            .await,
-    ))
+    let settings = match options
+        .settings
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+    {
+        Ok(settings) => settings.unwrap_or_default(),
+        Err(error) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                2,
+                &format!("invalid settings query parameter: {error}"),
+            );
+        }
+    };
+    let reply = app
+        .control
+        .handle(Request::Add {
+            metainfo: Some(body.to_vec()),
+            magnet: None,
+            url: None,
+            output_dir: options.output_dir,
+            paused: options.paused,
+            settings,
+        })
+        .await;
+    ([("cache-control", "no-store")], Json(reply)).into_response()
 }
-async fn api(
-    State(app): State<App>,
-    headers: HeaderMap,
-    Json(request): Json<Request>,
-) -> Result<Json<Response>, StatusCode> {
-    if !authorized(&app, &headers) {
-        return Err(StatusCode::FORBIDDEN);
+async fn api(State(app): State<App>, headers: HeaderMap, body: Bytes) -> axum::response::Response {
+    if let Some(response) = reject_auth(&app, &headers) {
+        return response;
     }
-    Ok(Json(app.control.handle(request).await))
+    let request: Request = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                2,
+                &format!("invalid request JSON: {error}"),
+            );
+        }
+    };
+    (
+        [("cache-control", "no-store")],
+        Json(app.control.handle(request).await),
+    )
+        .into_response()
 }
 async fn logs(State(app): State<App>, headers: HeaderMap) -> axum::response::Response {
-    if !authorized(&app, &headers) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Some(response) = reject_auth(&app, &headers) {
+        return response;
     }
     let (enabled, path) = {
         let supervisor = app.control.0.lock().await;
@@ -187,24 +240,29 @@ async fn logs(State(app): State<App>, headers: HeaderMap) -> axum::response::Res
     };
     let result = async {
         let (text, truncated) = if enabled {
-            let mut file = tokio::fs::File::open(path).await?;
-            let length = file.metadata().await?.len();
-            let start = length - length.min(64 * 1024);
-            file.seek(SeekFrom::Start(start)).await?;
-            let mut bytes = Vec::new();
-            file.take(length - start).read_to_end(&mut bytes).await?;
-            let first = if start > 0 {
-                bytes
-                    .iter()
-                    .position(|&b| b == b'\n')
-                    .map_or(bytes.len(), |i| i + 1)
-            } else {
-                0
-            };
-            (
-                String::from_utf8_lossy(&bytes[first..]).into_owned(),
-                start > 0,
-            )
+            match tokio::fs::File::open(path).await {
+                Ok(mut file) => {
+                    let length = file.metadata().await?.len();
+                    let start = length - length.min(64 * 1024);
+                    file.seek(SeekFrom::Start(start)).await?;
+                    let mut bytes = Vec::new();
+                    file.take(length - start).read_to_end(&mut bytes).await?;
+                    let first = if start > 0 {
+                        bytes
+                            .iter()
+                            .position(|&b| b == b'\n')
+                            .map_or(bytes.len(), |i| i + 1)
+                    } else {
+                        0
+                    };
+                    (
+                        String::from_utf8_lossy(&bytes[first..]).into_owned(),
+                        start > 0,
+                    )
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (String::new(), false),
+                Err(error) => return Err(error.into()),
+            }
         } else {
             (String::new(), false)
         };

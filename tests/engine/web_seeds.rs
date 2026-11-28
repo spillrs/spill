@@ -4,7 +4,6 @@ use crate::{
 };
 use spill::{
     engine::{
-        profile::Profile,
         session::{Limits, NetworkOptions, Session},
         settings::TorrentSettings,
         torrent::{Destination, TorrentOptions, TorrentSource},
@@ -58,7 +57,7 @@ fn metainfo(fixture: &[u8], urls: &[String]) -> OwnedMetainfo {
         )),
     );
     let bytes = bencode::encode(&Node::new(Value::Dictionary(fields)), Default::default()).unwrap();
-    Profile::default().parse_owned(&bytes).unwrap()
+    spill::engine::parse_owned(&bytes).unwrap()
 }
 
 #[tokio::test]
@@ -282,7 +281,7 @@ async fn inconsistent_hybrid_commitments_fail_content_with_an_honest_web_seed() 
                 (b"url-list".as_slice(), Node::new(Value::Bytes(url.as_bytes()))),
             ])));
             let bytes = bencode::encode(&doc, Default::default()).unwrap();
-            let meta = Profile::default().parse_owned(&bytes).unwrap();
+            let meta = spill::engine::parse_owned(&bytes).unwrap();
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut reader = BufReader::new(&mut socket);

@@ -28,9 +28,7 @@ async fn magnets_share_admission_inspection_download_and_network_only_recheck() 
     tokio::time::timeout(Duration::from_secs(15), async {
         let source = Temp::new();
         std::fs::write(source.0.join("x"), b"abc").unwrap();
-        let meta = Profile::default()
-            .parse_owned(&seed_metainfo("x", b"abc", None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
         let seed = Session::bind(
             NetworkOptions {
                 listen: "127.0.0.1:0".parse().unwrap(),
@@ -227,7 +225,7 @@ async fn magnets_share_admission_inspection_download_and_network_only_recheck() 
                         changed = handle.changed() => { assert!(changed); }
                     }
                 }
-                assert_eq!(handle.snapshot().progress.processed_payload_bytes, 0);
+                assert_eq!(handle.snapshot().progress.downloaded_bytes, 0);
                 assert!(!output.0.join("x").exists());
             } else {
                 handle.wait_complete().await.unwrap();
@@ -254,9 +252,7 @@ async fn preparation_acknowledgements_survive_cancelled_stop_and_preserve_failur
         for mode in 0..3 {
             let fail = mode != 0;
             let output = Temp::new();
-            let meta = Profile::default()
-                .parse_owned(&seed_metainfo("x", b"abc", None))
-                .unwrap();
+            let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
             let session = Session::offline(Limits {
                 torrents: 1,
                 ..Default::default()
@@ -342,9 +338,7 @@ async fn preparation_acknowledgements_survive_cancelled_stop_and_preserve_failur
         }
         let output = Temp::new();
         std::fs::write(output.0.join("x"), b"bad").unwrap();
-        let meta = Profile::default()
-            .parse_owned(&seed_metainfo("x", b"abc", None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
         let session = Session::offline(Limits::default());
         for destination in [
             Destination::Create(output.0.clone()),

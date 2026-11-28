@@ -135,8 +135,8 @@ impl Supervisor {
             db.recovered(id).map_err(io_error)?;
         }
         let c = &mut running.counters;
-        let downloaded = p.processed_payload_bytes - running.previous.processed_payload_bytes;
-        let uploaded = p.written_payload_bytes - running.previous.written_payload_bytes;
+        let downloaded = p.downloaded_bytes - running.previous.downloaded_bytes;
+        let uploaded = p.uploaded_bytes - running.previous.uploaded_bytes;
         c.downloaded += downloaded;
         c.uploaded += uploaded;
         c.hash_failed_bytes += p.hash_failed_bytes - running.previous.hash_failed_bytes;
@@ -170,23 +170,30 @@ impl Supervisor {
         }
         Ok(())
     }
-    pub async fn remove(&mut self, id: &str, delete: bool) -> io::Result<()> {
+    pub async fn remove(&mut self, id: &str, delete: bool) -> io::Result<bool> {
         self.stop(id).await?;
         let row = self
             .db
             .row(id)
             .map_err(io_error)?
             .ok_or(io::ErrorKind::NotFound)?;
-        if delete && let Some(binding) = row.created_files.clone() {
-            tokio::task::spawn_blocking(move || match std::fs::File::open(&row.output_dir) {
-                Ok(dir) => spill::engine::provisioning::NamedDestination::remove(dir, &binding),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
+        let deleted = if delete && let Some(binding) = row.created_files.clone() {
+            let deleted = !binding.is_read_only();
+            tokio::task::spawn_blocking(move || {
+                match spill::engine::provisioning::remove(&row.output_dir, &binding) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(error),
+                }
             })
             .await
             .map_err(io_error)??;
-        }
-        self.db.delete(id).map_err(io_error)
+            deleted
+        } else {
+            false
+        };
+        self.db.delete(id).map_err(io_error)?;
+        Ok(deleted)
     }
     pub fn view(&self, row: &Row) -> Value {
         let running = self.running.get(&row.id);
@@ -392,8 +399,16 @@ impl Supervisor {
                     && counters.seed_seconds >= row.settings.seed_time as f64)
                     || (row.settings.seed_ratio > 0.0
                         && row.meta().ok().is_some_and(|m| {
-                            counters.uploaded as f64
-                                >= m.layout().total_length() as f64 * row.settings.seed_ratio
+                            let data_bytes: u64 = m
+                                .layout()
+                                .files()
+                                .iter()
+                                .filter(|f| f.kind() == spill::protocol::metainfo::FileKind::Data)
+                                .map(|f| f.length())
+                                .sum();
+                            data_bytes > 0
+                                && counters.uploaded as f64
+                                    >= data_bytes as f64 * row.settings.seed_ratio
                         })));
             if row.intent == Intent::Paused || seed_goal {
                 match self.stop_inner(&row.id, true).await {
@@ -575,6 +590,7 @@ impl Supervisor {
             "network":self.session.network_status().await,
             "bandwidth":self.bandwidth(),
             "logging":{"file_enabled":self.config.logging.file_enabled,
+                "path":self.config.state_dir.join("debug.log"),
                 "events_dropped":self.logging.events_dropped.load(Ordering::Relaxed),
                 "write_failed":self.logging.write_failed.load(Ordering::Relaxed)}})
     }

@@ -201,12 +201,14 @@ pub(super) fn prepare_discovery(
             .profile
             .peers
             .min(crate::engine::webseed::MAX_ACTIVE);
-        let web_slots =
-            if options.settings.trackers || options.dht.is_some() || !options.peers.is_empty() {
-                slots.div_ceil(2)
-            } else {
-                slots
-            };
+        let web_slots = if options.settings.trackers
+            || options.dht.is_some()
+            || !options.initial_peers.is_empty()
+        {
+            slots.div_ceil(2)
+        } else {
+            slots
+        };
         while transfer.can_connect() && seeds.active.len() < web_slots {
             let Some(seed) = seeds.next(options.metainfo.clone()) else {
                 break;

@@ -763,8 +763,8 @@ impl Torrent {
             || self.dialing.contains(&addr)
             || self.connected_contact(addr)
     }
-    pub(in crate::engine) fn set_no_progress_timeout(&mut self, timeout: Duration) {
-        self.no_progress_timeout = Some(timeout);
+    pub(in crate::engine) fn set_no_progress_timeout(&mut self, timeout: Option<Duration>) {
+        self.no_progress_timeout = timeout;
     }
     pub(in crate::engine) fn rate_waiting(&self) -> bool {
         self.rate_deadline.is_some() && !self.remotes.is_empty()

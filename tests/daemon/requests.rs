@@ -22,8 +22,7 @@ async fn adopted_seed_reopens_hardlinks_but_rejects_replacements_after_eviction(
         std::fs::write(payload.join(name), b"good").unwrap();
     }
     let meta = multifile_metainfo("", &files);
-    let hash = spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&meta)
+    let hash = spill::engine::parse_owned(&meta)
         .unwrap()
         .info_hash()
         .wire_key();
@@ -122,8 +121,7 @@ async fn overlapping_uploads_in_opposite_orders_do_not_deadlock() {
     const BLOCKS: usize = 128;
     let payload: Vec<_> = (0..BLOCK * BLOCKS).map(|i| (i / BLOCK) as u8).collect();
     let bytes = seed_metainfo("x", &payload, None);
-    let hash = *spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&bytes)
+    let hash = *spill::engine::parse_owned(&bytes)
         .unwrap()
         .info_hash()
         .v1()
@@ -290,8 +288,7 @@ async fn endgame_requests_progress_while_other_duplicates_are_stalled() {
     .into_bytes();
     bytes.extend_from_slice(&sha1::Sha1::digest(&payload));
     bytes.extend_from_slice(b"ee");
-    let hash = *spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&bytes)
+    let hash = *spill::engine::parse_owned(&bytes)
         .unwrap()
         .info_hash()
         .v1()

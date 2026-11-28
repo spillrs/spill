@@ -76,7 +76,7 @@ listen = "127.0.0.1:0"
         .expect("invalid config must not start a runtime")
         .unwrap();
         let stderr = String::from_utf8_lossy(&result.stderr);
-        assert_eq!(result.status.code(), Some(1), "{invalid}: {stderr}");
+        assert_eq!(result.status.code(), Some(2), "{invalid}: {stderr}");
         assert!(
             stderr.contains(message),
             "{invalid}: expected {message:?}, got {stderr}"

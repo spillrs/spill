@@ -32,7 +32,19 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "metainfo {self:?}")
+        match self {
+            Self::Bencode(error) => write!(f, "invalid bencode: {error}"),
+            Self::Missing(field) => write!(f, "missing required metainfo field '{field}'"),
+            Self::InvalidField(field) => write!(f, "invalid metainfo field '{field}'"),
+            Self::ConflictingFiles => f.write_str("conflicting file definitions in metainfo"),
+            Self::EmptyFiles => f.write_str("metainfo has no data files"),
+            Self::PathConflict => f.write_str("metainfo contains conflicting file paths"),
+            Self::LengthOverflow => f.write_str("metainfo file lengths overflow"),
+            Self::PieceCount => f.write_str("metainfo piece count does not match total length"),
+            Self::MetadataLimit => f.write_str("metainfo exceeds metadata size limits"),
+            Self::UnsupportedVersion => f.write_str("unsupported metainfo version"),
+            Self::UnsupportedSymlink => f.write_str("metainfo symlinks are not supported"),
+        }
     }
 }
 

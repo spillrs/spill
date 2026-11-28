@@ -1,7 +1,6 @@
 use crate::payload::{Temp, seed_metainfo};
 use spill::{
     engine::{
-        profile::Profile,
         session::{Limits, NetworkOptions, Session},
         torrent::{Destination, TorrentHandle, TorrentOptions, TorrentSource},
     },
@@ -168,9 +167,7 @@ async fn ready(handle: &mut TorrentHandle) {
     }
 }
 fn metainfo() -> OwnedMetainfo {
-    Profile::default()
-        .parse_owned(&seed_metainfo("x", &[42; 128 * 1024], None))
-        .unwrap()
+    spill::engine::parse_owned(&seed_metainfo("x", &[42; 128 * 1024], None)).unwrap()
 }
 fn mapped(address: SocketAddr) -> SocketAddr {
     let SocketAddr::V4(a) = address else {
@@ -376,7 +373,7 @@ async fn relay_uses_negotiated_ids_canonical_endpoints_and_bounded_windows() {
             }
         });
         let mut opts = options(&meta, &mapped_root, false);
-        opts.peers = vec![public];
+        opts.initial_peers = vec![public];
         opts.profile.peers = 1;
         let mut mapped_handle = mapped_peer.admit(opts).unwrap();
         loop {
@@ -503,7 +500,7 @@ async fn unsolicited_punches_respect_pex_utp_and_local_network_policy() {
                     b"7:privatei1e".iter().copied(),
                 );
             }
-            let meta = Profile::default().parse_owned(&bytes).unwrap();
+            let meta = spill::engine::parse_owned(&bytes).unwrap();
             let session = session(utp, local).await;
             let root = Temp::new();
             let mut opts = options(&meta, &root, false);
@@ -596,12 +593,12 @@ async fn queued_punch_upgrades_keep_priority_and_restore_original_dials_after_ex
             let tcp = tokio::net::TcpListener::bind(punch.local_addr().unwrap())
                 .await
                 .unwrap();
-            let second = Profile::default()
-                .parse_owned(&seed_metainfo("y", b"other torrent", None))
-                .unwrap();
+            let second =
+                spill::engine::parse_owned(&seed_metainfo("y", b"other torrent", None)).unwrap();
             let second_root = Temp::new();
             let mut second_opts = options(&second, &second_root, false);
-            second_opts.peers = vec![guard.local_addr().unwrap(), other.local_addr().unwrap()];
+            second_opts.initial_peers =
+                vec![guard.local_addr().unwrap(), other.local_addr().unwrap()];
             let mut second_handle = session.admit(second_opts).unwrap();
             ready(&mut second_handle).await;
             let mut bytes = [0; 1500];
@@ -609,7 +606,8 @@ async fn queued_punch_upgrades_keep_priority_and_restore_original_dials_after_ex
             let root = Temp::new();
             let mut opts = options(&meta, &root, false);
             if !pex {
-                opts.peers = vec![ordinary.local_addr().unwrap(), punch.local_addr().unwrap()];
+                opts.initial_peers =
+                    vec![ordinary.local_addr().unwrap(), punch.local_addr().unwrap()];
             }
             let mut handle = session.admit(opts).unwrap();
             ready(&mut handle).await;

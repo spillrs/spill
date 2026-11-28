@@ -288,7 +288,7 @@ async fn finish(
             s.progress.full_complete = p.verified_bytes == p.total_bytes;
             s.progress.total_bytes = p.total_bytes;
         }
-        s.progress.written_payload_bytes = uploaded;
+        s.progress.uploaded_bytes = uploaded;
         s.progress.download_bytes_per_second = 0.0;
         s.progress.upload_bytes_per_second = 0.0;
         s.progress.active_peers = 0;
@@ -356,7 +356,13 @@ pub(super) async fn run(
         network,
     } = resources;
     let writer = writer_slot.as_mut().expect("startup writer");
-    status.send_modify(|s| s.progress.phase = TorrentPhase::Recovering);
+    status.send_modify(|s| {
+        s.progress.phase = if options.run == RunPolicy::Recheck {
+            TorrentPhase::Checking
+        } else {
+            TorrentPhase::Recovering
+        };
+    });
     let mut report = tokio::time::interval(Duration::from_secs(2));
     report.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let result = loop {

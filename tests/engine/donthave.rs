@@ -4,7 +4,6 @@ use crate::{
 };
 use spill::{
     engine::{
-        profile::Profile,
         session::{Limits, NetworkOptions, Session},
         torrent::{Destination, TorrentOptions, TorrentSource},
     },
@@ -31,9 +30,7 @@ async fn setup() -> (
     [u8; 20],
 ) {
     let root = Temp::new();
-    let meta = Profile::default()
-        .parse_owned(&seed_metainfo("x", b"abc", None))
-        .unwrap();
+    let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
     let key = meta.info_hash().wire_key();
     let session = Session::bind(
         NetworkOptions {
@@ -171,9 +168,7 @@ async fn isolated_piece_withdrawal_while_write_pending_restarts_for_another_peer
     tokio::time::timeout(Duration::from_secs(15), async {
         let root = Temp::new();
         let payload = vec![0x5a; 32 * 1024];
-        let meta = Profile::default()
-            .parse_owned(&seed_metainfo("x", &payload, None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", &payload, None)).unwrap();
         let key = meta.info_hash().wire_key();
         let session = Session::bind(
             NetworkOptions {

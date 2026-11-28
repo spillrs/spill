@@ -1,7 +1,6 @@
 use crate::{payload::Temp, v2_peer as raw};
 use spill::{
     engine::{
-        profile::Profile,
         selection::FilePriority,
         session::{Limits, NetworkOptions, PeerEncryption, Session},
         torrent::{Destination, RunPolicy, TorrentHandle, TorrentOptions, TorrentSource},
@@ -141,7 +140,7 @@ async fn raw_downloads_cover_file_tails_destinations_and_large_piece_streaming()
                 vec![("large", 16 * 1024 * 1024 + 123)],
             ),
         ] {
-            let meta = Profile::default().parse_owned(wire).unwrap();
+            let meta = spill::engine::parse_owned(wire).unwrap();
             let root = Temp::new();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -153,7 +152,7 @@ async fn raw_downloads_cover_file_tails_destinations_and_large_piece_streaming()
             });
             let session = session().await;
             let mut opts = options(&meta, Destination::Open(root.0.clone()));
-            opts.peers.push(address);
+            opts.initial_peers.push(address);
             let handle = session.admit(opts).unwrap();
             assert!(session.torrent(meta.info_hash()).is_some());
             assert_eq!(handle.snapshot().identity, meta.info_hash());
@@ -200,7 +199,7 @@ async fn raw_downloads_cover_file_tails_destinations_and_large_piece_streaming()
                 let target = Temp::new();
                 let second = self::session().await;
                 let mut opts = options(&meta, Destination::Open(target.0.clone()));
-                opts.peers.push(session.local_addr());
+                opts.initial_peers.push(session.local_addr());
                 let leecher = second.admit(opts).unwrap();
                 leecher.wait_complete().await.unwrap();
                 assert_eq!(
@@ -234,7 +233,7 @@ async fn raw_downloads_cover_file_tails_destinations_and_large_piece_streaming()
             let outcome = recheck.outcome().await;
             assert!(outcome.recheck_finished && outcome.full_complete && outcome.error.is_none());
             offline.shutdown().await.unwrap();
-            if handle.snapshot().progress.processed_payload_bytes == 0 {
+            if handle.snapshot().progress.downloaded_bytes == 0 {
                 source.abort();
                 assert!(source.await.unwrap_err().is_cancelled());
             } else {
@@ -242,9 +241,9 @@ async fn raw_downloads_cover_file_tails_destinations_and_large_piece_streaming()
             }
             session.shutdown().await.unwrap();
         }
-        let meta = Profile::default()
-            .parse_owned(include_bytes!("../protocol/fixtures/v2-empty.torrent"))
-            .unwrap();
+        let meta =
+            spill::engine::parse_owned(include_bytes!("../protocol/fixtures/v2-empty.torrent"))
+                .unwrap();
         let root = Temp::new();
         let session = session().await;
         let handle = session
@@ -263,7 +262,7 @@ async fn raw_downloads_cover_file_tails_destinations_and_large_piece_streaming()
 #[tokio::test]
 async fn selective_v2_download_skips_independent_files_across_padding() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -274,7 +273,7 @@ async fn selective_v2_download_skips_independent_files_across_padding() {
         });
         let session = session().await;
         let mut opts = options(&meta, Destination::Open(root.0.clone()));
-        opts.peers.push(address);
+        opts.initial_peers.push(address);
         opts.settings.file_priorities = meta
             .layout()
             .files()
@@ -307,9 +306,9 @@ async fn selective_v2_download_skips_independent_files_across_padding() {
 #[tokio::test]
 async fn leaf_proofs_use_verified_copies_when_the_first_shared_root_is_skipped() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default()
-            .parse_owned(include_bytes!("../protocol/fixtures/v2-copies.torrent"))
-            .unwrap();
+        let meta =
+            spill::engine::parse_owned(include_bytes!("../protocol/fixtures/v2-copies.torrent"))
+                .unwrap();
         let root = Temp::new();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -327,7 +326,7 @@ async fn leaf_proofs_use_verified_copies_when_the_first_shared_root_is_skipped()
         });
         let session = session().await;
         let mut opts = options(&meta, Destination::Open(root.0.clone()));
-        opts.peers.push(address);
+        opts.initial_peers.push(address);
         opts.settings.file_priorities = meta
             .layout()
             .files()
@@ -379,7 +378,7 @@ async fn leaf_proofs_use_verified_copies_when_the_first_shared_root_is_skipped()
 #[tokio::test]
 async fn v2_upload_duties_hash_proofs_and_unsolicited_piece_policy() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         install(&root);
         let session = session().await;
@@ -517,7 +516,7 @@ async fn v2_upload_duties_hash_proofs_and_unsolicited_piece_policy() {
 async fn raw_singleton_hash_requests_serve_any_index_with_libtorrent_sized_proofs() {
     use sha2::{Digest, Sha256};
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         install(&root);
         let session = session().await;
@@ -602,9 +601,9 @@ async fn raw_singleton_hash_requests_serve_any_index_with_libtorrent_sized_proof
 #[tokio::test]
 async fn choked_leaf_requests_are_rejected_without_spending_payload_bandwidth() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default()
-            .parse_owned(include_bytes!("../protocol/fixtures/v2-large.torrent"))
-            .unwrap();
+        let meta =
+            spill::engine::parse_owned(include_bytes!("../protocol/fixtures/v2-large.torrent"))
+                .unwrap();
         let root = Temp::new();
         std::fs::write(
             root.0.join("large"),
@@ -650,9 +649,9 @@ async fn choked_leaf_requests_are_rejected_without_spending_payload_bandwidth() 
 #[tokio::test]
 async fn unchoked_large_leaf_reads_spend_the_upload_budget() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default()
-            .parse_owned(include_bytes!("../protocol/fixtures/v2-large.torrent"))
-            .unwrap();
+        let meta =
+            spill::engine::parse_owned(include_bytes!("../protocol/fixtures/v2-large.torrent"))
+                .unwrap();
         let root = Temp::new();
         std::fs::write(
             root.0.join("large"),
@@ -704,9 +703,9 @@ async fn torrents_share_a_live_session_upload_limit() {
         let mut peers = Vec::new();
         for (name, id) in [("first", 92), ("second", 93)] {
             std::fs::write(root.0.join(name), &payload).unwrap();
-            let meta = Profile::default()
-                .parse_owned(&crate::payload::seed_metainfo(name, &payload, None))
-                .unwrap();
+            let meta =
+                spill::engine::parse_owned(&crate::payload::seed_metainfo(name, &payload, None))
+                    .unwrap();
             let mut handle = session
                 .admit(options(&meta, Destination::Adopt(root.0.clone())))
                 .unwrap();
@@ -740,7 +739,7 @@ async fn torrents_share_a_live_session_upload_limit() {
 #[tokio::test]
 async fn duplicate_v2_requests_disconnect_instead_of_rejecting_a_live_upload() {
     tokio::time::timeout(Duration::from_secs(8), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         install(&root);
         let session = session().await;
@@ -777,12 +776,11 @@ async fn fast_and_v2_uploads_choke_before_rejecting_pending_requests() {
             let meta = if fast {
                 let payload = raw::payload(0, 32768);
                 std::fs::write(root.0.join("x"), &payload).unwrap();
-                Profile::default()
-                    .parse_owned(&crate::payload::seed_metainfo("x", &payload, None))
+                spill::engine::parse_owned(&crate::payload::seed_metainfo("x", &payload, None))
                     .unwrap()
             } else {
                 install(&root);
-                Profile::default().parse_owned(V2).unwrap()
+                spill::engine::parse_owned(V2).unwrap()
             };
             let session = session().await;
             let mut opts = options(&meta, Destination::Adopt(root.0.clone()));
@@ -829,7 +827,7 @@ async fn fast_and_v2_uploads_choke_before_rejecting_pending_requests() {
 #[tokio::test]
 async fn no_fast_seed_can_omit_choke_rejects_without_blocking_honest_peers_or_late_pieces() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         let slow = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let honest = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -871,7 +869,7 @@ async fn no_fast_seed_can_omit_choke_rejects_without_blocking_honest_peers_or_la
         });
         let session = session().await;
         let mut opts = options(&meta, Destination::Open(root.0.clone()));
-        opts.peers = vec![slow_addr, honest_addr];
+        opts.initial_peers = vec![slow_addr, honest_addr];
         let mut handle = session.admit(opts).unwrap();
         choking.await.unwrap();
         let (offer, offering) = tokio::sync::oneshot::channel();
@@ -919,14 +917,14 @@ async fn no_fast_seed_can_omit_choke_rejects_without_blocking_honest_peers_or_la
 #[tokio::test]
 async fn unverified_payload_is_not_uploaded_and_corruption_is_redownloaded() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         let session = session().await;
         // Corrupt-source IP bans must not also cover the honest peer.
         let bad = TcpListener::bind("[::1]:0").await.unwrap();
         let good = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut opts = options(&meta, Destination::Open(root.0.clone()));
-        opts.peers = vec![bad.local_addr().unwrap(), good.local_addr().unwrap()];
+        opts.initial_peers = vec![bad.local_addr().unwrap(), good.local_addr().unwrap()];
         let mut handle = session.admit(opts).unwrap();
         ready(&mut handle).await;
         let mut peer = peer(&session, &meta, 63).await;
@@ -972,7 +970,7 @@ async fn unverified_payload_is_not_uploaded_and_corruption_is_redownloaded() {
 #[tokio::test]
 async fn hash_request_flood_is_bounded_even_while_choked() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         install(&root);
         let session = session().await;
@@ -1008,7 +1006,7 @@ async fn unsupported_resume_format_rechecks_bound_payload_instead_of_trusting_sa
     tokio::time::timeout(Duration::from_secs(10), async {
         use sha1::{Digest, Sha1};
         use spill::protocol::resume;
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         install(&root);
         let seed = session().await;
@@ -1065,7 +1063,7 @@ async fn unsupported_resume_format_rechecks_bound_payload_instead_of_trusting_sa
 #[tokio::test]
 async fn resume_recovery_and_offline_recheck_verify_v2_disk_content() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let meta = Profile::default().parse_owned(V2).unwrap();
+        let meta = spill::engine::parse_owned(V2).unwrap();
         let root = Temp::new();
         let source = Temp::new();
         install(&source);
@@ -1076,7 +1074,7 @@ async fn resume_recovery_and_offline_recheck_verify_v2_disk_content() {
         ready(&mut seeder).await;
         let session = session().await;
         let mut opts = options(&meta, Destination::Open(root.0.clone()));
-        opts.peers.push(seed.local_addr());
+        opts.initial_peers.push(seed.local_addr());
         let handle = session.admit(opts).unwrap();
         handle.wait_complete().await.unwrap();
         handle.stop().await.unwrap();
@@ -1096,7 +1094,7 @@ async fn resume_recovery_and_offline_recheck_verify_v2_disk_content() {
             .unwrap();
         ready(&mut recovered).await;
         assert_eq!(recovered.snapshot().progress.verified_pieces, 6);
-        assert_eq!(recovered.snapshot().progress.processed_payload_bytes, 0);
+        assert_eq!(recovered.snapshot().progress.downloaded_bytes, 0);
         let mut peer = peer(&session, &meta, 81).await;
         raw::send(&mut peer, 2, &[]).await;
         raw::next(&mut peer, 1).await;

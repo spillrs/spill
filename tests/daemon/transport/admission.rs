@@ -52,8 +52,7 @@ async fn utp_inbound_respects_pending_handshake_caps() {
             );
         }
     }
-    let hash = *spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&meta)
+    let hash = *spill::engine::parse_owned(&meta)
         .unwrap()
         .info_hash()
         .v1()
@@ -120,8 +119,7 @@ async fn utp_mux_capacity_is_reclaimed_and_does_not_poison_contacts() {
         .unwrap()
         .parse()
         .unwrap();
-    let hash = *spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&meta)
+    let hash = *spill::engine::parse_owned(&meta)
         .unwrap()
         .info_hash()
         .v1()

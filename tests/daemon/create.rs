@@ -1,10 +1,7 @@
 use crate::{common::BIN, payload::Temp};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
-use spill::{
-    engine::profile::Profile,
-    protocol::bencode::{self, Limits, Value as Bencode},
-};
+use spill::protocol::bencode::{self, Limits, Value as Bencode};
 use std::{os::unix::fs::symlink, process::Command};
 
 #[test]
@@ -35,13 +32,8 @@ fn offline_creation_supports_mktorrent_options_and_preserves_info_identity() {
     let run = |extra: &[&str]| {
         Command::new(BIN)
             .current_dir(&root.0)
-            .args([
-                "--socket",
-                "nonexistent.sock",
-                "--json",
-                "create",
-                "payload",
-            ])
+            .env("SPILL_SOCKET", "nonexistent.sock")
+            .args(["--json", "create", "payload"])
             .args(args)
             .args(extra)
             .output()
@@ -59,7 +51,7 @@ fn offline_creation_supports_mktorrent_options_and_preserves_info_identity() {
     assert_eq!(response["total_bytes"], payload.len());
     assert_eq!(response["piece_count"], 4);
     let bytes = std::fs::read(root.0.join("one.torrent")).unwrap();
-    let meta = Profile::default().parse(&bytes).unwrap();
+    let meta = spill::engine::parse(&bytes).unwrap();
     assert_eq!(response["info_hash"], meta.info_hash().to_string());
     assert_eq!(meta.name(), b"renamed");
     assert!(meta.is_private());
@@ -104,7 +96,7 @@ fn offline_creation_supports_mktorrent_options_and_preserves_info_identity() {
     );
     let response: Value = serde_json::from_slice(&hybrid.stdout).unwrap();
     let hybrid_bytes = std::fs::read(root.0.join("hybrid.torrent")).unwrap();
-    let hybrid_meta = Profile::default().parse(&hybrid_bytes).unwrap();
+    let hybrid_meta = spill::engine::parse(&hybrid_bytes).unwrap();
     assert!(matches!(
         hybrid_meta.info_hash(),
         spill::protocol::identity::TorrentIdentity::Hybrid(..)
@@ -142,7 +134,8 @@ fn offline_inspection_and_verification_support_all_formats() {
     let inspect = |source: &str| {
         Command::new(BIN)
             .current_dir(&root.0)
-            .args(["--socket", "missing.sock", "inspect", source, "--json"])
+            .env("SPILL_SOCKET", "missing.sock")
+            .args(["inspect", source, "--json"])
             .output()
             .unwrap()
     };
@@ -201,15 +194,8 @@ fn offline_inspection_and_verification_support_all_formats() {
         let verify = || {
             Command::new(BIN)
                 .current_dir(&root.0)
-                .args([
-                    "--socket",
-                    "missing.sock",
-                    "verify",
-                    &name,
-                    "--path",
-                    ".",
-                    "--json",
-                ])
+                .env("SPILL_SOCKET", "missing.sock")
+                .args(["verify", &name, "--path", ".", "--json"])
                 .output()
                 .unwrap()
         };
@@ -281,7 +267,7 @@ fn offline_creation_defaults_trackerless_web_seeds_and_output_errors() {
         String::from_utf8_lossy(&output.stderr)
     );
     let bytes = std::fs::read(root.0.join("bundle.torrent")).unwrap();
-    let meta = Profile::default().parse(&bytes).unwrap();
+    let meta = spill::engine::parse(&bytes).unwrap();
     assert_eq!(meta.name(), b"bundle");
     assert_eq!(meta.layout().piece_length(), 1 << 18);
     assert_eq!(meta.layout().piece_count(), 0);

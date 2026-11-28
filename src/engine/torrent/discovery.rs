@@ -74,7 +74,10 @@ impl Discovery {
             }
         }
         let (mut contacts, dials) = session.dial_queue.client(options.profile);
-        contacts.add_direct(options.metainfo.info_hash().wire_key(), &options.peers)?;
+        contacts.add_direct(
+            options.metainfo.info_hash().wire_key(),
+            &options.initial_peers,
+        )?;
         for &(hash, address) in &options.lsd_peers {
             contacts.add_lsd(hash, &[address])?;
         }

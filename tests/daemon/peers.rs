@@ -73,8 +73,7 @@ async fn tracker_dials_do_not_duplicate_an_inbound_peer_identity() {
         bytes.extend_from_slice(&sha1::Sha1::digest(b"abc"));
         bytes.extend_from_slice(&sha1::Sha1::digest(b"def"));
         bytes.extend_from_slice(b"ee");
-        let hash = *spill::engine::profile::Profile::DEFAULT
-            .parse_owned(&bytes)
+        let hash = *spill::engine::parse_owned(&bytes)
             .unwrap()
             .info_hash()
             .v1()
@@ -199,8 +198,7 @@ async fn session_peer_cap_is_independent_of_seed_slots() {
         let bytes = seed_metainfo(name, payload, None);
         let id = daemon.add(&bytes, None).await;
         daemon.state(&id, "seeding").await;
-        let key = spill::engine::profile::Profile::DEFAULT
-            .parse_owned(&bytes)
+        let key = spill::engine::parse_owned(&bytes)
             .unwrap()
             .info_hash()
             .wire_key();
@@ -246,8 +244,7 @@ async fn inbound_handshake_bursts_fill_available_peer_slots() {
     std::fs::create_dir_all(root.0.join("downloads")).unwrap();
     std::fs::write(root.0.join("downloads/x"), b"abc").unwrap();
     let bytes = seed_metainfo("x", b"abc", None);
-    let hash = *spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&bytes)
+    let hash = *spill::engine::parse_owned(&bytes)
         .unwrap()
         .info_hash()
         .v1()

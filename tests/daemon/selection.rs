@@ -114,7 +114,7 @@ async fn file_selection_fetches_boundary_bytes_but_not_skipped_pieces() {
 async fn magnet_selection_merges_before_metadata_and_survives_restart() {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         let root = Temp::new();
-        let meta = spill::engine::profile::Profile::default().parse_owned(
+        let meta = spill::engine::parse_owned(
             include_bytes!("../protocol/fixtures/v2.torrent"),
         ).unwrap();
         let last = meta.layout().files().iter().rposition(|f| f.kind() == spill::protocol::metainfo::FileKind::Data).unwrap();
@@ -183,9 +183,8 @@ async fn magnet_selection_merges_before_metadata_and_survives_restart() {
 async fn unrelated_set_overlapping_magnet_resolution_preserves_selection() {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         let root = Temp::new();
-        let meta = spill::engine::profile::Profile::default()
-            .parse_owned(include_bytes!("../protocol/fixtures/v2.torrent"))
-            .unwrap();
+        let meta =
+            spill::engine::parse_owned(include_bytes!("../protocol/fixtures/v2.torrent")).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (url, tracker) = crate::metadata_peer::tracker(&[listener.local_addr().unwrap()]).await;
         let source = tokio::spawn(crate::metadata_peer::serve_full(listener, meta.clone(), 0));

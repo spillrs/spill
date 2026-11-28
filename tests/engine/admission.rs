@@ -27,9 +27,7 @@ async fn offline_v2_magnets_are_refused_without_reserving_payload() {
         io::ErrorKind::InvalidInput
     );
     assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
-    let meta = Profile::default()
-        .parse_owned(&seed_metainfo("x", b"abc", None))
-        .unwrap();
+    let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
     std::fs::write(root.0.join("x"), b"abc").unwrap();
     let mut options = TorrentOptions::new(
         TorrentSource::Metainfo(meta),
@@ -84,7 +82,7 @@ async fn padding_does_not_consume_the_data_file_admission_limit() {
                 bytes.extend_from_slice(&tail_sha1);
             }
             bytes.extend_from_slice(b"e12:piece layersdee");
-            let meta = Profile::default().parse_owned(&bytes).unwrap();
+            let meta = spill::engine::parse_owned(&bytes).unwrap();
             assert_eq!(meta.layout().files().len(), 100001);
             assert_eq!(
                 meta.layout()
@@ -167,9 +165,7 @@ async fn an_unready_seed_does_not_hold_the_listener_handshake_slot() {
         .unwrap();
         let options = |name| {
             std::fs::write(root.0.join(name), b"abc").unwrap();
-            let meta = Profile::default()
-                .parse_owned(&seed_metainfo(name, b"abc", None))
-                .unwrap();
+            let meta = spill::engine::parse_owned(&seed_metainfo(name, b"abc", None)).unwrap();
             TorrentOptions::new(
                 TorrentSource::Metainfo(meta),
                 Destination::Adopt(root.0.clone()),
@@ -259,16 +255,14 @@ async fn idle_torrents_share_one_live_peer_slot() {
         .unwrap();
         std::fs::write(root.0.join("second"), b"def").unwrap();
         let admit = |name, payload, peers| {
-            let meta = Profile::default()
-                .parse_owned(&seed_metainfo(name, payload, None))
-                .unwrap();
+            let meta = spill::engine::parse_owned(&seed_metainfo(name, payload, None)).unwrap();
             let mut options = TorrentOptions::new(
                 TorrentSource::Metainfo(meta),
                 Destination::Open(root.0.clone()),
             );
             options.settings.trackers = false;
             options.settings.pex = false;
-            options.peers = peers;
+            options.initial_peers = peers;
             session.admit(options).unwrap()
         };
         let mut first = admit("first", b"abc", vec![listener.local_addr().unwrap()]);
@@ -340,9 +334,7 @@ async fn invalid_profiles_do_not_panic_or_consume_admission() {
         peers: 1,
         write_queue_bytes: BLOCK_LEN as usize,
     };
-    let meta = profile
-        .parse_owned(&seed_metainfo("x", b"abc", None))
-        .unwrap();
+    let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
     let session = Session::offline(Limits {
         torrents: 1,
         peers: 1,

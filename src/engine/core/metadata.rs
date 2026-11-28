@@ -243,7 +243,7 @@ impl Fetch {
                         ) {
                         Self::hash_frame(peer, &msg, info, &mut self.layers).map(|()| None)
                     } else {
-                        peer.frame(&msg, self.hash, profile)
+                        peer.frame(&msg, self.hash)
                     };
                     match result {
                         Ok(Some(info)) if self.info.is_none() => {
@@ -530,12 +530,7 @@ impl Peer {
         )?);
         Ok(())
     }
-    fn frame(
-        &mut self,
-        frame: &Frame,
-        hash: TorrentIdentity,
-        profile: Profile,
-    ) -> io::Result<Option<InfoMetainfo>> {
+    fn frame(&mut self, frame: &Frame, hash: TorrentIdentity) -> io::Result<Option<InfoMetainfo>> {
         let cap = (crate::engine::profile::MAX_META - 8) as u32;
         match frame.message() {
             Message::Extended { id: 0, payload } => {
@@ -583,7 +578,7 @@ impl Peer {
                             if !hash.matches_info_bytes(&self.bytes) {
                                 return Err(invalid_data_text("metadata info hash mismatch"));
                             }
-                            let info = profile.parse_info(&self.bytes)?;
+                            let info = crate::engine::profile::parse_info(&self.bytes)?;
                             let known = info.info_hash();
                             if hash.v1().is_some_and(|hash| known.v1() != Some(hash))
                                 || hash.v2().is_some_and(|hash| known.v2() != Some(hash))

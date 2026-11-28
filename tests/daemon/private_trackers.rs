@@ -116,9 +116,7 @@ async fn private_torrent_isolates_discovery_and_orders_tracker_events() {
             .await;
         assert_ne!(denied["code"], 0);
     }
-    let meta = spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&bytes)
-        .unwrap();
+    let meta = spill::engine::parse_owned(&bytes).unwrap();
     let address = daemon.call(json!({"op":"health"})).await["listen"]
         .as_str()
         .unwrap()

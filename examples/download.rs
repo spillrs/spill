@@ -2,14 +2,7 @@
 //! cargo run --no-default-features --example download -- --magnet URI DIRECTORY
 //! Keeps no recovery record: after an interruption, rerunning refuses to
 //! overwrite the partial files. See the progress example for resumable downloads.
-use spill::{
-    engine::{
-        download,
-        profile::Profile,
-        torrent::{Destination, TorrentSource},
-    },
-    protocol::magnet::Magnet,
-};
+use spill::engine::{Destination, TorrentSource, download};
 use std::{io, path::PathBuf};
 
 #[tokio::main(flavor = "current_thread")]
@@ -18,18 +11,13 @@ async fn main() -> io::Result<()> {
     let (source, destination) = match args.as_slice() {
         [file, destination] if file != "--magnet" => {
             let bytes = tokio::fs::read(file).await?;
-            (
-                TorrentSource::Metainfo(Profile::default().parse_owned(&bytes)?),
-                destination,
-            )
+            (TorrentSource::from_metainfo_bytes(&bytes)?, destination)
         }
         [flag, uri, destination] if flag == "--magnet" => {
             let uri = uri.to_str().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "magnet must be UTF-8")
             })?;
-            let magnet = Magnet::parse(uri, Default::default())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            (TorrentSource::Magnet(magnet), destination)
+            (TorrentSource::from_magnet(uri)?, destination)
         }
         _ => {
             return Err(io::Error::new(
@@ -38,5 +26,6 @@ async fn main() -> io::Result<()> {
             ));
         }
     };
+    tokio::fs::create_dir_all(destination).await?;
     download(source, Destination::Open(PathBuf::from(destination))).await
 }

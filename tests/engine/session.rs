@@ -1,6 +1,5 @@
 use crate::payload::{Temp, seed_metainfo};
 use spill::engine::{
-    profile::Profile,
     session::{Limits, NetworkOptions, Session},
     settings::TorrentSettings,
     torrent::{Destination, RunPolicy, TorrentOptions, TorrentPhase, TorrentSource},
@@ -19,9 +18,7 @@ async fn retained_torrent_handles_release_session_ports_after_shutdown() {
             for run in [RunPolicy::Persistent, RunPolicy::UntilComplete] {
                 let root = Temp::new();
                 std::fs::write(root.0.join("x"), b"abc").unwrap();
-                let meta = Profile::default()
-                    .parse_owned(&seed_metainfo("x", b"abc", None))
-                    .unwrap();
+                let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
                 let session = Session::bind(
                     NetworkOptions {
                         listen: "127.0.0.1:0".parse().unwrap(),
@@ -111,10 +108,7 @@ async fn clones_retain_execution_and_cancelled_shutdown_remains_joinable() {
         });
         let root = Temp::new();
         std::fs::write(root.0.join("x"), b"abc").unwrap();
-        let profile = Profile::default();
-        let meta = profile
-            .parse_owned(&seed_metainfo("x", b"abc", Some(&url)))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", Some(&url))).unwrap();
         let session = Session::bind(
             NetworkOptions {
                 listen: "127.0.0.1:0".parse().unwrap(),
@@ -130,7 +124,6 @@ async fn clones_retain_execution_and_cancelled_shutdown_remains_joinable() {
             TorrentSource::Metainfo(meta.clone()),
             Destination::Open(root.0.clone()),
         );
-        options.profile = profile;
         options.settings = TorrentSettings {
             dht: false,
             pex: false,
@@ -215,10 +208,7 @@ async fn stale_handle_cannot_stop_replacement_and_last_clone_stops_it() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let root = Temp::new();
         std::fs::write(root.0.join("x"), b"abc").unwrap();
-        let profile = Profile::default();
-        let meta = profile
-            .parse_owned(&seed_metainfo("x", b"abc", None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
         let options = || {
             TorrentOptions::new(
                 TorrentSource::Metainfo(meta.clone()),

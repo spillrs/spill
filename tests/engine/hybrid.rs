@@ -61,7 +61,7 @@ async fn pending_hybrid_accepts_a_v2_reply_without_offering_an_upgrade() {
     tokio::time::timeout(Duration::from_secs(15), async {
         use spill::protocol::peer::{HANDSHAKE_LEN, Handshake};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let full = Profile::default().parse_owned(HYBRID).unwrap();
+        let full = spill::engine::parse_owned(HYBRID).unwrap();
         let meta =
             spill::protocol::metainfo::InfoMetainfo::parse(full.info_bytes(), Default::default())
                 .unwrap()
@@ -73,7 +73,7 @@ async fn pending_hybrid_accepts_a_v2_reply_without_offering_an_upgrade() {
         let session = session().await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut opts = options(&meta, &root);
-        opts.peers.push(listener.local_addr().unwrap());
+        opts.initial_peers.push(listener.local_addr().unwrap());
         let source = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = [0; HANDSHAKE_LEN];
@@ -107,7 +107,7 @@ async fn pending_hybrid_accepts_a_v2_reply_without_offering_an_upgrade() {
 #[tokio::test]
 async fn pending_hybrid_accepts_inbound_v2_and_rejects_hashes_through_completion() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let full = Profile::default().parse_owned(HYBRID).unwrap();
+        let full = spill::engine::parse_owned(HYBRID).unwrap();
         let meta =
             spill::protocol::metainfo::InfoMetainfo::parse(full.info_bytes(), Default::default())
                 .unwrap()
@@ -173,7 +173,7 @@ async fn pending_hybrid_accepts_inbound_v2_and_rejects_hashes_through_completion
 #[tokio::test]
 async fn pending_hybrid_restarts_with_partial_verification_and_serves_v1() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let full = Profile::default().parse_owned(HYBRID).unwrap();
+        let full = spill::engine::parse_owned(HYBRID).unwrap();
         let meta =
             spill::protocol::metainfo::InfoMetainfo::parse(full.info_bytes(), Default::default())
                 .unwrap()
@@ -185,7 +185,7 @@ async fn pending_hybrid_restarts_with_partial_verification_and_serves_v1() {
         let session = session().await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut opts = options(&meta, &root);
-        opts.peers.push(listener.local_addr().unwrap());
+        opts.initial_peers.push(listener.local_addr().unwrap());
         let source = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             raw::accept(&mut socket, v1, 120).await;
@@ -230,7 +230,7 @@ async fn pending_hybrid_restarts_with_partial_verification_and_serves_v1() {
 async fn pending_hybrid_checkpoints_before_rebuilding_and_publishes_before_full_checkpoint() {
     tokio::time::timeout(Duration::from_secs(15), async {
         use std::sync::{Arc, Mutex};
-        let full = Profile::default().parse_owned(HYBRID).unwrap();
+        let full = spill::engine::parse_owned(HYBRID).unwrap();
         let pending =
             spill::protocol::metainfo::InfoMetainfo::parse(full.info_bytes(), Default::default())
                 .unwrap()
@@ -296,7 +296,7 @@ async fn pending_hybrid_checkpoints_before_rebuilding_and_publishes_before_full_
 #[tokio::test]
 async fn mixed_v1_and_upgraded_v2_sources_share_verification_and_recover_one_payload() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let meta = Profile::default().parse_owned(HYBRID).unwrap();
+        let meta = spill::engine::parse_owned(HYBRID).unwrap();
         let identity = meta.info_hash();
         let v1 = *identity.v1().unwrap().as_bytes();
         let v2 = identity.v2().unwrap().wire_key();
@@ -306,7 +306,7 @@ async fn mixed_v1_and_upgraded_v2_sources_share_verification_and_recover_one_pay
         let mut sources = Vec::new();
         for (reply, bits, id) in [(v1, 0x70, 101), (v2, 0x8e, 102)] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            opts.peers.push(listener.local_addr().unwrap());
+            opts.initial_peers.push(listener.local_addr().unwrap());
             sources.push(tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 raw::accept_hybrid(&mut socket, v1, reply, id).await;
@@ -375,7 +375,7 @@ async fn mixed_v1_and_upgraded_v2_sources_share_verification_and_recover_one_pay
 #[tokio::test]
 async fn both_inbound_routes_and_upgrade_serve_hybrid_padding_without_losing_v2_duties() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let meta = Profile::default().parse_owned(HYBRID).unwrap();
+        let meta = spill::engine::parse_owned(HYBRID).unwrap();
         let v1 = *meta.info_hash().v1().unwrap().as_bytes();
         let v2 = meta.info_hash().v2().unwrap().wire_key();
         let root = Temp::new();
@@ -449,7 +449,7 @@ async fn both_inbound_routes_and_upgrade_serve_hybrid_padding_without_losing_v2_
 #[tokio::test]
 async fn corrupt_hybrid_bytes_are_retried_without_failing_the_torrent() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(HYBRID).unwrap();
+        let meta = spill::engine::parse_owned(HYBRID).unwrap();
         let v1 = *meta.info_hash().v1().unwrap().as_bytes();
         let v2 = meta.info_hash().v2().unwrap().wire_key();
         let bad = TcpListener::bind("[::1]:0").await.unwrap();
@@ -457,7 +457,7 @@ async fn corrupt_hybrid_bytes_are_retried_without_failing_the_torrent() {
         let root = Temp::new();
         let session = session().await;
         let mut opts = options(&meta, &root);
-        opts.peers = vec![bad.local_addr().unwrap(), good.local_addr().unwrap()];
+        opts.initial_peers = vec![bad.local_addr().unwrap(), good.local_addr().unwrap()];
         let bad = tokio::spawn(async move {
             let (mut socket, _) = bad.accept().await.unwrap();
             raw::accept_hybrid(&mut socket, v1, v2, 107).await;
@@ -492,7 +492,7 @@ async fn corrupt_hybrid_bytes_are_retried_without_failing_the_torrent() {
 #[tokio::test]
 async fn route_collision_rejects_the_whole_hybrid_without_reserving_its_other_alias() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let meta = Profile::default().parse_owned(HYBRID).unwrap();
+        let meta = spill::engine::parse_owned(HYBRID).unwrap();
         let session = session().await;
         let root = Temp::new();
         let prefix = InfoHashV1::from_bytes(meta.info_hash().v2().unwrap().wire_key());
@@ -559,12 +559,12 @@ async fn inconsistent_hybrid_commitments_fail_content_instead_of_banning_an_hone
                     + marker.len();
                 bytes[pos] ^= 1;
             } else {
-                let original = Profile::default().parse_owned(HYBRID).unwrap();
+                let original = spill::engine::parse_owned(HYBRID).unwrap();
                 let root = original.layout().files()[0].pieces_root().unwrap();
                 let pos = bytes.windows(32).position(|b| b == root).unwrap();
                 bytes[pos] ^= 1;
             }
-            let meta = Profile::default().parse_owned(&bytes).unwrap();
+            let meta = spill::engine::parse_owned(&bytes).unwrap();
             let meta = if change_v1 {
                 meta
             } else {
@@ -594,7 +594,7 @@ async fn inconsistent_hybrid_commitments_fail_content_instead_of_banning_an_hone
             });
             let session = session().await;
             let mut opts = options(&meta, &root);
-            opts.peers.push(address);
+            opts.initial_peers.push(address);
             let handle = session.admit(opts).unwrap();
             let outcome = handle.outcome().await;
             assert!(outcome.cleanup_complete);

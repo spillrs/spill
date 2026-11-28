@@ -21,7 +21,7 @@ use tokio::{
 pub enum Gateway {
     Discover,
     NatPmp(SocketAddr),
-    Upnp(reqwest::Url),
+    Upnp(url::Url),
 }
 impl Gateway {
     pub fn parse(value: &str) -> io::Result<Self> {
@@ -45,8 +45,8 @@ fn unicast(ip: IpAddr) -> bool {
     let ip = ip.to_canonical();
     !ip.is_unspecified() && !ip.is_multicast() && ip != Ipv4Addr::BROADCAST
 }
-fn http_url(value: &str) -> io::Result<reqwest::Url> {
-    let url = reqwest::Url::parse(value).map_err(io::Error::other)?;
+fn http_url(value: &str) -> io::Result<url::Url> {
+    let url = url::Url::parse(value).map_err(io::Error::other)?;
     let valid_host = match url.host() {
         Some(url::Host::Ipv4(ip)) => unicast(ip.into()),
         Some(url::Host::Ipv6(ip)) => unicast(ip.into()),
@@ -66,7 +66,7 @@ fn http_url(value: &str) -> io::Result<reqwest::Url> {
     }
     Ok(url)
 }
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Status {
     pub enabled: bool,
     pub protocol: Option<&'static str>,

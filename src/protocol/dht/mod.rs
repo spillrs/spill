@@ -5,13 +5,15 @@ mod security;
 
 /// A DHT node identity, distinct from a torrent's v1 info hash. All bit patterns
 /// are structurally valid; this is not proof of node ownership or reachability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct NodeId(pub [u8; 20]);
 
 use std::net::SocketAddr;
 
 /// A DHT contact; IPv4 and IPv6 contacts belong to separate routing tables.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Contact {
     pub id: NodeId,
     pub address: SocketAddr,

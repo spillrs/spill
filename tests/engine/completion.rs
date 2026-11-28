@@ -1,7 +1,6 @@
 use crate::payload::Temp;
 use sha1::{Digest, Sha1};
 use spill::engine::{
-    profile::Profile,
     selection::FilePriority,
     session::{Limits, NetworkOptions, Session},
     settings::TorrentSettings,
@@ -28,7 +27,7 @@ async fn one_shot_download_joins_success_and_preparation_failure() {
         // Private metainfo keeps this filesystem-only scenario off the public DHT.
         bytes.truncate(bytes.len() - 2);
         bytes.extend_from_slice(b"7:privatei1eee");
-        let meta = Profile::default().parse_owned(&bytes).unwrap();
+        let meta = spill::engine::parse_owned(&bytes).unwrap();
         let error = spill::engine::download(
             TorrentSource::Metainfo(meta.clone()),
             Destination::Create(root.0.clone()),
@@ -94,8 +93,9 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
                                     std::future::pending::<()>().await;
                                 }
                                 let body = b"d8:intervali60e12:min intervali0e5:peers0:e";
-                                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
-                                socket.write_all(body).await.unwrap();
+                                let mut response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+                                response.extend_from_slice(body);
+                                let _ = socket.write_all(&response).await;
                             });
                         }
                     }
@@ -109,8 +109,7 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
             bytes.extend_from_slice(&Sha1::digest(b"abc"));
             bytes.extend_from_slice(&Sha1::digest(b"def"));
             bytes.extend_from_slice(b"ee");
-            let profile = Profile::default();
-            let meta = profile.parse_owned(&bytes).unwrap();
+            let meta = spill::engine::parse_owned(&bytes).unwrap();
             let source = Temp::new();
             std::fs::create_dir(source.0.join("bundle")).unwrap();
             std::fs::write(source.0.join("bundle/a"), b"abc").unwrap();
@@ -126,7 +125,7 @@ async fn until_complete_joins_after_delivery_or_grace_without_announcing_partial
             let saved = delivery.clone();
             let mut options = TorrentOptions::new(TorrentSource::Metainfo(meta.clone()), Destination::Open(destination.0.clone()));
             options.settings = TorrentSettings { trackers, file_priorities: if partial { vec![FilePriority::Normal, FilePriority::Skip] } else { Vec::new() }, ..settings };
-            options.peers = vec![seed.local_addr()];
+            options.initial_peers = vec![seed.local_addr()];
             options.persistence.completion_announce = Some(Box::new(move |_, delivered| {
                 saved.lock().unwrap().push(delivered);
                 if delivered && fail_ack { Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "delivery checkpoint denied")) } else { Ok(()) }

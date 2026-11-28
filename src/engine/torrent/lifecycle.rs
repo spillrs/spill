@@ -1,6 +1,6 @@
 use super::*;
 use crate::engine::{
-    provisioning::{FileStorage, NamedDestination},
+    provisioning::{self, FileStorage},
     storage::writer::Writer,
 };
 use std::fs::File;
@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 pub(super) struct Metadata {
     pub metainfo: Option<OwnedMetainfo>,
+    pub file_priorities: Option<Vec<crate::engine::selection::FilePriority>>,
     pub acknowledged: bool,
     pub error: Option<Arc<io::Error>>,
 }
@@ -124,9 +125,10 @@ pub(super) async fn run(
                 meta.layout(),
                 &options.settings.file_priorities,
             )?;
-            context
-                .metadata
-                .send_modify(|m| m.metainfo = Some(meta.clone()));
+            context.metadata.send_modify(|m| {
+                m.metainfo = Some(meta.clone());
+                m.file_priorities = Some(selection.file_priorities().to_vec());
+            });
             let callback = resolved.clone();
             let pending = meta.clone();
             let result = crate::engine::run_blocking(&mut resources.acknowledgement, move || {
@@ -196,17 +198,14 @@ pub(super) async fn run(
             Ok(())
         };
         let result = (|| match destination {
-            Destination::Open(root) => NamedDestination::open_cancellable(
-                File::open(root)?,
-                &prepared_meta,
-                record,
-                canceled,
-            ),
+            Destination::Open(root) => {
+                provisioning::open_cancellable(File::open(root)?, &prepared_meta, record, canceled)
+            }
             Destination::Create(root) => {
-                NamedDestination::create(File::open(root)?, &prepared_meta, record, canceled)
+                provisioning::create(File::open(root)?, &prepared_meta, record, canceled)
             }
             Destination::Adopt(root) => {
-                let storage = NamedDestination::adopt_complete_cancellable(
+                let storage = provisioning::adopt_complete_cancellable(
                     File::open(root)?,
                     &prepared_meta,
                     canceled,
@@ -217,7 +216,7 @@ pub(super) async fn run(
                 record(storage.binding())?;
                 Ok(storage)
             }
-            Destination::Recover { root, state } => NamedDestination::reopen_for_recovery(
+            Destination::Recover { root, state } => provisioning::reopen_for_recovery(
                 File::open(root)?,
                 &prepared_meta,
                 &state.binding,
@@ -287,22 +286,18 @@ pub(super) async fn run(
             if let Some(callback) = &announce {
                 callback(hash, delivered)?;
             }
-            let mut recovery = recovery.lock().unwrap();
-            let states = &mut recovery
+            recovery
+                .lock()
+                .unwrap()
                 .as_mut()
                 .expect("recorded destination")
-                .completed_announces;
-            if let Some((_, state)) = states.iter_mut().find(|(key, _)| *key == hash) {
-                *state = delivered;
-            } else {
-                states.push((hash, delivered));
-            }
+                .record_announce(hash, delivered);
             Ok(())
         }),
         settings: options.settings,
         metainfo: meta,
         profile: options.profile,
-        peers: options.peers,
+        initial_peers: options.initial_peers,
         lsd_peers: std::mem::take(&mut resources.metadata.lsd_peers),
         dht: None,
         run: options.run,

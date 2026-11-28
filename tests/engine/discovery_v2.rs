@@ -1,7 +1,6 @@
 use crate::{payload::Temp, v2_peer as raw};
 use spill::{
     engine::{
-        profile::Profile,
         session::{DhtOptions, Limits, NetworkOptions, PeerEncryption, Session, dht::SavedState},
         settings::TorrentSettings,
         torrent::{Destination, RunPolicy, TorrentOptions, TorrentSource},
@@ -35,10 +34,10 @@ fn metainfo(fixture: &[u8], url: &str) -> OwnedMetainfo {
     let mut fields = fields.clone();
     fields.insert(b"announce", Node::new(Value::Bytes(url.as_bytes())));
     let bytes = bencode::encode(&Node::new(Value::Dictionary(fields)), Default::default()).unwrap();
-    let meta = Profile::default().parse_owned(&bytes).unwrap();
+    let meta = spill::engine::parse_owned(&bytes).unwrap();
     assert_eq!(
         meta.info_hash(),
-        Profile::default().parse_owned(fixture).unwrap().info_hash()
+        spill::engine::parse_owned(fixture).unwrap().info_hash()
     );
     meta
 }
@@ -321,7 +320,7 @@ fn node_bytes<'a>(doc: &'a Node<'a>, field: &[u8]) -> &'a [u8] {
 async fn dht_discovers_and_announces_both_swarm_keys_without_confusing_contacts() {
     tokio::time::timeout(Duration::from_secs(45), async {
         for fixture in [V2, HYBRID] {
-            let meta = Profile::default().parse_owned(fixture).unwrap();
+            let meta = spill::engine::parse_owned(fixture).unwrap();
             let keys = swarm_keys(&meta);
             let mut endpoints = BTreeMap::new();
             let mut sources = Vec::new();
@@ -450,7 +449,7 @@ async fn accept(socket: &mut TcpStream, key: [u8; 20], id: u8) {
 async fn hybrid_pex_reaches_legacy_and_upgrading_sources_from_either_connection_mode() {
     tokio::time::timeout(Duration::from_secs(15), async {
         for fixture in [V2, HYBRID] {
-            let meta = Profile::default().parse_owned(fixture).unwrap();
+            let meta = spill::engine::parse_owned(fixture).unwrap();
             let v1 = meta.info_hash().v1().map(|hash| *hash.as_bytes());
             let upgrades: &[bool] = if v1.is_some() {
                 &[false, true]

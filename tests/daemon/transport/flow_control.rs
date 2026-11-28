@@ -11,8 +11,7 @@ async fn utp_zero_window_probe_recovers_and_reset_accepts_send_id() {
     let meta = seed_metainfo("x", b"abc", None);
     let id = daemon.add(&meta, None).await;
     daemon.state(&id, "downloading").await;
-    let hash = spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&meta)
+    let hash = spill::engine::parse_owned(&meta)
         .unwrap()
         .info_hash()
         .wire_key();
@@ -198,8 +197,7 @@ async fn utp_reassembly_leaves_room_for_the_missing_datagram() {
     let meta = seed_metainfo("x", b"abc", None);
     let id = daemon.add(&meta, None).await;
     daemon.state(&id, "downloading").await;
-    let hash = spill::engine::profile::Profile::DEFAULT
-        .parse_owned(&meta)
+    let hash = spill::engine::parse_owned(&meta)
         .unwrap()
         .info_hash()
         .wire_key();

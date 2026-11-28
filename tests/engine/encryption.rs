@@ -1,7 +1,6 @@
 use crate::payload::{Temp, seed_metainfo};
 use spill::{
     engine::{
-        profile::Profile,
         session::{Limits, NetworkOptions, PeerEncryption, Session},
         torrent::{Destination, TorrentHandle, TorrentOptions, TorrentSource},
     },
@@ -76,9 +75,7 @@ async fn encrypted_transfers_cover_policies_transports_and_plaintext_to_mse_retr
             let destination = Temp::new();
             let payload = vec![71; 256 * 1024];
             std::fs::write(source.0.join("x"), &payload).unwrap();
-            let meta = Profile::default()
-                .parse_owned(&seed_metainfo("x", &payload, None))
-                .unwrap();
+            let meta = spill::engine::parse_owned(&seed_metainfo("x", &payload, None)).unwrap();
             let seed = session(utp, seed_policy).await;
             let leech = session(utp, leech_policy).await;
             let seed_options = options(meta.clone(), Destination::Adopt(source.0.clone()));
@@ -87,7 +84,7 @@ async fn encrypted_transfers_cover_policies_transports_and_plaintext_to_mse_retr
             leech_options.settings.download_limit = 32 * 1024;
             let mut seed_handle = seed.admit(seed_options).unwrap();
             seed_handle.wait_complete().await.unwrap();
-            leech_options.peers.push(seed.local_addr());
+            leech_options.initial_peers.push(seed.local_addr());
             let mut leech_handle = leech.admit(leech_options).unwrap();
             let transport = if utp { "utp" } else { "tcp" };
             tokio::join!(
@@ -107,9 +104,7 @@ async fn encrypted_transfers_cover_policies_transports_and_plaintext_to_mse_retr
 #[tokio::test]
 async fn preferred_retries_only_before_mse_completes_and_required_rejects_plaintext() {
     tokio::time::timeout(Duration::from_secs(15), async {
-        let meta = Profile::default()
-            .parse_owned(&seed_metainfo("x", b"abc", None))
-            .unwrap();
+        let meta = spill::engine::parse_owned(&seed_metainfo("x", b"abc", None)).unwrap();
         let wire_key = meta.info_hash().wire_key();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -140,7 +135,7 @@ async fn preferred_retries_only_before_mse_completes_and_required_rejects_plaint
         let root = Temp::new();
         let preferred = session(false, NetworkOptions::default().peer_encryption).await;
         let mut request = options(meta.clone(), Destination::Open(root.0.clone()));
-        request.peers.push(address);
+        request.initial_peers.push(address);
         let mut handle = preferred.admit(request).unwrap();
         established(&mut handle, "plaintext", "tcp").await;
         preferred.shutdown().await.unwrap();
@@ -180,7 +175,7 @@ async fn preferred_retries_only_before_mse_completes_and_required_rejects_plaint
         let root = Temp::new();
         let preferred = session(false, PeerEncryption::Preferred).await;
         let mut request = options(meta.clone(), Destination::Open(root.0.clone()));
-        request.peers.push(address);
+        request.initial_peers.push(address);
         let _handle = preferred.admit(request).unwrap();
         peer.await.unwrap();
         preferred.shutdown().await.unwrap();
@@ -219,11 +214,10 @@ async fn preferred_retries_only_before_mse_completes_and_required_rejects_plaint
 async fn encrypted_v2_magnet_routes_to_a_hybrid_seed() {
     tokio::time::timeout(Duration::from_secs(30), async {
         for utp in [false, true] {
-            let meta = Profile::default()
-                .parse_owned(include_bytes!(
-                    "../protocol/fixtures/libtorrent-hybrid.torrent"
-                ))
-                .unwrap();
+            let meta = spill::engine::parse_owned(include_bytes!(
+                "../protocol/fixtures/libtorrent-hybrid.torrent"
+            ))
+            .unwrap();
             let source = Temp::new();
             let destination = Temp::new();
             std::fs::create_dir(source.0.join("vectors")).unwrap();

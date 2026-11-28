@@ -1,20 +1,18 @@
 //! cargo run --no-default-features --example progress -- OUTPUT RECOVERY FILE.torrent...
 //! Rerunning after an interruption resumes partial downloads from RECOVERY.
 use spill::engine::{
-    profile::Profile,
-    provisioning::DestinationBinding,
-    session::{DhtOptions, Limits, NetworkOptions, Session, dht::default_routers},
-    torrent::{Destination, RecoveryState, RunPolicy, TorrentOptions, TorrentSource},
+    Destination, DhtOptions, Limits, NetworkOptions, RecoveryState, RunPolicy, Session,
+    TorrentOptions, TorrentSource, parse_owned,
 };
 use std::{
     io,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 /// Replace atomically so an interrupted write never leaves a torn record.
-/// Callbacks run on blocking threads, so synchronous I/O is fine here; each
-/// record keeps its own temporary file because they can be saved concurrently.
+/// Callbacks run on blocking threads, so synchronous I/O is fine here.
 fn save(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temporary = path.with_added_extension("tmp");
     std::fs::write(&temporary, bytes)?;
@@ -39,19 +37,17 @@ async fn main() -> io::Result<()> {
         ));
     }
     // A binding authorizes writes only within the directory it was recorded for.
+    tokio::fs::create_dir_all(&args[0]).await?;
     let output = tokio::fs::canonicalize(&args[0]).await?;
     let recovery = PathBuf::from(&args[1]);
     let mut sources = Vec::new();
     for path in &args[2..] {
-        sources.push(Profile::default().parse_owned(&tokio::fs::read(path).await?)?);
+        sources.push(parse_owned(&tokio::fs::read(path).await?)?);
     }
     tokio::fs::create_dir_all(&recovery).await?;
     let session = Session::bind(
         NetworkOptions {
-            dht: Some(DhtOptions {
-                saved: None,
-                routers: default_routers(),
-            }),
+            dht: Some(DhtOptions::default()),
             ..Default::default()
         },
         Limits::default(),
@@ -59,23 +55,22 @@ async fn main() -> io::Result<()> {
     .await?;
     let result = async {
         let mut handles = Vec::new();
-        for meta in sources {
+        for mut meta in sources {
             let record = recovery.join(meta.info_hash().to_string());
-            let binding = record.with_extension("binding");
-            let resume = record.with_extension("resume");
-            let announce = record.with_extension("announce");
+            let state_path = record.with_extension("recovery");
+            let meta_path = record.with_extension("torrent");
+            if let Some(saved_meta) = load(&meta_path).await? {
+                meta = parse_owned(&saved_meta)?;
+            }
             // Only a recorded binding authorizes reopening partial payload;
             // without one, existing files are adopted only if already complete.
-            let completed_announces: Vec<([u8; 20], bool)> = match load(&announce).await? {
-                Some(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other)?,
-                None => Vec::new(),
+            let existing: Option<(PathBuf, RecoveryState)> = match load(&state_path).await? {
+                Some(bytes) => Some(serde_json::from_slice(&bytes).map_err(io::Error::other)?),
+                None => None,
             };
-            let announce_states = std::sync::Mutex::new(completed_announces.clone());
-            let destination = match load(&binding).await? {
-                Some(bytes) => {
-                    let (root, binding): (PathBuf, DestinationBinding) =
-                        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-                    if root != output {
+            let destination = match &existing {
+                Some((root, state)) => {
+                    if *root != output {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
                             format!(
@@ -86,37 +81,54 @@ async fn main() -> io::Result<()> {
                         ));
                     }
                     Destination::Recover {
-                        root,
-                        state: RecoveryState {
-                            binding,
-                            resume: load(&resume).await?,
-                            completed_announces,
-                        },
+                        root: root.clone(),
+                        state: state.clone(),
                     }
                 }
                 None => Destination::Open(output.clone()),
             };
+            let persisted = Arc::new(Mutex::new(existing.map(|(_, state)| state)));
             let mut options = TorrentOptions::new(TorrentSource::Metainfo(meta), destination);
             options.run = RunPolicy::UntilComplete;
-            let root = output.clone();
-            options.persistence.binding = Some(Box::new(move |record| {
-                save(
-                    &binding,
-                    &serde_json::to_vec(&(&root, record)).map_err(io::Error::other)?,
-                )
+            options.persistence.resolved = Some(Box::new(move |resolved| {
+                save(&meta_path, resolved.source_bytes())
             }));
-            options.persistence.checkpoint = Some(Box::new(move |bytes| save(&resume, &bytes)));
+            let save_state = {
+                let output = output.clone();
+                let state_path = state_path.clone();
+                Arc::new(move |state: &RecoveryState| {
+                    save(
+                        &state_path,
+                        &serde_json::to_vec(&(&output, state)).map_err(io::Error::other)?,
+                    )
+                })
+            };
+            let state = persisted.clone();
+            let writer = save_state.clone();
+            options.persistence.binding = Some(Box::new(move |binding| {
+                let mut guard = state.lock().unwrap();
+                let current = guard.insert(RecoveryState {
+                    binding,
+                    resume: None,
+                    completed_announces: Vec::new(),
+                });
+                writer(current)
+            }));
+            let state = persisted.clone();
+            let writer = save_state.clone();
+            options.persistence.checkpoint = Some(Box::new(move |bytes| {
+                let mut guard = state.lock().unwrap();
+                let current = guard.as_mut().expect("binding recorded");
+                current.resume = Some(bytes);
+                writer(current)
+            }));
+            let state = persisted;
+            let writer = save_state;
             options.persistence.completion_announce = Some(Box::new(move |hash, delivered| {
-                let mut states = announce_states.lock().unwrap();
-                if let Some((_, state)) = states.iter_mut().find(|(key, _)| *key == hash) {
-                    *state = delivered;
-                } else {
-                    states.push((hash, delivered));
-                }
-                save(
-                    &announce,
-                    &serde_json::to_vec(&*states).map_err(io::Error::other)?,
-                )
+                let mut guard = state.lock().unwrap();
+                let current = guard.as_mut().expect("binding recorded");
+                current.record_announce(hash, delivered);
+                writer(current)
             }));
             handles.push(session.admit(options)?);
         }
@@ -135,8 +147,7 @@ async fn main() -> io::Result<()> {
             }
         }
         for handle in handles {
-            handle.join().await?;
-            handle.wait_complete().await?;
+            handle.outcome().await.require_complete()?;
         }
         Ok(())
     }

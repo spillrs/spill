@@ -37,7 +37,16 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "magnet: {self:?}")
+        f.write_str(match self {
+            Self::InvalidUri => "invalid magnet URI",
+            Self::InvalidEscape => "invalid percent-encoding in magnet URI",
+            Self::ResourceLimit => "magnet URI exceeds size or parameter limits",
+            Self::MissingHash => "magnet URI is missing an info hash",
+            Self::InvalidHash => "magnet URI contains an invalid info hash",
+            Self::ConflictingHashes => "magnet URI contains conflicting info hashes",
+            Self::UnsupportedVersion => "unsupported magnet info hash version",
+            Self::InvalidSelection => "magnet URI contains an invalid file selection (so)",
+        })
     }
 }
 

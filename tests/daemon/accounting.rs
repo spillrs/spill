@@ -16,9 +16,7 @@ async fn torrent_bandwidth_changes_keep_the_peer_and_survive_restart() {
         std::fs::create_dir_all(&output).unwrap();
         std::fs::write(output.join("x"), &payload).unwrap();
         let bytes = seed_metainfo("x", &payload, None);
-        let meta = spill::engine::profile::Profile::DEFAULT
-            .parse_owned(&bytes)
-            .unwrap();
+        let meta = spill::engine::parse_owned(&bytes).unwrap();
         let id = daemon.add(&bytes, None).await;
         daemon.state(&id, "seeding").await;
         let health = daemon.call(json!({"op":"health"})).await;
@@ -87,9 +85,7 @@ async fn accounting_survives_restart_without_counting_existing_data() {
             .as_str()
             .unwrap()
             .to_owned();
-        let meta = spill::engine::profile::Profile::DEFAULT
-            .parse_owned(&bytes)
-            .unwrap();
+        let meta = spill::engine::parse_owned(&bytes).unwrap();
         let mut peer = raw_peer(&address, meta.info_hash().wire_key(), 42).await;
         tokio::time::timeout(Duration::from_secs(5), async {
             peer.write_all(&[0, 0, 0, 1, 2]).await.unwrap();

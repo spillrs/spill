@@ -31,6 +31,7 @@ use tokio::{
 use tracing::Instrument;
 
 /// Validated metainfo or a parsed magnet whose metadata the engine will resolve.
+#[derive(Clone, Debug)]
 pub enum TorrentSource {
     Metainfo(OwnedMetainfo),
     Magnet(Magnet),
@@ -38,6 +39,7 @@ pub enum TorrentSource {
 
 /// Payload policy within an existing root directory. Existing partial files
 /// require recorded recovery authority; a resume bitmap alone is insufficient.
+#[derive(Clone, Debug)]
 pub enum Destination {
     /// Create payload or verify and adopt an already complete read-only seed.
     Open(PathBuf),
@@ -50,15 +52,30 @@ pub enum Destination {
 }
 
 /// Latest acknowledged recovery records. Persist the binding together with its
-/// original root directory; preserve resume bytes unchanged. The binding's serde
-/// format may change before 1.0.
-#[derive(Clone)]
+/// original root directory; preserve resume bytes unchanged. Treat the serialized
+/// format as an opaque record tied to the spill version.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RecoveryState {
     pub binding: DestinationBinding,
     pub resume: Option<Vec<u8>>,
     /// Per-swarm completion delivery: false is pending, true is acknowledged.
     /// Keys are SHA-1 hashes or SHA-256 prefixes, not full torrent identities.
     pub completed_announces: Vec<([u8; 20], bool)>,
+}
+
+impl RecoveryState {
+    /// Update or insert completion-announce delivery state for one swarm key.
+    pub fn record_announce(&mut self, swarm: [u8; 20], delivered: bool) {
+        if let Some((_, state)) = self
+            .completed_announces
+            .iter_mut()
+            .find(|(key, _)| *key == swarm)
+        {
+            *state = delivered;
+        } else {
+            self.completed_announces.push((swarm, delivered));
+        }
+    }
 }
 
 /// Acknowledge an encoded resume checkpoint. Failure fails the execution.
@@ -96,10 +113,11 @@ pub struct TorrentOptions {
     pub settings: crate::engine::settings::TorrentSettings,
     pub run: RunPolicy,
     /// Initial direct peers; must be empty for private metainfo.
-    pub peers: Vec<SocketAddr>,
+    pub initial_peers: Vec<SocketAddr>,
     pub diagnostics: bool,
     pub log_peer_endpoints: bool,
-    pub no_progress_timeout: Duration,
+    /// Optional deadline to abort an incomplete transfer after no useful progress.
+    pub no_progress_timeout: Option<Duration>,
     pub persistence: Persistence,
 }
 
@@ -135,12 +153,12 @@ pub(in crate::engine) struct RuntimeOptions {
     pub(in crate::engine) settings: crate::engine::settings::TorrentSettings,
     pub(in crate::engine) metainfo: OwnedMetainfo,
     pub(in crate::engine) profile: Profile,
-    pub(in crate::engine) peers: Vec<SocketAddr>,
+    pub(in crate::engine) initial_peers: Vec<SocketAddr>,
     pub(in crate::engine) lsd_peers: Vec<([u8; 20], SocketAddr)>,
     pub(in crate::engine) dht: Option<crate::engine::session::dht::Handle>,
     run: RunPolicy,
     log_peer_endpoints: bool,
-    no_progress_timeout: Duration,
+    no_progress_timeout: Option<Duration>,
     diagnostics: bool,
     selection: crate::engine::selection::FileSelection,
     pub(in crate::engine) peer_id: [u8; 20],
@@ -155,7 +173,6 @@ pub enum RunPolicy {
     /// Explicit full verification and resume save, with no peer/discovery I/O.
     Recheck,
     /// Background service: keep serving after completion until stopped or failed.
-    /// Incomplete downloads retain the configured no-progress recovery timeout.
     Persistent,
 }
 
@@ -167,6 +184,8 @@ pub enum TorrentPhase {
     PreparingDestination,
     /// Pre-network resume validation and changed-piece recheck.
     Recovering,
+    /// Explicit full payload verification (`RunPolicy::Recheck`).
+    Checking,
     Downloading,
     Seeding,
     Stopping,
@@ -179,7 +198,6 @@ pub enum TorrentExit {
     Complete,
     NoProgress,
     Rechecked,
-    Unavailable,
     Failed,
     MetadataResolved,
 }
@@ -197,6 +215,16 @@ pub struct TorrentOutcome {
     pub error: Option<Arc<io::Error>>,
 }
 impl TorrentOutcome {
+    /// Return `Ok(())` only if execution ended without error and all wanted content
+    /// completed; otherwise return the execution error or an incomplete-transfer error.
+    pub fn require_complete(&self) -> io::Result<()> {
+        self.result()?;
+        if self.wanted_complete {
+            Ok(())
+        } else {
+            Err(self.incomplete("execution ended before wanted content completed"))
+        }
+    }
     fn incomplete(&self, message: &'static str) -> io::Error {
         self.result().err().unwrap_or_else(|| {
             io::Error::new(
@@ -232,7 +260,7 @@ pub enum TorrentRetryStatus {
 }
 
 /// Latest observations, not an event backlog or a durable resume record.
-/// `written_payload_bytes` means socket-written bytes, not remote receipt.
+/// `uploaded_bytes` means socket-written payload bytes, not remote receipt.
 #[derive(Clone, Debug)]
 pub struct TorrentStatus {
     /// Full known hashes, including aliases learned from authenticated metainfo.
@@ -282,11 +310,12 @@ pub struct TorrentProgress {
     pub total_bytes: u64,
     pub wanted_bytes: u64,
     pub wanted_verified_bytes: u64,
-    pub processed_payload_bytes: u64,
+    pub downloaded_bytes: u64,
     /// Download verification failures only; startup/recheck failures are excluded.
     pub hash_failed_bytes: u64,
     pub hash_failed_pieces: u64,
-    pub written_payload_bytes: u64,
+    /// Socket-written payload bytes, not remote receipt.
+    pub uploaded_bytes: u64,
     pub download_bytes_per_second: f64,
     pub upload_bytes_per_second: f64,
     /// True after writable payload files are data-synced and the completion
@@ -348,6 +377,10 @@ impl TorrentHandle {
     }
     pub fn metainfo(&self) -> Option<OwnedMetainfo> {
         self.metadata.borrow().metainfo.clone()
+    }
+    /// Effective file priorities once metadata is available, including BEP 53 `so=` selection.
+    pub fn file_priorities(&self) -> Option<Vec<crate::engine::selection::FilePriority>> {
+        self.metadata.borrow().file_priorities.clone()
     }
     /// Retain the latest acknowledged binding and checkpoints for another execution.
     /// This is an in-memory observation; use [`Persistence`] for process recovery.
@@ -516,9 +549,19 @@ impl TorrentHandle {
             Destination::Recover { state, .. } => Some(state.clone()),
             _ => None,
         }));
+        let file_priorities = metainfo.as_ref().map(|meta| {
+            crate::engine::selection::FileSelection::from_priorities(
+                meta.layout(),
+                &options.settings.file_priorities,
+            )
+            .expect("validated file priorities")
+            .file_priorities()
+            .to_vec()
+        });
         let (metadata, metadata_receiver) = watch::channel(lifecycle::Metadata {
             acknowledged: metainfo.is_some(),
             metainfo,
+            file_priorities,
             error: None,
         });
         let (reannounce, requests) = watch::channel(());

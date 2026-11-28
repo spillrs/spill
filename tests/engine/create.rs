@@ -3,7 +3,6 @@ use sha1::{Digest, Sha1};
 use spill::{
     engine::{
         create::{self, Format, Options},
-        profile::Profile,
         session::{Limits, NetworkOptions, Session},
         settings::TorrentSettings,
         torrent::{Destination, RunPolicy, TorrentOptions, TorrentSource},
@@ -73,9 +72,9 @@ fn created_v2_and_hybrid_match_reference_vectors() {
             ..Default::default()
         };
         let created = create::create(&source, &options, &mut |_, _| Ok(())).unwrap();
-        let actual = Profile::default().parse_owned(&created.metainfo).unwrap();
-        spill::engine::provisioning::NamedDestination::verify(&root.0, &actual).unwrap();
-        let expected = Profile::default().parse_owned(fixture).unwrap();
+        let actual = spill::engine::parse_owned(&created.metainfo).unwrap();
+        spill::engine::provisioning::verify(&root.0, &actual).unwrap();
+        let expected = spill::engine::parse_owned(fixture).unwrap();
         assert_eq!(created.info_hash, expected.info_hash());
         assert_eq!(actual.info_bytes(), expected.info_bytes());
         assert_eq!(
@@ -94,7 +93,7 @@ fn created_v2_and_hybrid_match_reference_vectors() {
         }
         let missing = root.0.join(files[0].0);
         std::fs::remove_file(&missing).unwrap();
-        assert!(spill::engine::provisioning::NamedDestination::verify(&root.0, &actual).is_err());
+        assert!(spill::engine::provisioning::verify(&root.0, &actual).is_err());
         assert!(!missing.exists());
     }
 }
@@ -143,7 +142,7 @@ async fn created_directory_is_reproducible_and_transfers_across_file_boundaries(
                         .collect::<Vec<_>>()
                 );
             }
-            let meta = Profile::default().parse_owned(&parallel.metainfo).unwrap();
+            let meta = spill::engine::parse_owned(&parallel.metainfo).unwrap();
             assert_eq!(parallel.info_hash, meta.info_hash());
             assert!(matches!(
                 (format, parallel.info_hash),
@@ -215,7 +214,7 @@ async fn created_directory_is_reproducible_and_transfers_across_file_boundaries(
                 Destination::Create(destination.0.clone()),
             );
             download.settings = settings;
-            download.peers = vec![seed.local_addr()];
+            download.initial_peers = vec![seed.local_addr()];
             download.run = RunPolicy::UntilComplete;
             let handle = downloader.admit(download).unwrap();
             handle.join().await.unwrap();
@@ -259,7 +258,7 @@ async fn empty_sources_use_normalized_names_and_links_keep_their_names() {
     options.name = None;
     assert_eq!(created.name, name);
     assert_eq!(created.piece_count, 0);
-    let meta = Profile::default().parse_owned(&created.metainfo).unwrap();
+    let meta = spill::engine::parse_owned(&created.metainfo).unwrap();
     assert_eq!(meta.name(), b"empty-\xff");
     let suffix: String = Sha1::digest(b"empty-\xff")[..8]
         .iter()
@@ -285,7 +284,7 @@ async fn empty_sources_use_normalized_names_and_links_keep_their_names() {
     symlink("directory", root.0.join("root-link")).unwrap();
     let created = create::create(&root.0.join("root-link"), &options, &mut |_, _| Ok(())).unwrap();
     assert_eq!(created.name, "root-link");
-    let meta = Profile::default().parse_owned(&created.metainfo).unwrap();
+    let meta = spill::engine::parse_owned(&created.metainfo).unwrap();
     assert_eq!(meta.layout().files().len(), 3);
     assert_eq!(meta.layout().total_length(), 9);
     assert_eq!(meta.layout().files()[0].path()[0].as_ref(), b"dir-link");
@@ -329,7 +328,7 @@ fn creation_cancels_joins_and_rejects_changed_payloads_without_modifying_them() 
     assert!(error.to_string().contains("source changed"));
     assert_eq!(std::fs::read(&source).unwrap(), b"changed");
     let recovered = create::create(&source, &options, &mut |_, _| Ok(())).unwrap();
-    let meta = Profile::default().parse(&recovered.metainfo).unwrap();
+    let meta = spill::engine::parse(&recovered.metainfo).unwrap();
     assert_eq!(
         meta.piece_hash(0).unwrap().as_slice(),
         Sha1::digest(b"changed").as_slice()

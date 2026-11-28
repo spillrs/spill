@@ -30,6 +30,15 @@ pub mod torrent;
 mod transfer_stats;
 mod webseed;
 
+pub use self::profile::{AdmissionError, AdmissionLimit, Profile, parse, parse_owned};
+pub use self::selection::{FilePriority, FileSelection};
+pub use self::session::{DhtOptions, Limits, NetworkOptions, PeerEncryption, Session};
+pub use self::settings::TorrentSettings;
+pub use self::torrent::{
+    Destination, Persistence, RecoveryState, RunPolicy, TorrentExit, TorrentHandle, TorrentOptions,
+    TorrentOutcome, TorrentPhase, TorrentProgress, TorrentSource, TorrentStatus,
+};
+
 pub(in crate::engine) async fn next_ready<F: std::future::Future>(
     futures: impl Iterator<Item = F>,
 ) -> F::Output {
@@ -85,10 +94,7 @@ pub async fn download(
 ) -> std::io::Result<()> {
     let session = session::Session::bind(
         session::NetworkOptions {
-            dht: Some(session::DhtOptions {
-                saved: None,
-                routers: session::dht::default_routers(),
-            }),
+            dht: Some(session::DhtOptions::default()),
             ..Default::default()
         },
         session::Limits::default(),
@@ -98,8 +104,7 @@ pub async fn download(
         let mut options = torrent::TorrentOptions::new(source, destination);
         options.run = torrent::RunPolicy::UntilComplete;
         let handle = session.admit(options)?;
-        handle.join().await?;
-        handle.wait_complete().await
+        handle.outcome().await.require_complete()
     }
     .await;
     let shutdown = session.shutdown().await;

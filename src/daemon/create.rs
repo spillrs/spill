@@ -48,7 +48,7 @@ pub struct Arguments {
     #[arg(short, long)]
     source: Option<String>,
     /// Hashing workers; defaults to the available CPU count.
-    #[arg(short = 't', long, value_parser = clap::value_parser!(usize))]
+    #[arg(short = 't', long, value_parser = nonzero_threads)]
     threads: Option<usize>,
     /// Print piece progress even when stderr is not a terminal.
     #[arg(short, long)]
@@ -58,11 +58,15 @@ pub struct Arguments {
     web_seeds: Vec<String>,
 }
 
-pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
-    // Refuse obvious output collisions before spending time hashing.
-    if let Some(output) = &args.output {
-        vacant(output)?;
+fn nonzero_threads(value: &str) -> Result<usize, String> {
+    let n: usize = value.parse().map_err(|e| format!("{e}"))?;
+    if n == 0 {
+        return Err("threads must be at least 1".into());
     }
+    Ok(n)
+}
+
+pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
     let defaults = Options::default();
     let options = Options {
         format: args.format,
@@ -84,14 +88,38 @@ pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
             defaults.creation_date
         },
     };
-    let progress = args.verbose || io::stderr().is_terminal();
+    options.validate()?;
+    // Refuse obvious output collisions before spending time hashing.
+    let precheck_output = args.output.clone().or_else(|| {
+        let mut name = args.name.clone().or_else(|| {
+            args.target.file_name().map(OsString::from).or_else(|| {
+                fs::canonicalize(&args.target)
+                    .ok()?
+                    .file_name()
+                    .map(OsString::from)
+            })
+        })?;
+        name.push(".torrent");
+        Some(PathBuf::from(name))
+    });
+    if let Some(output) = &precheck_output {
+        vacant(output)?;
+    }
+    let tty = io::stderr().is_terminal();
+    let progress = args.verbose || tty;
+    let mut printed = false;
     let torrent = create::create(&args.target, &options, &mut |done, total| {
         if progress {
-            eprint!("\rHashed {done} of {total} pieces.");
+            if tty {
+                eprint!("\rHashed {done} of {total} pieces.");
+            } else {
+                eprintln!("Hashed {done} of {total} pieces.");
+            }
+            printed = true;
         }
         Ok(())
     });
-    if progress {
+    if tty && printed {
         eprintln!();
     }
     let torrent = torrent?;
@@ -119,7 +147,7 @@ pub fn run(args: &Arguments, json: bool) -> io::Result<()> {
             })
         );
     } else {
-        println!("Created {:?} ({})", output.as_os_str(), torrent.info_hash);
+        println!("Created {} ({})", output.display(), torrent.info_hash);
     }
     Ok(())
 }

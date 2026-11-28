@@ -297,11 +297,7 @@ impl Catalog {
             ) = r?;
             let parsed = metainfo
                 .as_deref()
-                .map(|bytes| {
-                    spill::engine::profile::Profile::default()
-                        .parse_owned(bytes)
-                        .map_err(std::io::Error::from)
-                })
+                .map(|bytes| spill::engine::parse_owned(bytes).map_err(std::io::Error::from))
                 .transpose()?
                 .map(Arc::new);
             let created_files = created_files
@@ -561,7 +557,9 @@ impl Catalog {
     }
     pub fn failure(&self, id: &str, error: &std::io::Error) -> Result<()> {
         self.update(id, |c, row| {
-            if AdmissionError::of(error).is_some() {
+            if AdmissionError::of(error).is_some()
+                || error.kind() == std::io::ErrorKind::AlreadyExists
+            {
                 row.intent = Intent::Paused;
                 row.retry_count = 0;
                 row.retry_at = 0;

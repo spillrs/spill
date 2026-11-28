@@ -24,7 +24,7 @@ pub(super) fn apply_progress(
     target.verified_bytes = p.verified_bytes;
     target.wanted_bytes = p.wanted_bytes;
     target.wanted_verified_bytes = p.wanted_verified_bytes;
-    target.processed_payload_bytes = p.received_payload_bytes;
+    target.downloaded_bytes = p.received_payload_bytes;
     target.hash_failed_bytes = p.hash_failed_bytes;
     target.hash_failed_pieces = p.hash_failed_pieces;
 }
@@ -311,7 +311,7 @@ impl Observer {
             s.diagnostics = diagnostics;
             apply_progress(&p, &mut s.progress);
             s.progress.total_bytes = p.total_bytes;
-            s.progress.written_payload_bytes = uploaded;
+            s.progress.uploaded_bytes = uploaded;
             s.progress.download_bytes_per_second = download_rate;
             s.progress.upload_bytes_per_second = upload_rate;
             s.progress.verified_pieces = transfer.verified_count();

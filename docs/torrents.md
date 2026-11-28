@@ -73,8 +73,10 @@ short hash to distinguish them. Remaining path collisions are rejected.
   inode, size, and modification time. If those changed, the torrent stops serving
   and needs rechecking. Creating a hardlink on its own does not invalidate the seed.
 - If only **some** of them exist, or a directory sits where a file should go,
-  the add fails with `file already exists; choose another output directory`.
-  spill never overwrites files it didn't create.
+  the torrent enters the catalog and pauses during startup with `last_error`
+  set to `file already exists; choose another output directory`. spill never
+  overwrites files it didn't create. Move the conflicting files away and `resume`,
+  or run `spill remove ID` before re-adding with another `--output`.
 
 ### `.part` files
 
@@ -101,8 +103,10 @@ indices extend the pending selection. An existing all-files selection stays all
 files. Without `so`, adding an existing torrent remains an error. All supplied
 hash topics must already identify the same entry.
 
-`spill files ID` lists every file with its priority. Set priorities with
-`set ID 'file_priorities=[...]'`, one of `skip`, `normal` or `high` per file:
+`spill files ID` lists every file with its priority (and marks virtual BEP 47
+padding entries). Set priorities with a full array
+`set ID 'file_priorities=[...]'` or a sparse index map
+`set ID 'file_priorities={"1":"skip","2":"high"}'`, using `skip`, `normal`, or `high`:
 
 - `high` files are fetched before `normal` ones.
 - `skip` files are not requested. Pieces that span a selected and a skipped
@@ -118,10 +122,10 @@ the torrent. See [Networking](networking.md#trackers).
 ## Seeding goals
 
 A torrent pauses itself when it reaches `seed_ratio` (uploaded bytes divided by
-the torrent's size) or `seed_time` (seconds spent seeding, not counting pauses
-or downtime). Seeding duration is measured by the engine at lifecycle transitions,
-not inferred from supervisor sampling. Uploaded bytes and seeding time are saved
-and survive restarts.
+the torrent's data size, excluding virtual padding) or `seed_time` (seconds spent
+seeding, not counting pauses or downtime). Seeding duration is measured by the
+engine at lifecycle transitions, not inferred from supervisor sampling. Uploaded
+bytes and seeding time are saved and survive restarts.
 
 ## Accounting
 
@@ -182,10 +186,12 @@ doubling the delay each time up to 30 minutes. Pausing and resuming clears the
 delay. Problems with a single peer, tracker or web seed never fail a torrent;
 that source is dropped or retried on its own.
 
-Permanent input errors pause the torrent instead of retrying, preserving
-`last_error` with `retry_at` set to zero across restarts. This includes private
-magnets and duplicate hashes learned during metadata resolution. Use a `.torrent`
-file for a private torrent; remove a duplicate rather than retrying it.
+Permanent input and destination-conflict errors pause the torrent instead of
+retrying, preserving `last_error` with `retry_at` set to zero across restarts.
+This includes private magnets, duplicate hashes learned during metadata resolution,
+and `file already exists` conflicts at the output path. Use a `.torrent` file for
+a private torrent, remove a duplicate rather than retrying it, or clear the
+conflict (or remove and re-add with another `--output`).
 
 ## Removing torrents
 

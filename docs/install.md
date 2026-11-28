@@ -20,8 +20,8 @@ binary compatibility are listed below. Inspect or pin the script installation:
 
 ```sh
 curl -fsSL https://spill.rs/install.sh -o install.sh
-# Read install.sh before running it.
-sh install.sh --version 0.7.7 --install-dir "$HOME/.local/bin"
+# Read install.sh before running it; replace VERSION with a release (no leading v).
+sh install.sh --version VERSION --install-dir "$HOME/.local/bin"
 ```
 
 Stop a running daemon before replacing its binary. Checksums detect corruption,
@@ -66,9 +66,14 @@ attribute with `xattr -d com.apple.quarantine spill` before installing. Do not
 disable Gatekeeper globally. Checksums detect corruption, not a compromised
 release account.
 
-Service/config examples are not in the binary archives; use `deploy/` from
-the matching [source tag](https://github.com/spillrs/spill/tags) for the
-service instructions below.
+Service/config examples are not in the binary archives; download `deploy/` from
+the matching [source tag](https://github.com/spillrs/spill/tags), for example:
+
+```sh
+version="$(spill --version | awk '{print $2}')"
+curl -fsSL "https://github.com/spillrs/spill/archive/refs/tags/v${version}.tar.gz" \
+  | tar -xz --strip-components=1 "spill-${version}/deploy"
+```
 
 ## Install from crates.io
 
@@ -116,8 +121,13 @@ Without `--config`, spill uses built-in defaults:
 Stop it with Ctrl-C, `SIGTERM` or `spill shutdown`. Shutdown waits for
 every torrent to stop cleanly and saves its progress.
 
-To use a config file, pass an absolute path: `spill serve --config /path/to/spill.toml`.
+To use a config file, pass `--config PATH` (paths *inside* the TOML must be
+absolute): `spill serve --config /path/to/spill.toml`. Validate a config without
+starting the daemon using `spill serve --config /path/to/spill.toml --check`.
 See [Configuration](configuration.md) for every key.
+
+Next: follow the [Quickstart](quickstart.md) to add and manage your first torrent,
+or continue below to run spill as a background service.
 
 ## macOS
 
@@ -144,16 +154,16 @@ plutil -replace ProgramArguments.3 -string "$HOME/Library/Application Support/sp
 plutil -replace StandardOutPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
 plutil -replace StandardErrorPath -string "$HOME/Library/Application Support/spill/spill.log" "$agent"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/rs.spill.daemon.plist"
-tail -f "$HOME/Library/Application Support/spill/debug.log"
+tail -F "$HOME/Library/Application Support/spill/debug.log"
 ```
 
 The commands set the executable to your installed `spill`, including script
 and Cargo installations. launchd does not expand `~`, so the commands substitute
 absolute paths. Edit the TOML before loading if needed; its example enables
-the web interface on `127.0.0.1:8080`. The agent restarts after failure, not
-clean shutdown. Detailed logs append to `debug.log` in the state directory.
-The plist's separate `spill.log` captures operational stderr, including failures
-before the debug writer starts. Retention and rotation of both files are managed
+the web interface on `127.0.0.1:8080` (see [Web security model](web.md#security-model)).
+The agent restarts after failure, not clean shutdown. Detailed logs append to
+`debug.log` in the state directory. The plist's separate `spill.log` captures
+operational stderr, including early startup failures before `debug.log` is created. Retention and rotation of both files are managed
 externally; restart the agent after renaming either file so it reopens the path.
 See [Logging](configuration.md#logging-logging) for filters. To unload it:
 
@@ -167,22 +177,32 @@ settings. The Linux-only `tests/interop` harnesses are not supported on macOS.
 
 ## Run as a Linux user service (recommended)
 
-Obtain `deploy/` from the matching source tag and run from that source directory.
-The unit template uses `/usr/local/bin/spill`; set it to your installed path:
+Obtain `deploy/` from the matching source tag (see the snippet under
+[Install a release binary](#install-a-release-binary)) and run from the directory
+containing `deploy/`:
 
 ```sh
 mkdir -p ~/.config/spill ~/.config/systemd/user
 cp deploy/spill-user.toml ~/.config/spill/spill.toml
-cp deploy/spill-user.service ~/.config/systemd/user/spill.service
-systemctl --user edit --full spill.service
-# Set ExecStart to the absolute path printed by: command -v spill
-# Keep the serve --config arguments.
+sed "s|/usr/local/bin/spill|$(command -v spill)|" deploy/spill-user.service \
+  > ~/.config/systemd/user/spill.service
+```
+
+Review `~/.config/spill/spill.toml` **before** starting the service:
+- Built-in default paths are commented out in the template; any path you uncomment
+  must be absolute (`~` is not expanded).
+- The template enables `web_listen = "127.0.0.1:8080"` by default. Comment it out
+  on shared machines you do not trust; see [Web security model](web.md#security-model).
+- Validate edits with `spill serve --config ~/.config/spill/spill.toml --check`.
+
+Then enable and start the unit:
+
+```sh
 systemctl --user daemon-reload
 systemctl --user enable --now spill
 journalctl --user -u spill -f
 ```
 
-Edit `~/.config/spill/spill.toml` first: paths in the file must be absolute.
 The user unit lets spill create its configured state directory and socket,
 without separate systemd-managed state or runtime directories.
 To keep the daemon running after you log out, enable lingering with
@@ -195,7 +215,7 @@ To keep the daemon running after you log out, enable lingering with
 `/run/spill/control.sock`:
 
 ```sh
-sudo useradd --system --home /var/lib/spill --shell /usr/sbin/nologin spill
+sudo useradd --system --user-group --home /var/lib/spill --shell /usr/sbin/nologin spill
 sudo install -d -m 0755 /etc/spill
 sudo install -m 0644 deploy/spill.toml /etc/spill/spill.toml
 sudo install -m 0644 deploy/spill.service /etc/systemd/system/spill.service
@@ -206,7 +226,11 @@ sudo -u spill spill --socket /run/spill/control.sock list
 
 The system unit expects `/usr/local/bin/spill`. Install the binary there first;
 a user-local script or Cargo binary is not accessible under its `ProtectHome`
-sandbox. The download directory must be listed in `ReadWritePaths`.
+sandbox. If you change `download_dir` outside `/var/lib/spill`, list it in
+`ReadWritePaths`. Set `SPILL_SOCKET=/run/spill/control.sock` to avoid passing
+`--socket` on every command. Because spill is single-user, `spill serve` enforces
+umask `0077` in code (downloaded files are created `0600` and directories `0700`
+owned by `spill`, regardless of systemd `UMask=`).
 
 ## Open the port
 
@@ -234,3 +258,5 @@ directory as a backup.
 
 Incompatible or invalid cached DHT contacts are discarded and rebuilt without
 affecting saved torrents.
+
+Next: follow the [Quickstart](quickstart.md) to add and manage torrents.

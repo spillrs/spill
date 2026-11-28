@@ -74,7 +74,7 @@ cargo add spill --no-default-features
 ```
 
 The engine runs in your application's Tokio runtime; no daemon process or
-catalog is required. Start with the [library guide](docs/library.md),
+catalog is required. Start with the [library guide](https://spill.rs/docs/library/),
 [Rust API reference](https://docs.rs/spill), and runnable
 [`download`](examples/download.rs) and [`progress`](examples/progress.rs)
 examples. The latter demonstrates concurrent, resumable downloads.

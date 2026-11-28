@@ -1,7 +1,7 @@
 # Command line
 
 ```text
-spill serve [--config PATH]
+spill serve [--config PATH] [--check]
 spill [--json] create [OPTIONS] TARGET
 spill [--json] inspect SOURCE
 spill [--json] verify FILE.torrent --path DIR
@@ -10,20 +10,23 @@ spill --version
 ```
 
 `spill serve` runs the daemon in the foreground, writing operational logs to
-stderr and appending detailed logs to `<state_dir>/debug.log`. See
-[Logging](configuration.md#logging-logging) for filters.
-`spill create` creates torrent files locally and `spill inspect` reads metainfo or
-magnet links without a daemon. `spill verify` checks existing payload locally.
-Other commands talk to a running daemon over its
-Unix socket. Without `--socket`, client commands use:
+stderr (respecting `NO_COLOR`) and appending detailed logs to
+`<state_dir>/debug.log`. Pass `--check` to validate configuration without
+starting the daemon. See [Logging](configuration.md#logging-logging) for filters.
+
+`spill create` creates torrent files locally, `spill inspect` reads metainfo or
+magnet links, and `spill verify` checks existing payload without a daemon.
+Client commands talk to a running daemon over its Unix socket. Without `--socket`
+(or the `SPILL_SOCKET` environment variable), client commands use:
 
 - Linux: `$XDG_RUNTIME_DIR/spill.sock`, falling back to
   `~/.local/state/spill/spill.sock`.
 - macOS: `~/Library/Application Support/spill/spill.sock`.
 
-Pass `--socket` if your config sets a different `control_socket`.
+Pass `--socket` (or export `SPILL_SOCKET`) if your config sets a different
+`control_socket`. `--socket` is accepted only for daemon client commands.
 
-`--json` prints the daemon's raw JSON response data instead of text, one
+`--json` prints raw JSON response data instead of human-readable text, one
 document per line. Use it for scripts. `--socket` and `--json` can appear
 before or after the client command. For `create`, `--json` prints the output path,
 `info_hash` (stable ID), `format` (`v1`, `v2` or `hybrid`), `v1` and `v2`
@@ -35,37 +38,87 @@ A metainfo torrent's stable ID is its 40-digit SHA-1 hash for v1 and hybrid
 torrents, or its full 64-digit SHA-256 hash for v2-only torrents. A magnet keeps
 its supplied primary ID after resolution. Commands accept the stable ID or any
 known full-hash alias, case-insensitively, and any prefix matching exactly one
-torrent. Exact matches take precedence; an ambiguous prefix is an input error.
+torrent. Exact matches take precedence; an ambiguous prefix is an input error
+that lists matching prefixes.
 Both hashes of a hybrid address the same torrent, destination and accounting.
 Adding metainfo or a magnet with an already-known hash is a duplicate, even if
 the other hash or destination differs. Exception: a magnet with BEP 53 `so`
 enables its referenced skipped files in the existing torrent and returns that
 ID, preserving other priorities, settings, destination and pause state. No-op
 selection updates do not restart the torrent. All supplied hash topics must
-already identify the same entry. `list`, `get` and `--json` output
-preserve full IDs; use prefixes when entering commands.
+already identify the same entry. `add`, `get`, and `--json` output print full
+IDs; `list` text mode displays a 12-character prefix for compact columns.
 
 ## Commands
 
+### Torrent control
+
 | Command | What it does |
 |---|---|
-| `verify FILE.torrent --path DIR` | Read-only, offline check of complete payload. Stops at the first failure. See below. |
-| `inspect SOURCE` | Inspect a local `.torrent`, a quoted magnet link, or `-` for metainfo on stdin, without a daemon or network access. See below. |
-| `create TARGET [OPTIONS]` | Create a v1, v2 or hybrid `.torrent` from a file or directory, without a daemon. See below. |
-| `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file, `magnet:` link, or HTTP(S) torrent URL. `--output` must be an absolute directory; it is created if missing. Defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the torrent ID. Existing torrents are errors except for magnet `so` selection updates; see [File selection](torrents.md#file-selection). |
-| `list [--watch]` | All torrents: full ID, state, verified/total bytes, name. `--watch` refreshes every second until Ctrl-C. |
-| `status` | Same data as `list`, plus daemon health. Most useful with `--json`. |
-| `get ID` | Everything about one torrent: settings, state, progress, lifetime downloaded/uploaded bytes, timestamps, seeding time, errors, tracker messages, and live transfer details (rates, peers, trackers). |
-| `set ID KEY=JSON ...` | Change per-torrent settings. Values are JSON: numbers, `true`/`false`, or arrays. See below. |
-| `files ID` | Files in torrent order: index, length, priority, path. Requires metadata. |
-| `pause ID` | Stop the torrent and keep it paused across restarts. |
-| `resume ID` | Allow a paused torrent to run again (it may wait for a free slot). |
-| `recheck ID` | Verify every piece against the data on disk, then leave the torrent paused. Use after moving or editing files, or after an unclean power loss. |
-| `reannounce ID` | Announce to the tracker again as soon as the tracker's `min interval` allows. Fails if trackers are disabled or the torrent is not running. A magnet still resolving metadata announces again once resolution finishes. |
-| `remove ID [--delete-payload]` | Remove the torrent. Files are kept unless `--delete-payload` is given; see [Torrents](torrents.md#removing-torrents). |
-| `health` | Plain-text daemon health, listener readiness, inbound peer observations, port mapping and admission state. Use `--json` for structured output. See [Health](#health). |
-| `set-bandwidth [--download BPS] [--upload BPS]` | Change one or both daemon-wide caps without restarting torrents. Omitted caps stay unchanged; `0` means unlimited. Prints both effective caps. Restart restores the configured values. |
+| `add SOURCE [--output DIR] [--paused] [--set KEY=JSON]...` | Add a local `.torrent` file (or `-` for stdin), `magnet:` link, or HTTP(S) torrent URL. Relative `--output` paths resolve from the current directory; defaults to `download_dir`. `--paused` prevents startup; repeated `--set` overrides daemon defaults before startup. Prints the torrent ID (one line in text mode). Existing torrents are errors except for magnet `so` selection updates; see [File selection](torrents.md#file-selection). |
+| `list [--watch]` | Compact table of torrents: 12-char ID, state, selected progress and `%`, rates, peers, name, and any `Error:` / `Tracker:` lines. `--watch` refreshes every second until Ctrl-C. |
+| `status` | Daemon health followed by the torrent table (both included in `--json`). |
+| `get ID` | Concise summary for one torrent in text mode; complete JSON (settings, accounting, peers, trackers, DHT, storage) with `--json`. |
+| `set ID KEY=JSON ...` | Change per-torrent settings. Values are JSON: numbers, `true`/`false`, arrays, or sparse priority maps. See [Changing settings with `set`](#changing-settings-with-set). |
+| `files ID` | Aligned table of files in torrent order: index, size, priority, path (marking `[padding]` entries). Requires metadata. |
+| `pause ID...` | Stop one or more torrents and keep them paused across restarts. |
+| `resume ID...` | Allow one or more paused torrents to run again (they may wait for a free slot). |
+| `recheck ID...` | Verify every piece against the data on disk, then leave the torrent paused. Use after moving or editing files, or after an unclean power loss. |
+| `reannounce ID...` | Announce to the tracker again as soon as the tracker's `min interval` allows. Fails if trackers are disabled or the torrent is not running. A magnet still resolving metadata announces again once resolution finishes. |
+| `remove ID... [--delete-payload]` | Remove one or more torrents. Files are kept unless `--delete-payload` is given; reports whether created payload was deleted or adopted files were kept. See [Torrents](torrents.md#removing-torrents). |
+
+### Daemon
+
+| Command | What it does |
+|---|---|
+| `serve [--config PATH] [--check]` | Run the daemon in the foreground, or validate config and exit with `--check`. |
+| `health` | Plain-text daemon health: version, listeners, inbound peer observations, port mapping, debug log status/path, and admission state. Use `--json` for structured output. See [Health](#health). |
+| `set-bandwidth [--download BPS] [--upload BPS]` | Change one or both daemon-wide caps without restarting torrents. At least one flag is required; omitted caps stay unchanged; `0` means unlimited. Restart restores configured values. |
 | `shutdown` | Stop the daemon cleanly. |
+
+### Offline tools
+
+| Command | What it does |
+|---|---|
+| `create TARGET [OPTIONS]` | Create a v1, v2 or hybrid `.torrent` from a file or directory, without a daemon. See [Creating torrents](#creating-torrents). |
+| `inspect SOURCE` | Inspect a local `.torrent`, a quoted magnet link, or `-` for metainfo on stdin, without a daemon or network access. Prints a summary in text mode or full JSON with `--json`. See [Inspecting torrents and magnets](#inspecting-torrents-and-magnets). |
+| `verify FILE.torrent --path DIR` | Read-only, offline check of complete payload (`--output` is accepted as an alias for `--path`). Stops at the first failure. See [Verifying local payload](#verifying-local-payload). |
+
+## Changing settings with `set`
+
+Keys are the [`[defaults]` keys](configuration.md#torrent-defaults-defaults)
+(also listed by `spill set --help`):
+
+```sh
+spill set ID download_limit=1048576 upload_limit=524288
+spill set ID seed_ratio=2 seed_time=86400
+spill set ID trackers=true dht=false pex=false web_seeds=true
+spill set ID 'file_priorities={"1":"skip","0":"high"}'
+spill set ID 'file_priorities=["high","skip","normal"]'
+spill set ID 'file_priorities=[]'      # back to all files
+```
+
+- Quote values that contain braces, brackets, or spaces so your shell passes them intact.
+- Changing only `download_limit` or `upload_limit` applies live without
+  restarting a running torrent and is saved across daemon restarts. Other changes
+  stop and restart a running torrent with the new settings. A paused torrent stays paused.
+- `file_priorities` accepts either a sparse JSON object mapping zero-based file
+  indices to priorities (`{"3":"skip"}`) or a full array with one entry per file
+  in `spill files` order (including padding files, which must be `"skip"`).
+  Explicit file priorities need metadata, so wait for a magnet to resolve first.
+  For large multi-file torrents, the web UI's Files tab or magnet `so=` is also convenient.
+- `dht` and `pex` cannot be enabled on private torrents.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | The operation failed |
+| 2 | Invalid input (bad arguments, invalid config, bad values, ambiguous ID, invalid torrent) |
+| 3 | No torrent matches the ID |
+| 4 | Cannot reach the daemon (not running, shutting down, wrong socket, permission denied) |
+| 130 | `list --watch` interrupted with Ctrl-C |
 
 In `get` JSON, `transfer.peers[].transport` is `"tcp"`, `"utp"` or `"http"`
 (for web seeds). `transfer.peers[].encryption` is `"rc4"` or `"plaintext"`
@@ -121,8 +174,9 @@ Health includes `bandwidth.download_limit` and `bandwidth.upload_limit`, the
 effective daemon-wide caps in payload bytes per second. `0` means unlimited.
 In `status` JSON these fields are under `health.bandwidth`.
 
-Health also includes `logging`: `file_enabled`, cumulative `events_dropped`
-since daemon startup, and `write_failed` for the most recent debug-file write.
+Health also includes `logging`: `file_enabled`, `path` (the `debug.log` path),
+cumulative `events_dropped` since daemon startup, and `write_failed` for the
+most recent debug-file write.
 A successful write clears `write_failed`; it does not erase the drop count.
 These observations do not make health independent of slow control or cleanup
 work. Resource counts are sampled separately, not one atomic reservation view.
@@ -136,8 +190,9 @@ spill inspect 'magnet:?xt=urn:btih:0123456789012345678901234567890123456789'
 spill inspect - < download.torrent
 ```
 
-Output is formatted JSON by default; `--json` produces one compact JSON document
-for scripts. Both include `kind`, `info_hash`, `format`, `v1`, `v2`, and `name`.
+Output is a concise human summary by default; `--json` produces one compact
+JSON document for scripts containing `kind`, `info_hash`, `format`, `v1`, `v2`,
+and `name`.
 Metainfo inspection validates the content structure and reports the private flag,
 piece length/count, file paths, lengths, offsets and padding flags, plus available
 tracker tiers, web seeds, comment, creator, creation date and source. `total_bytes`
@@ -228,12 +283,6 @@ seed files already at the expected destination. A directory torrent expects
 spill's [filesystem name sanitization](torrents.md#adding-torrents) can make those
 paths differ from the original source paths. Source symlinks are followed during
 creation, but are not adopted as payload paths when seeding.
-
-Without `--json`, `get ID` prints the complete torrent details as formatted JSON;
-`set ID ...` prints the resulting settings as `key=value` lines. Changes to
-only `download_limit` and/or `upload_limit` take effect without restarting the
-torrent and are saved across daemon restarts. Other settings still require
-stopping and reconciling the torrent.
 
 ## Identity and discovery in JSON
 
@@ -358,38 +407,6 @@ Lifetime totals, timestamps and seeding time survive orderly restarts and
 rechecks. Removing and re-adding a torrent starts its accounting afresh. See
 [Torrents](torrents.md#accounting) for checkpoint durability.
 
-## Changing settings with `set`
-
-Keys are the [`[defaults]` keys](configuration.md#torrent-defaults-defaults):
-
-```sh
-spill set ID download_limit=1048576 upload_limit=524288
-spill set ID seed_ratio=2 seed_time=86400
-spill set ID trackers=true dht=false pex=false web_seeds=true
-spill set ID 'file_priorities=["high","skip","normal"]'
-spill set ID 'file_priorities=[]'      # back to all files
-```
-
-- Quote values that contain brackets or spaces so your shell passes them intact.
-- Changing only `download_limit` or `upload_limit` applies live without
-  restarting a running torrent. Other changes stop and restart a running
-  torrent with the new settings. A paused torrent stays paused.
-- `file_priorities` needs one entry per file in `files` order, including
-  padding files, which must be `"skip"`. Explicit file priorities need metadata, so wait
-  for a magnet to resolve first.
-- `dht` and `pex` cannot be enabled on private torrents.
-
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Success |
-| 1 | The operation failed |
-| 2 | Invalid input (bad arguments, values, ambiguous ID, invalid torrent) |
-| 3 | No torrent matches the ID |
-| 4 | Cannot reach the daemon (not running, wrong socket, permission denied) |
-| 130 | `list --watch` interrupted with Ctrl-C |
-
 ## Control protocol
 
 Client commands send one JSON object per line to the socket and read one JSON
@@ -403,6 +420,10 @@ socket="$XDG_RUNTIME_DIR/spill.sock"
 echo '{"op":"get","id":"3f2a"}' | socat - "UNIX-CONNECT:$socket"
 ```
 
+Supported `op` values: `add`, `get`, `set`, `list`, `status`, `files`, `pause`,
+`resume`, `recheck`, `reannounce`, `remove`, `health`, `set_bandwidth`, and
+`shutdown`.
+
 Requests use `op` plus the same fields as the commands (`id`, `values`,
 `delete_payload`, `magnet`, `url`, `output_dir`, `paused`, `settings`, or
 `download_limit`/`upload_limit` for `set_bandwidth`). For `add`, `metainfo` is the
@@ -412,6 +433,6 @@ of per-torrent overrides merged with daemon defaults; `paused` defaults to false
 Settings are validated before the torrent is saved or started. Private metainfo
 always disables DHT and PEX, including initial overrides. An HTTP(S) torrent URL
 is still fetched when adding paused; payload transfer and discovery wait for
-`resume`.
+`resume`. `remove` returns `{"removed": ID, "delete_payload": bool, "deleted_payload": bool}`.
 Responses are `{"code":0,"data":…,"error":null}`;
 `code` uses the exit codes above. Requests are limited to about 22 MiB.

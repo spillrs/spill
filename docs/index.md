@@ -41,26 +41,19 @@ Read [Torrents](torrents.md), [Networking](networking.md), and
 
 ## Scope
 
-spill supports Linux and macOS. The daemon and [embeddable engine](library.md)
-accept v1, v2-only and hybrid metainfo and magnets. Controlled libtorrent 2.1.2.0
-magnet checks pass in both directions for the reference v2/hybrid fixtures and
-a generated 1025-piece layer, including singleton hash serving and source-free
-restart. Pending-layer hybrid downloads from v1-only peers and rebuilt-layer
-seeding still require controlled interop validation; the recorded magnet checks
-cover peer-supplied layers.
-Controlled plaintext TCP checks against libtorrent 2.1.2.0 cover direct peers,
-local HTTP/UDP trackers, isolated DHT, hybrid PEX and the v2/hybrid daemon
-lifecycle, including kill/restart and proof serving. Transmission 4.1.3 covers
-the v1 magnet/HTTP-tracker regression. The
-[recorded checks](https://github.com/spillrs/spill/blob/main/tests/interop/baselines/discovery-daemon.json)
-are not evidence of public-swarm capacity, v2 uTP interoperability or universal
-client compatibility. HTTP(S) web seeds support all three formats. Controlled
-HTTP checks against libtorrent 2.1.2.0 cover v2/hybrid file URLs, short tails,
-padding and combined peer/web-seed downloads; see the
-[web-seed checks](https://github.com/spillrs/spill/blob/main/tests/interop/baselines/webseeds.json).
-Peer connections support [MSE/PE obfuscation](networking.md#peer-encryption).
-Local service discovery (BEP 14) is available when local network access is enabled;
-see [Networking](networking.md#local-service-discovery).
+spill supports Linux and macOS. Both the daemon and [embeddable engine](library.md)
+accept v1, v2-only, and hybrid metainfo, magnet links, and HTTP(S) web seeds, with
+MSE/PE peer encryption ([Networking](networking.md#peer-encryption)) and optional
+BEP 14 local service discovery ([Networking](networking.md#local-service-discovery)).
+
+Interoperability checks cover controlled tests against Transmission 4.1+ and
+libtorrent 2.1.2.0 (v1/v2/hybrid TCP transfers, magnets, trackers, DHT, hybrid PEX,
+web seeds, and kill/restart recovery). Recorded baselines live in
+[`tests/interop/baselines/`](https://github.com/spillrs/spill/tree/main/tests/interop/baselines)
+and are not evidence of public-swarm capacity, v2 uTP interoperability, or
+universal client compatibility; see [v2 and hybrid torrents](v2.md) and
+[Limits and performance](limits.md) for exact coverage and bounds.
+
 The daemon is single-user; its optional web interface listens only on loopback
 and has no multi-user authentication. Remote access requires an SSH tunnel.
 

@@ -6,8 +6,8 @@
 
 - [Install](install.md)
 - [Quickstart](quickstart.md)
-- [Configuration](configuration.md)
 - [Command line](cli.md)
+- [Configuration](configuration.md)
 - [Web interface and HTTP API](web.md)
 
 # How spill behaves

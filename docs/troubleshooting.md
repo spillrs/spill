@@ -98,32 +98,43 @@ A client command can't reach the control socket.
 - Is the daemon running? For the Linux user service, run
   `systemctl --user status spill`; for the macOS launchd agent, run
   `launchctl print gui/$(id -u)/rs.spill.daemon`.
-- Is the client using the same socket as the daemon? Pass `--socket PATH` if the
-  config sets `control_socket`.
+- Is the client using the same socket as the daemon? Set `SPILL_SOCKET` or pass
+  `--socket PATH` if the config sets `control_socket`.
 - For the Linux system service, run client commands as the `spill` user (the socket is mode
   `0600`): `sudo -u spill spill --socket /run/spill/control.sock list`.
 
 ## The daemon won't start
 
+Validate a config file without touching a running daemon using
+`spill serve --config PATH --check`.
+
 | Error | Fix |
 |---|---|
-| `Address already in use` | Another program (often another client) uses the `listen` port for TCP or UDP. Pick another port or stop it. |
+| `cannot start torrent session on …: Address already in use` / `cannot bind web_listen …` | Another program uses the `listen` (TCP/UDP) or `web_listen` port. Pick another port or stop it. |
 | `control socket already in use` | Another spill is running with the same socket. |
-| `Resource temporarily unavailable` | Another spill holds the lock on the same `state_dir` (`daemon.lock`). |
+| `state directory … is already locked by another spill daemon` | Another spill holds `daemon.lock` in the same `state_dir`. |
 | `unsupported catalog version` | Use a compatible spill binary: the catalog is newer than this binary supports or is a nonempty unversioned catalog. Do not reset its version manually. See [Upgrading](install.md#upgrading). |
-| `absolute paths and a nonzero active cap are required` | A path in the config is relative, or uses `~`, or the active slots are invalid, or `web_listen` isn't loopback. |
-| `unknown field …` | A typo or a removed key in the config (for example `allow_local_peers`, now `allow_local_network`). |
+| `<key> must be an absolute path` / `web_listen must be a loopback address` / `active_downloads + active_seeds must be between 1 and 64` | Fix the named config key. TOML does not expand `~`. |
+| `unknown field …` | A typo or unsupported key in the config. |
 
 ## Adding a torrent fails
+
+Synchronous `spill add` failures (exit code 2; nothing added to the catalog):
+
+- `torrent already exists`: it's already in the catalog; check `spill list`.
+- `output_dir must be absolute`: raw control/HTTP API `output_dir` must be
+  absolute (the CLI resolves relative `--output` paths automatically).
+
+Post-add startup failures (`spill add` returns an ID, then the torrent pauses
+with `last_error` in `spill list` / `spill get ID`):
 
 - `file already exists; choose another output directory`: some of the
   torrent's files (or a directory with a file's name) already exist and spill
   won't overwrite them. If all files are present and complete, spill adopts
-  them instead; otherwise move them away or choose another `--output`.
-- `torrent already exists`: it's already in the catalog; `spill list`.
-- `output_dir must be absolute`: give a full path to `--output`.
+  them instead; otherwise move the conflicting files away and `spill resume ID`,
+  or run `spill remove ID` first before re-adding with another `--output`.
 - `private torrents require a .torrent file`: the magnet points at a private
-  torrent; download the `.torrent` from the tracker instead.
+  torrent; run `spill remove ID`, then add the `.torrent` file from the tracker.
 
 ## A torrent doesn't download
 
@@ -173,7 +184,8 @@ before stopping the daemon; health still shares the control path.
 
 ## Torrents stay queued after an internal failure
 
-If `spill health` shows `"admission_closed": true` while the daemon is running,
+If `spill health` shows `Admission: closed` (or `spill health --json` shows
+`"admission_closed": true`) while the daemon is running,
 a torrent stopped without proving that its files were released. spill then
 starts no further torrents, so it never opens the same files twice. The
 torrent's `last_error` names the failure. Restart the daemon, and report the

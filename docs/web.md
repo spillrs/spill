@@ -15,63 +15,41 @@ then open <http://127.0.0.1:8081> locally. The local port need not match the rem
 
 ## The page
 
-- A compact transfer table with search, sorting, multi-selection, state filters,
-  lifetime downloaded/uploaded totals, rates, peers, ETA and TRK/DHT/PEX/WEB
-  discovery policy. The status cell stays on one line: a torrent error shows
-  **Error**, while a tracker failure adds an amber icon beside the transfer
-  state. Hover over the cell or open Overview to read the full message.
-  Tracker failures remain in Needs attention until recovery or successful
-  fallback, without marking the torrent itself as failed. Sources retains individual
-  tracker errors, including backups hidden by a working selected tracker.
-  On narrow screens, scroll the table horizontally to see all columns; torrent
-  names keep their space rather than collapsing.
-- Adding a `.torrent` file, magnet link, or HTTP(S) torrent URL, with an optional
-  output directory. Paste URLs into the same field as magnet links. The add
-  dialog initializes Trackers, DHT, PEX and Web seeds from daemon defaults;
-  these policies and “Start immediately”
-  are applied in the add request, before any discovery or payload transfer.
-  Private metainfo always disables DHT and PEX.
-- Pause, resume, recheck, reannounce and remove (optionally deleting payload).
-- A resizable bottom inspector with Overview, Files, Peers and Sources tabs.
-  Overview shows the stable ID, format, full SHA-1/SHA-256 hashes, metadata
-  readiness, per-swarm completion delivery, lifetime accounting, selected
-  progress and UTC dates. Yes/no fields use labelled green checks and red
-  crosses; unknown values stay explicit. Long hashes wrap without truncation. Ratio uses uploaded bytes / full size.
-  Use Left/Right arrows or Home/End to switch tabs when a tab has keyboard
-  focus. Press `/` outside a dialog or input to focus the transfer search.
-- A dense peer table: one line per peer, no direction/connection IDs or prose
-  annotations. Hover over peer state for additional diagnostic counters/flags.
-- Source tables include tracker URLs, swarm keys, announce timing, peer counts
-  and errors, plus per-swarm DHT and available web-seed observations.
-- **Global limits** in the top bar edits the caps shared by all torrents.
-  **Torrent limits** in the inspector edits the selected torrent's caps.
-  Both show the current rates in MiB/s, accept decimals, and save only changed fields. `0`
-  means unlimited at that level; a global cap still applies to torrents with
-  no individual cap. Changes take effect without restarting transfers.
-  Torrent caps persist; restarting the daemon restores the configured global
-  caps. Rates are rounded to whole bytes/s when saved.
-- Editable file priorities and seeding goals. The seeding dialog pairs sliders
-  with exact numeric inputs. Entering a value beyond a slider's range extends
-  it. Seeding time is entered in hours and rounded to whole seconds when saved;
-  `0` disables the corresponding seeding rule.
-  File-priority controls are disabled while disconnected or saving changes;
-  unsaved selections revert to the last snapshot.
-- A footer daemon indicator shows the version and a green connection dot.
-  Click it for connection status, last update, PID, running torrents, admission
-  state, TCP/UDP listeners, uTP/DHT settings, inbound peer counts and whether a
-  port mapping is active, not established, or disabled. An active mapping also
-  shows NAT-PMP or UPnP. Mapping
-  warnings belong in Logs, not the status panel. The panel also shows the
-  effective global upload and download caps. Green means connected, not that
-  every network service is healthy. On disconnection the dot turns red, an error is shown, and the status
-  panel labels its data as the last snapshot.
-- Choose **Logs** in the daemon-status dialog to view recent `debug.log` output.
-  Follow refreshes every second and scrolls to the latest entry; uncheck it to
-  pause. Refresh and Copy work on the displayed snapshot. Only the latest
-  64 KiB are read, with the first cut line omitted. Closing the view stops log
-  polling. Logs are displayed as plain text, not HTML. File logging must be
-  enabled; journald and early startup messages are not included. Console and
-  file filters differ; see [Logging](configuration.md#logging-logging).
+- **Torrent table:** Search across name, ID, SHA-1/SHA-256 hash, and output path;
+  sort by any metric (including peers and ETA); multi-select with checkboxes,
+  `Shift+Click`, or `Ctrl/Cmd+Click`; filter by All torrents, Downloading
+  (including `starting` and `metadata`), Checking (`checking`/`recovering`),
+  Seeding, Paused, Queued, and Needs attention (errors, retrying, tracker/metadata
+  warnings). Press `/` to focus search and `Escape` to clear search or close details.
+- **Adding torrents:** Paste a magnet link or HTTP(S) torrent URL, or choose /
+  drag-and-drop a `.torrent` file (anywhere on the page or onto the upload box).
+  Discovery toggles and “Start immediately” apply atomically before startup;
+  private metainfo always disables DHT and PEX.
+- **Actions:** Pause, resume, recheck (leaves torrent paused), reannounce, and
+  remove. The remove confirmation defaults to keeping files; checking delete
+  only removes files created by spill (adopted seeds are never deleted).
+- **Inspector tabs:**
+  - **Overview:** Stable ID, full hashes, and save path with copy buttons,
+    metadata/layer state, lifetime accounting, active caps/seeding goals, and
+    per-swarm completion delivery.
+  - **Files:** Paginated file manifest with batch priority editing (`All normal`,
+    `Skip all`, `Save changes`, `Discard`) so multiple edits restart the torrent
+    once instead of per file. Virtual padding entries are marked and locked to `skip`.
+  - **Peers:** Active peers with direction (`inbound`/`outbound`), transport
+    (`tcp`/`utp`/`http`), encryption (`rc4`/`plaintext`), rates, totals, and
+    hover diagnostics.
+  - **Sources:** Editable discovery toggles (`trackers`, `dht`, `pex`, `web_seeds`)
+    plus tracker, DHT, and web-seed tables.
+- **Session limits & Torrent limits:** Edit daemon-wide caps (**Session limits**,
+  reset on daemon restart) or per-torrent caps (**Torrent limits**, saved across
+  restarts) in MiB/s without restarting transfers. **Seeding rules** edits upload
+  ratio (against data size) and active seeding hours.
+- **Daemon status & Logs:** Click the footer indicator for listeners, inbound
+  public peer counts and recency, LSD, port mapping status/errors, session caps,
+  and debug-log health. Click **Logs** for a 64 KiB tail of `debug.log` with
+  follow (auto-pauses if you scroll up), refresh, and copy. If the daemon restarts
+  and rotates its token, the UI pauses polling and prompts (or auto-reloads when
+  no dialog is open).
 
 Downloaded totals include corrupt payload and re-downloads, not adopted files.
 Current-run counters reset when a torrent restarts; lifetime counters survive
@@ -83,9 +61,10 @@ restarts. Hover over a table total for its exact byte count. See
 - The server only accepts loopback addresses (`127.0.0.0/8`, `[::1]`) or
   `localhost` as the `Host` hostname, including when SSH forwards a different
   local port. If `Origin` is present it must match the browser-facing HTTP host
-  and port.
+  and port. Disallowed `Host`/`Origin` requests receive HTTP `403`.
 - Every API request must carry the `X-Spill-Token` header. The page embeds a
-  random token generated when the daemon starts.
+  random token generated when the daemon starts; missing or stale tokens receive
+  HTTP `401` with a JSON error body.
 - Cross-origin requests are rejected.
 
 This protects against other websites in your browser. It is **not**
@@ -95,10 +74,18 @@ interface on shared machines you don't trust.
 
 ## HTTP API
 
-All endpoints require the `X-Spill-Token` header. `/api` and `/api/upload`
-use the same operations and response format as the
-[control protocol](cli.md#control-protocol). The
-page source embeds the current token; it changes whenever the daemon restarts.
+All `/api*` endpoints require `POST` (`GET` returns `405 Method Not Allowed`),
+the `X-Spill-Token` header, and return `Cache-Control: no-store`. For local
+scripts on the same machine, prefer `spill --json` or the
+[Unix control socket](cli.md#control-protocol), which need no token extraction.
+
+When calling the HTTP API from a script, read the current token from
+`<meta name="spill-token" content="…">` on `GET /` (it rotates on every daemon
+restart):
+
+```sh
+TOKEN="$(curl -s http://127.0.0.1:8080/ | sed -n 's/.*name="spill-token" content="\([^"]*\)".*/\1/p')"
+```
 
 ### `POST /api`
 
@@ -148,8 +135,8 @@ request fields; clients cannot choose a file path. Uses the control response env
 
 At most 64 KiB are read per request. If older bytes are omitted, `truncated`
 is true and the first cut line is discarded. Invalid UTF-8 is replaced for
-text display. When file logging is disabled, `enabled` is false and `text`
-is empty, even if an old log file exists. Read failures return a nonzero code
+text display. When file logging is disabled (or `debug.log` does not exist yet), `text` is
+empty. Read failures return a nonzero code
 and an error message, not an empty success. Responses use `Cache-Control:
 no-store`. Like other API access, this is not authentication against local
 users; logs may contain sensitive operational details.

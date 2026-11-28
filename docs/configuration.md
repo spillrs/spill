@@ -2,28 +2,16 @@
 
 spill reads a TOML 1.1 file only when started with `spill serve --config PATH`.
 Without it, every key below takes its default. The file is limited to 64 KiB.
+Validate edits without touching a running daemon using
+`spill serve --config PATH --check`.
 
 Rules that apply to the whole file:
 
-- Paths must be absolute. TOML does not expand `~` or environment variables.
+- Paths inside the TOML must be absolute. TOML does not expand `~` or environment variables.
 - Unknown keys are errors, so typos are caught at startup.
-- Invalid values stop the daemon at startup with an error.
+- Invalid values exit with code 2 before starting the runtime.
 - `[defaults]` is copied into each torrent when it is added. Changing it later
   does not affect torrents that already exist; use `spill set` for those.
-
-## State directory compatibility
-
-Schema version **1** is the supported baseline for automatic startup migrations.
-Pending migrations run in a transaction before torrents are loaded; failure
-rolls back the changes and stops startup. Catalogs newer than the binary supports
-and nonempty unversioned catalogs are rejected. See
-[Upgrading](install.md#upgrading).
-
-Keep the state directory: it contains the authority to reopen partial downloads.
-If you choose a fresh `state_dir`, re-add torrents. Complete payload can be
-adopted from the original download directory; partial files are not adopted into
-a fresh catalog. The HTTP/control JSON changes are described in
-[Command line](cli.md).
 
 ## Daemon keys
 
@@ -35,9 +23,9 @@ Downloads default to `~/Downloads` on both platforms. If you override
 
 | Key | Default | Meaning |
 |---|---|---|
-| `state_dir` | `~/.local/state/spill` | Catalog (`catalog.sqlite`), lock file and debug log (`debug.log`). Created with mode `0700`. Two daemons cannot share one state directory. |
-| `download_dir` | `~/Downloads` | Where new torrents are saved unless `add` gives an output directory. |
-| `control_socket` | `$XDG_RUNTIME_DIR/spill.sock`, else `~/.local/state/spill/spill.sock` | Unix socket for `spill`. Created with mode `0600`. |
+| `state_dir` | `~/.local/state/spill` | Catalog (`catalog.sqlite`), lock file and debug log (`debug.log`). Created with mode `0700`. Two daemons cannot share one state directory. Overriding `state_dir` does not move the default `control_socket`. |
+| `download_dir` | `~/Downloads` | Where new torrents are saved unless `add` gives an output directory. `spill serve` enforces umask `0077` (`0600` files / `0700` dirs) as part of its single-user design. |
+| `control_socket` | `$XDG_RUNTIME_DIR/spill.sock`, else `~/.local/state/spill/spill.sock` | Unix socket for `spill`. Created with mode `0600`. Independent of `state_dir`; set explicitly if running a second instance. |
 | `listen` | `"0.0.0.0:6881"` | Address and port for TCP peers and for uTP peers, the DHT and UDP trackers (UDP, same port). Both must be free. `"[::]:6881"` listens on IPv6 and IPv4 (dual-stack). |
 | `web_listen` | unset (off) | Address for the web interface. Must be a loopback address, for example `"127.0.0.1:8080"`. |
 | `allow_local_network` | `false` | Allow outbound connections to private, loopback and link-local addresses (LAN peers, a tracker on your network), and enable BEP 14 local service discovery for torrents with `dht = true`. LSD uses multicast UDP port 6771; peer destinations still cannot be multicast, unspecified, broadcast or port 0. Inbound connections are not filtered. |
@@ -167,9 +155,9 @@ saved across daemon restarts.
 |---|---|---|
 | `download_limit` | `0` | Download rate limit for this torrent in payload bytes per second. `0` is unlimited. |
 | `upload_limit` | `0` | Upload rate limit, same units. |
-| `seed_ratio` | `0.0` | Pause after uploading this multiple of the torrent's size. `0` disables the rule. Must be finite and not negative. |
+| `seed_ratio` | `0.0` | Pause after uploading this multiple of the torrent's data size (excluding virtual padding). `0` disables the rule. Must be finite and not negative. |
 | `seed_time` | `0` | Pause after this many seconds of active seeding. Paused time and downtime do not count. `0` disables the rule. |
-| `file_priorities` | `[]` | `[]` downloads every file, except that magnet `so` supplies the initial selection when the list is empty. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in the order `spill files` shows. Only meaningful per torrent. |
+| `file_priorities` | `[]` | `[]` downloads every file, except that magnet `so` supplies the initial selection when the list is empty. Otherwise one of `"skip"`, `"normal"` or `"high"` per file, in `spill files` order (`spill set` also accepts sparse index objects like `{"1":"skip"}`). Only meaningful per torrent. |
 | `trackers` | `true` | Announce to the torrent's trackers. |
 | `dht` | `true` | Use the DHT over the address families supported by `listen`, and local service discovery when `allow_local_network = true`. Always off for private torrents. |
 | `pex` | `true` | Exchange peers with connected peers. Always off for private torrents. |
@@ -209,5 +197,18 @@ dht = true               # separate IPv4 and IPv6 routing tables
 ```
 
 The annotated files `deploy/spill.toml` and `deploy/spill-user.toml` are
-complete starting points for Linux; `deploy/spill-macos.toml` uses the macOS
-defaults.
+annotated starting points for Linux; `deploy/spill-macos.toml` uses the macOS
+defaults. See the tables above for all supported keys.
+
+## State directory compatibility
+
+Schema version **1** is the supported baseline for automatic startup migrations.
+Pending migrations run in a transaction before torrents are loaded; failure
+rolls back the changes and stops startup. Catalogs newer than the binary supports
+and nonempty unversioned catalogs are rejected. See
+[Upgrading](install.md#upgrading).
+
+Keep the state directory: it contains the authority to reopen partial downloads.
+If you choose a fresh `state_dir`, re-add torrents. Complete payload can be
+adopted from the original download directory; partial files are not adopted into
+a fresh catalog.
